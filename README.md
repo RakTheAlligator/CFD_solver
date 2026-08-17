@@ -38,3 +38,22 @@ Puis vérifier :
 - les coordonnées des 4 noeuds ;
 - la connectivité des 2 cellules ;
 - ensuite seulement, construire automatiquement les faces.
+
+## Current status
+
+The project currently implements the first stage of the mesh pipeline:
+
+```text
+Geometry
+    ↓
+Gmsh
+    ↓
+RawMeshData
+    ↓
+Raw mesh validation
+    ↓
+Mesh connectivity        [next step]
+    ↓
+CFD geometry
+    ↓
+Finite-volume solver

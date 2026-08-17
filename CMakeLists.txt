@@ -42,6 +42,7 @@ add_executable(
     src/Cell.cpp
     src/Mesh.cpp
     src/GmshMesher.cpp
+    src/RawMeshValidation.cpp
 )
 
 
