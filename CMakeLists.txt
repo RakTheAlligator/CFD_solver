@@ -43,6 +43,7 @@ add_executable(
     src/Mesh.cpp
     src/GmshMesher.cpp
     src/RawMeshValidation.cpp
+    src/MeshBuilder.cpp
 )
 
 

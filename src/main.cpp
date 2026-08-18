@@ -1,41 +1,40 @@
 #include "cfd/GmshMesher.hpp"
-#include "cfd/RawMeshValidation.hpp"
+#include "cfd/MeshBuilder.hpp"
 
 #include <exception>
 #include <iostream>
+#include <utility>
 
 int main()
 {
     try {
-        const cfd::RectangleGeometry geometry{      //  Define the rectangle geometry
+        const cfd::RectangleGeometry geometry{
             .length = 5.0,
             .height = 1.0
         };
 
-        const cfd::MeshGenerationOptions options{   //  Set mesh generation options
+        const cfd::MeshGenerationOptions options{
             .mesh_size = 0.2,
             .cell_type = cfd::CellType::Triangle
         };
 
-        const cfd::RawMeshData raw_mesh =           //  Generate the mesh using Gmsh
+        cfd::RawMeshData raw_mesh =
             cfd::generate_mesh(geometry, options);
+
+        cfd::Mesh mesh =
+            cfd::build_mesh(std::move(raw_mesh));
 
         std::cout
             << "Number of nodes: "
-            << raw_mesh.nodes.size()
-            << '\n';
+            << mesh.node_count() << '\n';
 
         std::cout
             << "Number of cells: "
-            << raw_mesh.cell_types.size()
-            << '\n';
+            << mesh.cell_count() << '\n';
 
         std::cout
-            << "Number of boundary edges: "
-            << raw_mesh.boundary_edges.size()
-            << '\n';
-
-        cfd::validate_raw_mesh(raw_mesh);  //  Validate the generated mesh
+            << "Number of faces: "
+            << mesh.face_count() << '\n';
     }
     catch (const std::exception& error) {
         std::cerr
@@ -45,5 +44,6 @@ int main()
 
         return 1;
     }
+
     return 0;
 }
