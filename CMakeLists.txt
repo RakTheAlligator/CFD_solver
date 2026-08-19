@@ -10,7 +10,6 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
-
 find_path(
     GMSH_INCLUDE_DIR
     NAMES gmsh.h
@@ -32,34 +31,31 @@ set_target_properties(
         INTERFACE_INCLUDE_DIRECTORIES "${GMSH_INCLUDE_DIR}"
 )
 
-
 add_executable(
     CFD_solver
 
     src/main.cpp
-    src/Node.cpp
-    src/Face.cpp
-    src/Cell.cpp
-    src/Mesh.cpp
-    src/GmshMesher.cpp
-    src/RawMeshValidation.cpp
     src/MeshBuilder.cpp
-)
 
+    src/meshing/GmshMesher.cpp
+    src/meshing/RawMeshValidation.cpp
+
+    src/mesh_build/TopologyBuilder.cpp
+    src/mesh_build/TopologyValidation.cpp
+)
 
 target_include_directories(
     CFD_solver
     PRIVATE
         ${PROJECT_SOURCE_DIR}/include
+        ${PROJECT_SOURCE_DIR}/src
 )
-
 
 target_link_libraries(
     CFD_solver
     PRIVATE
         Gmsh::Gmsh
 )
-
 
 if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
     target_compile_options(

@@ -1,10 +1,10 @@
 #pragma once
 
-#include "cfd/Boundary.hpp"
-#include "cfd/Cell.hpp"
-#include "cfd/Face.hpp"
-#include "cfd/Node.hpp"
-#include "cfd/Types.hpp"
+#include "cfd/mesh/Boundary.hpp"
+#include "cfd/mesh/Cell.hpp"
+#include "cfd/mesh/Face.hpp"
+#include "cfd/mesh/Node.hpp"
+#include "cfd/mesh/Types.hpp"
 
 #include <span>
 #include <vector>
@@ -101,15 +101,8 @@ private:
 
     // Constructed topology.
     std::vector<Face> faces_;
-
-    // Same compressed layout as cell_nodes_:
-    // cell_node_offsets_ can also delimit the faces of each cell.
     std::vector<Index> cell_faces_;
-
-    // One adjacency record per face.
     std::vector<FaceAdjacency> face_adjacencies_;
-
-    // invalid_boundary_id means that the face is internal.
     std::vector<BoundaryId> face_boundary_ids_;
 
     friend Mesh build_mesh(RawMeshData&& raw_mesh);

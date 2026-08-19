@@ -1,4 +1,4 @@
-#include "cfd/GmshMesher.hpp"
+#include "cfd/meshing/GmshMesher.hpp"
 
 #include <gmsh.h>
 

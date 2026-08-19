@@ -1,8 +1,8 @@
 #pragma once
 
-#include "cfd/Cell.hpp"
-#include "cfd/Geometry.hpp"
-#include "cfd/RawMeshData.hpp"
+#include "cfd/mesh/Cell.hpp"
+#include "cfd/meshing/DomainGeometry.hpp"
+#include "cfd/meshing/RawMeshData.hpp"
 
 namespace cfd {
 

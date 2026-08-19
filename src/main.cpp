@@ -1,5 +1,5 @@
-#include "cfd/GmshMesher.hpp"
-#include "cfd/MeshBuilder.hpp"
+#include "cfd/mesh/MeshBuilder.hpp"
+#include "cfd/meshing/GmshMesher.hpp"
 
 #include <exception>
 #include <iostream>
@@ -19,22 +19,28 @@ int main()
         };
 
         cfd::RawMeshData raw_mesh =
-            cfd::generate_mesh(geometry, options);
+            cfd::generate_mesh(
+                geometry,
+                options);
 
         cfd::Mesh mesh =
-            cfd::build_mesh(std::move(raw_mesh));
+            cfd::build_mesh(
+                std::move(raw_mesh));
 
         std::cout
             << "Number of nodes: "
-            << mesh.node_count() << '\n';
+            << mesh.node_count()
+            << '\n';
 
         std::cout
             << "Number of cells: "
-            << mesh.cell_count() << '\n';
+            << mesh.cell_count()
+            << '\n';
 
         std::cout
             << "Number of faces: "
-            << mesh.face_count() << '\n';
+            << mesh.face_count()
+            << '\n';
     }
     catch (const std::exception& error) {
         std::cerr
