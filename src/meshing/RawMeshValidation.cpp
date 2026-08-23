@@ -158,6 +158,10 @@ BoundaryIdSet validate_boundary_groups(const RawMeshData &raw_mesh)
 
     for (const BoundaryGroup &group : raw_mesh.boundary_groups)
     {
+        if (group.id == invalid_boundary_id)
+        {
+            throw_validation_error("boundary group \"" + group.name + "\" uses the reserved invalid boundary ID.");
+        }
         if (group.name.empty())
         {
             throw_validation_error("a boundary group has an empty name.");
