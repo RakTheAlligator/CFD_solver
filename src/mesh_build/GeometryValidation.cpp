@@ -163,17 +163,19 @@ void validate_cell_geometry(const RawMeshData &raw_mesh, const GeometryBuildData
 
     stats.total_cell_area = total_area;
 
-    stats.cell_areas = {
-        .minimum = area_stats.minimum, .maximum = area_stats.maximum, .mean = area_stats.sum / cell_count};
+    stats.cell_areas = {.minimum = area_stats.minimum,
+                        .maximum = area_stats.maximum,
+                        .mean = area_stats.sum / static_cast<double>(cell_count)};
 
-    stats.cell_sizes = {
-        .minimum = size_stats.minimum, .maximum = size_stats.maximum, .mean = size_stats.sum / cell_count};
+    stats.cell_sizes = {.minimum = size_stats.minimum,
+                        .maximum = size_stats.maximum,
+                        .mean = size_stats.sum / static_cast<double>(cell_count)};
 
     if (triangle_count > 0)
     {
         stats.triangle_quality = {.minimum = triangle_quality_stats.minimum,
                                   .maximum = triangle_quality_stats.maximum,
-                                  .mean = triangle_quality_stats.sum / triangle_count};
+                                  .mean = triangle_quality_stats.sum / static_cast<double>(triangle_count)};
 
         stats.worst_quality_cell = worst_quality_cell;
     }
@@ -249,8 +251,9 @@ void validate_face_geometry(const TopologyBuildData &topology, const GeometryBui
         update_stats(length_stats, length);
     }
 
-    stats.face_lengths = {
-        .minimum = length_stats.minimum, .maximum = length_stats.maximum, .mean = length_stats.sum / face_count};
+    stats.face_lengths = {.minimum = length_stats.minimum,
+                          .maximum = length_stats.maximum,
+                          .mean = length_stats.sum / static_cast<double>(face_count)};
 }
 
 } // namespace

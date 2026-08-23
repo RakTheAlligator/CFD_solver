@@ -35,6 +35,9 @@ class GmshSession
 
     GmshSession(const GmshSession &) = delete;
     GmshSession &operator=(const GmshSession &) = delete;
+
+    GmshSession(GmshSession &&) = delete;
+    GmshSession &operator=(GmshSession &&) = delete;
 };
 
 struct RectangleGmshTags
