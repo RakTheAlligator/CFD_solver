@@ -40,6 +40,8 @@ add_executable(
     src/meshing/GmshMesher.cpp
     src/meshing/RawMeshValidation.cpp
 
+    src/mesh_build/GeometryBuilder.cpp
+    src/mesh_build/GeometryValidation.cpp
     src/mesh_build/TopologyBuilder.cpp
     src/mesh_build/TopologyValidation.cpp
 )

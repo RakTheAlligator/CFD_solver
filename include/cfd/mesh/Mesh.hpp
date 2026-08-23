@@ -5,6 +5,7 @@
 #include "cfd/mesh/Face.hpp"
 #include "cfd/mesh/Node.hpp"
 #include "cfd/mesh/Types.hpp"
+#include "cfd/mesh/Vector2.hpp"
 
 #include <span>
 #include <vector>
@@ -87,6 +88,35 @@ public:
         return faces_.size();
     }
 
+    [[nodiscard]]
+    std::span<const double> cell_areas() const noexcept
+    {
+        return cell_areas_;
+    }
+
+    [[nodiscard]]
+    std::span<const Vector2> cell_centers() const noexcept
+    {
+        return cell_centers_;
+    }
+
+    [[nodiscard]]
+    std::span<const Vector2> face_centers() const noexcept
+    {
+        return face_centers_;
+    }
+
+    [[nodiscard]]
+    std::span<const double> face_lengths() const noexcept
+    {
+        return face_lengths_;
+    }
+
+    [[nodiscard]]
+    std::span<const Vector2> face_area_vectors() const noexcept
+    {
+        return face_area_vectors_;
+    }
 private:
     Mesh() = default;
 
@@ -104,6 +134,14 @@ private:
     std::vector<Index> cell_faces_;
     std::vector<FaceAdjacency> face_adjacencies_;
     std::vector<BoundaryId> face_boundary_ids_;
+
+    // Constructed geometry
+    std::vector<double> cell_areas_;
+    std::vector<Vector2> cell_centers_;
+
+    std::vector<Vector2> face_centers_;
+    std::vector<double> face_lengths_;
+    std::vector<Vector2> face_area_vectors_;
 
     friend Mesh build_mesh(RawMeshData&& raw_mesh);
 };
