@@ -9,7 +9,12 @@ project(
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
+
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+
+# -----------------------------------------------------------------------------
+# Gmsh
+# -----------------------------------------------------------------------------
 
 find_path(
     GMSH_INCLUDE_DIR
@@ -32,10 +37,30 @@ set_target_properties(
         INTERFACE_INCLUDE_DIRECTORIES "${GMSH_INCLUDE_DIR}"
 )
 
-add_executable(
-    CFD_solver
+# -----------------------------------------------------------------------------
+# Compiler warnings
+# -----------------------------------------------------------------------------
 
-    src/main.cpp
+function(cfd_enable_warnings target_name)
+    if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+        target_compile_options(
+            ${target_name}
+            PRIVATE
+                -Wall
+                -Wextra
+                -Wpedantic
+        )
+    endif()
+endfunction()
+
+# -----------------------------------------------------------------------------
+# CFD core library
+# -----------------------------------------------------------------------------
+
+add_library(
+    cfd_core
+    STATIC
+
     src/MeshBuilder.cpp
 
     src/meshing/GmshMesher.cpp
@@ -48,24 +73,62 @@ add_executable(
 )
 
 target_include_directories(
-    CFD_solver
-    PRIVATE
+    cfd_core
+
+    PUBLIC
         ${PROJECT_SOURCE_DIR}/include
+
+    PRIVATE
         ${PROJECT_SOURCE_DIR}/src
+)
+
+target_link_libraries(
+    cfd_core
+    PRIVATE
+        Gmsh::Gmsh
+)
+
+cfd_enable_warnings(cfd_core)
+
+# -----------------------------------------------------------------------------
+# Main executable
+# -----------------------------------------------------------------------------
+
+add_executable(
+    CFD_solver
+    src/main.cpp
 )
 
 target_link_libraries(
     CFD_solver
     PRIVATE
-        Gmsh::Gmsh
+        cfd_core
 )
 
-if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
-    target_compile_options(
-        CFD_solver
+cfd_enable_warnings(CFD_solver)
+
+# -----------------------------------------------------------------------------
+# Tests
+# -----------------------------------------------------------------------------
+
+include(CTest)
+
+if(BUILD_TESTING)
+    add_executable(
+        cfd_tests
+        tests/MeshPreprocessingTests.cpp
+    )
+
+    target_link_libraries(
+        cfd_tests
         PRIVATE
-            -Wall
-            -Wextra
-            -Wpedantic
+            cfd_core
+    )
+
+    cfd_enable_warnings(cfd_tests)
+
+    add_test(
+        NAME mesh_preprocessing
+        COMMAND cfd_tests
     )
 endif()
