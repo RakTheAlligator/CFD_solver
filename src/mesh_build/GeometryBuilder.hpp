@@ -2,16 +2,16 @@
 
 #include "mesh_build/BuildData.hpp"
 
-namespace cfd {
+namespace cfd
+{
 
 struct RawMeshData;
 
-namespace detail {
+namespace detail
+{
 
 [[nodiscard]]
-GeometryBuildData build_geometry(
-    const RawMeshData& raw_mesh,
-    const TopologyBuildData& topology);
+GeometryBuildData build_geometry(const RawMeshData &raw_mesh, const TopologyBuildData &topology);
 
 } // namespace detail
 

@@ -2,11 +2,12 @@
 
 #include "cfd/mesh/Mesh.hpp"
 
-namespace cfd {
+namespace cfd
+{
 
 struct RawMeshData;
 
 [[nodiscard]]
-Mesh build_mesh(RawMeshData&& raw_mesh);
+Mesh build_mesh(RawMeshData &&raw_mesh);
 
 } // namespace cfd

@@ -7,9 +7,11 @@
 
 #include <vector>
 
-namespace cfd::detail {
+namespace cfd::detail
+{
 
-struct TopologyBuildData {
+struct TopologyBuildData
+{
     std::vector<Face> faces;
 
     // Same compressed layout as RawMeshData::cell_nodes.
@@ -19,12 +21,14 @@ struct TopologyBuildData {
     std::vector<BoundaryId> face_boundary_ids;
 };
 
-struct TopologyStats {
+struct TopologyStats
+{
     Index internal_face_count{};
     Index boundary_face_count{};
 };
 
-struct GeometryBuildData {
+struct GeometryBuildData
+{
     std::vector<double> cell_areas;
     std::vector<Vector2> cell_centers;
 
@@ -33,13 +37,15 @@ struct GeometryBuildData {
     std::vector<Vector2> face_area_vectors;
 };
 
-struct ScalarStats {
+struct ScalarStats
+{
     double minimum{};
     double maximum{};
     double mean{};
 };
 
-struct GeometryStats {
+struct GeometryStats
+{
     ScalarStats cell_areas;
     ScalarStats cell_sizes;
     ScalarStats face_lengths;
@@ -47,6 +53,6 @@ struct GeometryStats {
     double total_cell_area{};
 
     ScalarStats triangle_quality;
-    Index worst_quality_cell{ invalid_index };
+    Index worst_quality_cell{invalid_index};
 };
 } // namespace cfd::detail

@@ -1,8 +1,10 @@
 #pragma once
 
-namespace cfd {
+namespace cfd
+{
 
-struct RectangleGeometry {
+struct RectangleGeometry
+{
     double length{};
     double height{};
 };

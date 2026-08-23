@@ -1,8 +1,10 @@
 #pragma once
 
-namespace cfd {
+namespace cfd
+{
 
-struct Node {
+struct Node
+{
     double x{};
     double y{};
 };

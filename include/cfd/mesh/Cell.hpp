@@ -2,9 +2,11 @@
 
 #include <cstdint>
 
-namespace cfd {
+namespace cfd
+{
 
-enum class CellType : std::uint8_t {
+enum class CellType : std::uint8_t
+{
     Triangle,
     Quadrilateral
 };

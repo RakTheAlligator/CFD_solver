@@ -10,12 +10,14 @@
 #include <span>
 #include <vector>
 
-namespace cfd {
+namespace cfd
+{
 
 struct RawMeshData;
 
-class Mesh {
-public:
+class Mesh
+{
+  public:
     [[nodiscard]]
     std::span<const Node> nodes() const noexcept
     {
@@ -117,7 +119,8 @@ public:
     {
         return face_area_vectors_;
     }
-private:
+
+  private:
     Mesh() = default;
 
     // Imported topology.
@@ -143,7 +146,7 @@ private:
     std::vector<double> face_lengths_;
     std::vector<Vector2> face_area_vectors_;
 
-    friend Mesh build_mesh(RawMeshData&& raw_mesh);
+    friend Mesh build_mesh(RawMeshData &&raw_mesh);
 };
 
 } // namespace cfd

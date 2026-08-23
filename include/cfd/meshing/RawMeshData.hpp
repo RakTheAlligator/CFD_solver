@@ -8,14 +8,17 @@
 #include <array>
 #include <vector>
 
-namespace cfd {
+namespace cfd
+{
 
-struct BoundaryEdge {
+struct BoundaryEdge
+{
     std::array<Index, 2> node_ids{};
     BoundaryId boundary_id{};
 };
 
-struct RawMeshData {
+struct RawMeshData
+{
     std::vector<Node> nodes;
 
     std::vector<CellType> cell_types;

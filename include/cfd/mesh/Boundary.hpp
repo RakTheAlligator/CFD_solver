@@ -4,14 +4,15 @@
 
 #include <string>
 
-namespace cfd {
+namespace cfd
+{
 
 using BoundaryId = Index;
 
-inline constexpr BoundaryId invalid_boundary_id =
-    invalid_index;
+inline constexpr BoundaryId invalid_boundary_id = invalid_index;
 
-struct BoundaryGroup {
+struct BoundaryGroup
+{
     BoundaryId id{};
     std::string name;
 };

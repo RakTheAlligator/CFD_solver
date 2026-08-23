@@ -4,13 +4,16 @@
 
 #include <array>
 
-namespace cfd {
+namespace cfd
+{
 
-struct Face {
+struct Face
+{
     std::array<Index, 2> node_ids{};
 };
 
-struct FaceAdjacency {
+struct FaceAdjacency
+{
     Index owner{invalid_index};
     Index neighbor{invalid_index};
 

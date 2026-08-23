@@ -4,17 +4,16 @@
 #include "cfd/meshing/DomainGeometry.hpp"
 #include "cfd/meshing/RawMeshData.hpp"
 
-namespace cfd {
+namespace cfd
+{
 
-struct MeshGenerationOptions {
+struct MeshGenerationOptions
+{
     double mesh_size{};
     CellType cell_type{CellType::Triangle};
 };
 
 [[nodiscard]]
-RawMeshData generate_mesh(
-    const RectangleGeometry& geometry,
-    const MeshGenerationOptions& options
-);
+RawMeshData generate_mesh(const RectangleGeometry &geometry, const MeshGenerationOptions &options);
 
 } // namespace cfd
