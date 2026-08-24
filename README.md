@@ -2,40 +2,40 @@
 
 A 2D finite-volume CFD solver written in modern C++.
 
-This project is developed as a learning project for both CFD and scientific C++.
-The current focus is on building a clean, validated and efficient mesh infrastructure
-before implementing the flow solver itself.
+This project is developed as a learning project in both CFD and scientific C++, with an emphasis on correctness, simple architecture, robust validation, contiguous data structures, automated testing, and performance-aware design.
 
-## Status
+> **Current status:** mesh preprocessing and visualization are implemented. The CFD equations are not implemented yet.
 
-The CFD equations are **not implemented yet**.
-
-The current preprocessing pipeline is:
+## Current pipeline
 
 ```text
-Gmsh
-  ↓
+Domain geometry
+      ↓
+Gmsh mesh generation
+      ↓
 RawMeshData
-  ↓
+      ↓
 Raw mesh validation
-  ↓
+      ↓
 Topology construction
-  ↓
+      ↓
 Topology validation
-  ↓
+      ↓
 Geometry construction
-  ↓
+      ↓
 Geometry validation
-  ↓
+      ↓
 Mesh
+      ↓
+VTU export
+      ↓
+ParaView
 ```
 
-The next stage is the numerical infrastructure required by the finite-volume solver:
-boundary conditions, scalar/vector fields and gradient reconstruction.
+## Implemented features
 
-## Current features
-
-- 2D rectangular domain generation with the Gmsh C++ API
+- 2D rectangular domains
+- Gmsh C++ API integration
 - triangular unstructured meshes
 - compact zero-based internal indexing
 - flattened cell connectivity
@@ -43,28 +43,88 @@ boundary conditions, scalar/vector fields and gradient reconstruction.
 - physical boundary groups
 - cell areas and centroids
 - face centers, lengths and oriented area vectors
-- mesh topology and geometry validation
-- basic mesh-quality diagnostics
-- automated positive and negative preprocessing tests
+- triangle-quality computation
+- topology and geometry validation
+- VTU export for ParaView
+- automated positive and negative tests
+- `clang-format` and `clang-tidy` integration
 
-The current triangle quality metric is:
+The current VTU export includes:
 
 ```text
-q = 4 * sqrt(3) * A / (l1² + l2² + l3²)
+cell_id
+cell_area
+cell_quality
 ```
 
-with `q = 1` for an equilateral triangle.
+which can be visualized directly in ParaView.
+
+## Reference case
+
+Current rectangular test case:
+
+```text
+Length    = 5.0 m
+Height    = 1.0 m
+Mesh size = 0.2 m
+```
+
+Typical mesh:
+
+```text
+183 nodes
+304 triangular cells
+486 faces
+├── 426 internal faces
+└── 60 boundary faces
+```
+
+Typical preprocessing diagnostics:
+
+```text
+Total area        = 5.0000 m²
+Triangle quality  ≈ 0.892 ... 1.000
+```
+
+The total cell area is also checked against an independent Shoelace reconstruction of the external boundary.
+
+## Visualization
+
+The solver writes:
+
+```text
+results/mesh.vtu
+```
+
+Open it with ParaView:
+
+```bash
+paraview results/mesh.vtu
+```
+
+Useful views:
+
+- `Surface With Edges` for the mesh
+- `cell_area` for cell-size distribution
+- `cell_quality` for mesh-quality visualization
+- `cell_id` for identifying individual cells
+
+The visualization layer is intentionally separate from the numerical core. The C++ solver only writes a standard VTU file; ParaView handles interactive rendering.
 
 ## Project structure
 
 ```text
 CFD_solver/
 ├── include/cfd/
+│   ├── io/
+│   │   └── VtkWriter.hpp
 │   ├── mesh/
 │   └── meshing/
 ├── src/
-│   ├── meshing/
+│   ├── io/
+│   │   └── VtkWriter.cpp
 │   ├── mesh_build/
+│   ├── meshing/
 │   ├── MeshBuilder.cpp
 │   └── main.cpp
 ├── tests/
@@ -75,11 +135,11 @@ CFD_solver/
 └── README.md
 ```
 
-The main CMake targets are:
+Main CMake targets:
 
-- `cfd_core`: reusable mesh/preprocessing library
-- `CFD_solver`: main executable
-- `cfd_tests`: automated preprocessing tests
+- `cfd_core` — reusable mesh/preprocessing library
+- `CFD_solver` — main executable
+- `cfd_tests` — automated tests
 
 ## Requirements
 
@@ -87,17 +147,19 @@ The main CMake targets are:
 - CMake >= 3.20
 - Gmsh development library
 
-On Ubuntu:
+Ubuntu:
 
 ```bash
 sudo apt install gmsh libgmsh-dev
 ```
 
-Optional development tools:
+Optional development/visualization tools:
 
 ```bash
-sudo apt install clang-format clang-tidy
+sudo apt install clang-format clang-tidy paraview
 ```
+
+ParaView is not linked to the solver.
 
 ## Build
 
@@ -106,88 +168,97 @@ cmake -S . -B build -DBUILD_TESTING=ON
 cmake --build build
 ```
 
-Run the current executable:
+Run:
 
 ```bash
 ./build/CFD_solver
 ```
 
-## Tests
-
-Run the automated tests with:
+Run tests:
 
 ```bash
 ctest --test-dir build --output-on-failure
 ```
 
-The current tests cover both valid and invalid meshes, including:
+## Testing
+
+Current tests include:
 
 - analytical single-triangle geometry
-- reference rectangular mesh
-- total cell area versus boundary Shoelace area
-- face orientation and geometry consistency
+- rectangular Gmsh mesh
+- cell-area sum versus boundary Shoelace area
+- face orientation consistency
 - invalid connectivity
-- duplicated nodes and boundary edges
+- duplicated cell nodes
+- duplicated boundary edges
 - open boundaries
 - zero-area cells
 - non-manifold faces
 - invalid boundary IDs
+- VTU export of a reference triangle
 
 ## Code quality
 
 The project currently uses:
 
-- `-Wall -Wextra -Wpedantic`
-- `clang-format` with the Microsoft preset
-- `clang-tidy` with selected `clang-analyzer`, `bugprone`,
-  `cppcoreguidelines` and `performance` checks
-
-The project follows the C++ Core Guidelines where they are useful for scientific
-code, without adding unnecessary abstraction to numerical data structures.
-
-## Reference case
-
-Current rectangular test case:
-
 ```text
-Length    = 5
-Height    = 1
-Mesh size = 0.2
+-Wall
+-Wextra
+-Wpedantic
+clang-format
+clang-tidy
+CTest
 ```
 
-Typical Gmsh output:
+Formatting is based on the Microsoft `clang-format` preset.
+
+Static analysis uses selected checks from:
 
 ```text
-183 nodes
-304 cells
-486 faces
+clang-analyzer-*
+bugprone-*
+cppcoreguidelines-*
+performance-*
 ```
 
-The computed total cell area and the independently reconstructed boundary area
-both equal the analytical area:
+The project follows the C++ Core Guidelines where they provide practical value for scientific code, while avoiding unnecessary abstraction in numerical data structures.
 
-```text
-A = 5
-```
+## Design principles
 
-## Roadmap
+- correctness before optimization
+- explicit ownership
+- contiguous storage for frequently traversed data
+- no unnecessary copies of large mesh arrays
+- no dynamic allocation inside future numerical loops
+- validate data early
+- keep Gmsh and visualization outside the numerical core
+- test both valid and invalid inputs
+- measure performance before optimizing
 
-1. boundary-condition representation
-2. scalar and vector fields
-3. gradient reconstruction
-4. diffusion and convection operators
-5. sparse matrix assembly
-6. linear solver
-7. momentum equations
-8. pressure correction
-9. SIMPLE coupling
-10. Poiseuille-flow validation
-11. backward-facing-step validation
-12. profiling and targeted optimization
+## Next development stage
+
+The next step is the numerical-field infrastructure required by the finite-volume solver:
+
+1. cell-centered scalar fields
+2. scalar boundary conditions
+3. vector fields
+4. gradient reconstruction
+5. diffusion and convection operators
+6. sparse matrix assembly
+7. linear-system solution
+8. momentum equations
+9. pressure correction
+10. SIMPLE pressure-velocity coupling
+
+Planned CFD validation cases:
+
+- 2D Poiseuille flow
+- backward-facing step
 
 ## Scope
 
 The solver is currently limited to 2D.
 
-Triangles are supported first. Quadrilateral support may be added later without
-changing the fundamental mesh representation.
+Triangles are supported first. Quadrilateral support may be added later without changing the fundamental mesh representation.
+
+The project does not currently target general 3D polyhedral meshes.
