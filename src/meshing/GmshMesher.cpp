@@ -26,6 +26,7 @@ class GmshSession
     GmshSession()
     {
         gmsh::initialize();
+        gmsh::option::setNumber("General.Terminal", 0);
     }
 
     ~GmshSession()

@@ -9,11 +9,26 @@
 #include "mesh_build/TopologyValidation.hpp"
 
 #include <chrono>
+#include <iomanip>
 #include <iostream>
+#include <string_view>
 #include <utility>
 
 namespace cfd
 {
+
+namespace
+{
+
+void print_statistics_row(const std::string_view quantity, const std::string_view unit,
+                          const detail::ScalarStats &statistics)
+{
+    std::cout << "  " << std::left << std::setw(22) << quantity << std::setw(8) << unit << std::right
+              << std::defaultfloat << std::setprecision(5) << std::setw(12) << statistics.minimum << std::setw(12)
+              << statistics.mean << std::setw(12) << statistics.maximum << '\n';
+}
+
+} // namespace
 
 Mesh build_mesh(RawMeshData &&raw_mesh)
 {
@@ -26,16 +41,17 @@ Mesh build_mesh(RawMeshData &&raw_mesh)
     const auto topology_start{std::chrono::steady_clock::now()};
 
     auto topology{detail::build_topology(raw_mesh)};
-
     const detail::TopologyStats topology_stats{detail::validate_topology(raw_mesh, topology)};
 
     const auto topology_end{std::chrono::steady_clock::now()};
 
     const auto topology_elapsed{std::chrono::duration<double, std::milli>(topology_end - topology_start)};
 
-    std::cout << "[CFD] Topology: " << topology.faces.size() << " faces (" << topology_stats.internal_face_count
-              << " internal, " << topology_stats.boundary_face_count << " boundary) [" << topology_elapsed.count()
-              << " ms]\n";
+    std::cout << "\n[Mesh topology]\n"
+              << "  Faces             : " << topology.faces.size() << '\n'
+              << "    Internal         : " << topology_stats.internal_face_count << '\n'
+              << "    Boundary         : " << topology_stats.boundary_face_count << '\n'
+              << std::fixed << std::setprecision(2) << "  Time              : " << topology_elapsed.count() << " ms\n";
 
     // -------------------------------------------------------------------------
     // Geometry
@@ -44,32 +60,31 @@ Mesh build_mesh(RawMeshData &&raw_mesh)
     const auto geometry_start{std::chrono::steady_clock::now()};
 
     auto geometry{detail::build_geometry(raw_mesh, topology)};
-
     const detail::GeometryStats geometry_stats{detail::validate_geometry(raw_mesh, topology, geometry)};
 
     const auto geometry_end{std::chrono::steady_clock::now()};
 
     const auto geometry_elapsed{std::chrono::duration<double, std::milli>(geometry_end - geometry_start)};
 
-    std::cout << "[CFD] Geometry: total area=" << geometry_stats.total_cell_area << " [" << geometry_elapsed.count()
-              << " ms]\n";
+    std::cout << "\n[Mesh geometry]\n"
+              << std::fixed << std::setprecision(4) << "  Total area        : " << geometry_stats.total_cell_area
+              << " m^2\n"
+              << std::setprecision(2) << "  Time              : " << geometry_elapsed.count() << " ms\n";
 
-    std::cout << "      Cell area:   min=" << geometry_stats.cell_areas.minimum
-              << ", mean=" << geometry_stats.cell_areas.mean << ", max=" << geometry_stats.cell_areas.maximum << '\n';
+    std::cout << "\n  " << std::left << std::setw(22) << "Quantity" << std::setw(8) << "Unit" << std::right
+              << std::setw(12) << "min" << std::setw(12) << "mean" << std::setw(12) << "max" << '\n';
 
-    std::cout << "      Cell size:   min=" << geometry_stats.cell_sizes.minimum
-              << ", mean=" << geometry_stats.cell_sizes.mean << ", max=" << geometry_stats.cell_sizes.maximum << '\n';
+    std::cout << "  ------------------------------------------------------------------\n";
 
-    std::cout << "      Face length: min=" << geometry_stats.face_lengths.minimum
-              << ", mean=" << geometry_stats.face_lengths.mean << ", max=" << geometry_stats.face_lengths.maximum
-              << '\n';
+    print_statistics_row("Cell area", "m^2", geometry_stats.cell_areas);
+    print_statistics_row("Cell size", "m", geometry_stats.cell_sizes);
+    print_statistics_row("Face length", "m", geometry_stats.face_lengths);
 
     if (geometry_stats.worst_quality_cell != invalid_index)
     {
-        std::cout << "      Triangle q:  min=" << geometry_stats.triangle_quality.minimum
-                  << ", mean=" << geometry_stats.triangle_quality.mean
-                  << ", max=" << geometry_stats.triangle_quality.maximum
-                  << ", worst cell=" << geometry_stats.worst_quality_cell << '\n';
+        print_statistics_row("Triangle quality", "-", geometry_stats.triangle_quality);
+
+        std::cout << "\n  Worst triangle    : cell " << geometry_stats.worst_quality_cell << '\n';
     }
 
     // -------------------------------------------------------------------------
@@ -95,10 +110,10 @@ Mesh build_mesh(RawMeshData &&raw_mesh)
     // Geometry
     mesh.cell_areas_ = std::move(geometry.cell_areas);
     mesh.cell_centers_ = std::move(geometry.cell_centers);
-
     mesh.face_centers_ = std::move(geometry.face_centers);
     mesh.face_lengths_ = std::move(geometry.face_lengths);
     mesh.face_area_vectors_ = std::move(geometry.face_area_vectors);
+
     return mesh;
 }
 
