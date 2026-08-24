@@ -119,7 +119,11 @@ class Mesh
     {
         return face_area_vectors_;
     }
-
+    [[nodiscard]]
+    std::span<const double> cell_qualities() const noexcept
+    {
+        return cell_qualities_;
+    }
   private:
     Mesh() = default;
 
@@ -141,6 +145,7 @@ class Mesh
     // Constructed geometry
     std::vector<double> cell_areas_;
     std::vector<Vector2> cell_centers_;
+    std::vector<double> cell_qualities_;
 
     std::vector<Vector2> face_centers_;
     std::vector<double> face_lengths_;

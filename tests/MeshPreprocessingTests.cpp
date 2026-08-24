@@ -1,3 +1,4 @@
+#include "cfd/io/VtkWriter.hpp"
 #include "cfd/mesh/MeshBuilder.hpp"
 #include "cfd/meshing/GmshMesher.hpp"
 #include "cfd/meshing/RawMeshData.hpp"
@@ -7,8 +8,11 @@
 #include <array>
 #include <cmath>
 #include <cstdint>
+#include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <numeric>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -43,7 +47,34 @@ void require_near(const double actual, const double expected, const double toler
         fail(message + " (actual=" + std::to_string(actual) + ", expected=" + std::to_string(expected) + ")");
     }
 }
+void require_contains(const std::string &text, const std::string_view expected, const std::string &message)
+{
+    if (text.find(expected) == std::string::npos)
+    {
+        fail(message);
+    }
+}
 
+[[nodiscard]]
+std::string read_text_file(const std::filesystem::path &file_path)
+{
+    std::ifstream input{file_path};
+
+    if (!input)
+    {
+        fail("Unable to open test output file: " + file_path.string());
+    }
+
+    std::ostringstream buffer;
+    buffer << input.rdbuf();
+
+    if (!input.eof() && input.fail())
+    {
+        fail("Error while reading test output file: " + file_path.string());
+    }
+
+    return buffer.str();
+}
 template <typename Exception = std::exception, typename Function>
 void require_throws(Function &&function, const std::string &message)
 {
@@ -235,6 +266,7 @@ void check_mesh_geometry_invariants(const cfd::Mesh &mesh)
     require(mesh.face_lengths().size() == mesh.face_count(), "Face-length storage size is inconsistent.");
     require(mesh.face_centers().size() == mesh.face_count(), "Face-center storage size is inconsistent.");
     require(mesh.face_area_vectors().size() == mesh.face_count(), "Face-area-vector storage size is inconsistent.");
+    require(mesh.cell_qualities().size() == mesh.cell_count(), "Cell-quality storage size is inconsistent.");
 
     for (cfd::Index face_id = 0; face_id < mesh.face_count(); ++face_id)
     {
@@ -263,6 +295,19 @@ void check_mesh_geometry_invariants(const cfd::Mesh &mesh)
 
             require(owner_to_neighbor_orientation > 0.0,
                     "Internal face orientation is inconsistent with owner and neighbor cells.");
+        }
+    }
+    for (cfd::Index cell_id = 0; cell_id < mesh.cell_count(); ++cell_id)
+    {
+        if (mesh.cell_types()[cell_id] == cfd::CellType::Triangle)
+        {
+            const double quality{mesh.cell_qualities()[cell_id]};
+
+            require(std::isfinite(quality), "Triangle quality is not finite.");
+
+            require(quality > 0.0, "Triangle quality is not positive.");
+
+            require(quality <= 1.0 + test_tolerance, "Triangle quality is greater than 1.");
         }
     }
 }
@@ -374,8 +419,48 @@ void test_single_triangle()
                  "Single-triangle boundary area and cell-area sum differ.");
 
     check_mesh_geometry_invariants(mesh);
-}
 
+    const double expected_quality{std::sqrt(3.0) / 2.0};
+
+    require_near(mesh.cell_qualities()[0], expected_quality, test_tolerance, "Single-triangle quality is incorrect.");
+}
+void test_single_triangle_vtu_export()
+{
+    cfd::RawMeshData raw_mesh{make_single_triangle_raw_mesh()};
+    cfd::Mesh mesh{cfd::build_mesh(std::move(raw_mesh))};
+
+    const std::filesystem::path file_path{std::filesystem::temp_directory_path() / "cfd_single_triangle_test.vtu"};
+
+    std::filesystem::remove(file_path);
+
+    cfd::write_vtu(mesh, file_path);
+
+    require(std::filesystem::exists(file_path), "VTU writer did not create the output file.");
+
+    require(std::filesystem::file_size(file_path) > 0, "VTU writer created an empty output file.");
+
+    const std::string file_content{read_text_file(file_path)};
+
+    require_contains(file_content, "<VTKFile type=\"UnstructuredGrid\"",
+                     "VTU output does not declare an UnstructuredGrid.");
+
+    require_contains(file_content, "<Piece NumberOfPoints=\"3\" NumberOfCells=\"1\">",
+                     "VTU output contains incorrect mesh dimensions.");
+
+    require_contains(file_content, "Name=\"connectivity\"", "VTU output does not contain cell connectivity.");
+
+    require_contains(file_content, "Name=\"offsets\"", "VTU output does not contain cell offsets.");
+
+    require_contains(file_content, "Name=\"types\"", "VTU output does not contain VTK cell types.");
+
+    require_contains(file_content, "Name=\"cell_id\"", "VTU output does not contain cell IDs.");
+
+    require_contains(file_content, "Name=\"cell_area\"", "VTU output does not contain cell areas.");
+
+    require_contains(file_content, "Name=\"cell_quality\"", "VTU output does not contain cell qualities.");
+
+    std::filesystem::remove(file_path);
+}
 void test_reference_rectangle()
 {
     const cfd::RectangleGeometry geometry{
@@ -548,6 +633,7 @@ int main()
     int failure_count{};
 
     failure_count += run_test("single triangle geometry", test_single_triangle);
+    failure_count += run_test("single triangle VTU export", test_single_triangle_vtu_export);
     failure_count += run_test("reference rectangle preprocessing", test_reference_rectangle);
 
     failure_count += run_test("reject inconsistent cell offsets", test_rejects_inconsistent_cell_offsets);

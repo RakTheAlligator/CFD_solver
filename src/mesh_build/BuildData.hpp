@@ -31,6 +31,7 @@ struct GeometryBuildData
 {
     std::vector<double> cell_areas;
     std::vector<Vector2> cell_centers;
+    std::vector<double> cell_qualities;
 
     std::vector<Vector2> face_centers;
     std::vector<double> face_lengths;

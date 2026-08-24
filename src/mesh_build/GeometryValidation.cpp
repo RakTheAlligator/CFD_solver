@@ -1,7 +1,6 @@
 #include "mesh_build/GeometryValidation.hpp"
 
 #include "cfd/mesh/Cell.hpp"
-#include "cfd/mesh/Node.hpp"
 #include "cfd/mesh/Types.hpp"
 
 #include "cfd/meshing/RawMeshData.hpp"
@@ -75,6 +74,11 @@ void validate_geometry_storage(const RawMeshData &raw_mesh, const TopologyBuildD
     {
         throw_geometry_validation_error("face area vectors size mismatch.");
     }
+
+    if (geometry.cell_qualities.size() != raw_mesh.cell_types.size())
+    {
+        throw_geometry_validation_error("cell qualities size mismatch.");
+    }
 }
 
 void validate_cell_geometry(const RawMeshData &raw_mesh, const GeometryBuildData &geometry, GeometryStats &stats)
@@ -119,34 +123,20 @@ void validate_cell_geometry(const RawMeshData &raw_mesh, const GeometryBuildData
 
         if (raw_mesh.cell_types[cell_id] == CellType::Triangle)
         {
-            const Index begin{raw_mesh.cell_node_offsets[cell_id]};
-
-            const Node &node_0{raw_mesh.nodes[raw_mesh.cell_nodes[begin]]};
-            const Node &node_1{raw_mesh.nodes[raw_mesh.cell_nodes[begin + 1]]};
-            const Node &node_2{raw_mesh.nodes[raw_mesh.cell_nodes[begin + 2]]};
-
-            const double dx_01{node_1.x - node_0.x};
-            const double dy_01{node_1.y - node_0.y};
-
-            const double dx_12{node_2.x - node_1.x};
-            const double dy_12{node_2.y - node_1.y};
-
-            const double dx_20{node_0.x - node_2.x};
-            const double dy_20{node_0.y - node_2.y};
-
-            const double squared_length_sum{dx_01 * dx_01 + dy_01 * dy_01 + dx_12 * dx_12 + dy_12 * dy_12 +
-                                            dx_20 * dx_20 + dy_20 * dy_20};
-
-            if (!std::isfinite(squared_length_sum) || !(squared_length_sum > 0.0))
-            {
-                throw_geometry_validation_error("cell " + std::to_string(cell_id) + " has invalid edge lengths.");
-            }
-
-            const double quality{4.0 * std::sqrt(3.0) * area / squared_length_sum};
+            const double quality{geometry.cell_qualities[cell_id]};
 
             if (!std::isfinite(quality) || !(quality > 0.0))
             {
-                throw_geometry_validation_error("cell " + std::to_string(cell_id) + " has invalid triangle quality.");
+                throw_geometry_validation_error(
+                    "cell " + std::to_string(cell_id) +
+                    " has invalid triangle quality.");
+            }
+
+            if (quality > 1.0 && !nearly_equal(quality, 1.0))
+            {
+                throw_geometry_validation_error(
+                    "cell " + std::to_string(cell_id) +
+                    " has triangle quality greater than 1.");
             }
 
             ++triangle_count;
@@ -160,7 +150,6 @@ void validate_cell_geometry(const RawMeshData &raw_mesh, const GeometryBuildData
             }
         }
     }
-
     stats.total_cell_area = total_area;
 
     stats.cell_areas = {.minimum = area_stats.minimum,

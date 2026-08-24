@@ -110,6 +110,7 @@ Mesh build_mesh(RawMeshData &&raw_mesh)
     // Geometry
     mesh.cell_areas_ = std::move(geometry.cell_areas);
     mesh.cell_centers_ = std::move(geometry.cell_centers);
+    mesh.cell_qualities_ = std::move(geometry.cell_qualities);
     mesh.face_centers_ = std::move(geometry.face_centers);
     mesh.face_lengths_ = std::move(geometry.face_lengths);
     mesh.face_area_vectors_ = std::move(geometry.face_area_vectors);

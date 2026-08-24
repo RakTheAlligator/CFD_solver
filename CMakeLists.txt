@@ -61,6 +61,8 @@ add_library(
     cfd_core
     STATIC
 
+    src/io/VtkWriter.cpp
+
     src/MeshBuilder.cpp
 
     src/meshing/GmshMesher.cpp
