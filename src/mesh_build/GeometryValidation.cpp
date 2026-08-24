@@ -10,6 +10,8 @@
 #include <limits>
 #include <stdexcept>
 #include <string>
+#include <iomanip>
+#include <sstream>
 
 namespace cfd::detail
 {
@@ -134,9 +136,15 @@ void validate_cell_geometry(const RawMeshData &raw_mesh, const GeometryBuildData
 
             if (quality > 1.0 && !nearly_equal(quality, 1.0))
             {
-                throw_geometry_validation_error(
-                    "cell " + std::to_string(cell_id) +
-                    " has triangle quality greater than 1.");
+                std::ostringstream message;
+
+                message << std::setprecision(17)
+                        << "cell " << cell_id
+                        << " has triangle quality greater than 1: q = "
+                        << quality
+                        << ", excess = " << quality - 1.0;
+
+                throw_geometry_validation_error(message.str());
             }
 
             ++triangle_count;
