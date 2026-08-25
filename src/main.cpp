@@ -5,11 +5,11 @@
 
 #include <chrono>
 #include <exception>
+#include <filesystem>
 #include <iomanip>
 #include <iostream>
 #include <string_view>
 #include <utility>
-#include <filesystem>
 
 namespace
 {
@@ -81,15 +81,15 @@ int main()
         cfd::write_vtu(mesh, mesh_output_file);
 
         std::cout << "\n[Summary]\n"
-                << "  Mesh              : " << mesh.node_count() << " nodes | " << mesh.cell_count() << " cells | "
-                << mesh.face_count() << " faces\n";
+                  << "  Mesh              : " << mesh.node_count() << " nodes | " << mesh.cell_count() << " cells | "
+                  << mesh.face_count() << " faces\n";
 
         std::cout << "\n[Output]\n"
-                << "  Mesh              : " << mesh_output_file.string() << '\n';
+                  << "  Mesh              : " << mesh_output_file.string() << '\n';
 
         std::cout << "\n============================================================\n"
-                << " Mesh preprocessing complete\n"
-                << "============================================================\n";
+                  << " Mesh preprocessing complete\n"
+                  << "============================================================\n";
     }
     catch (const std::exception &error)
     {
