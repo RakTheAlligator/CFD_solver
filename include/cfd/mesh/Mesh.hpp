@@ -18,6 +18,14 @@ struct RawMeshData;
 class Mesh
 {
   public:
+    Mesh(const Mesh &) = delete;
+    Mesh &operator=(const Mesh &) = delete;
+
+    Mesh(Mesh &&) noexcept = default;
+    Mesh &operator=(Mesh &&) noexcept = default;
+
+    ~Mesh() = default;
+
     [[nodiscard]]
     std::span<const Node> nodes() const noexcept
     {
@@ -124,6 +132,7 @@ class Mesh
     {
         return cell_qualities_;
     }
+
   private:
     Mesh() = default;
 

@@ -116,21 +116,47 @@ cfd_enable_warnings(CFD_solver)
 include(CTest)
 
 if(BUILD_TESTING)
-    add_executable(
-        cfd_tests
-        tests/MeshPreprocessingTests.cpp
+    function(cfd_add_test target_name test_name source_file)
+        add_executable(
+            ${target_name}
+            ${source_file}
+        )
+
+        target_include_directories(
+            ${target_name}
+            PRIVATE
+                ${PROJECT_SOURCE_DIR}/tests
+        )
+
+        target_link_libraries(
+            ${target_name}
+            PRIVATE
+                cfd_core
+        )
+
+        cfd_enable_warnings(${target_name})
+
+        add_test(
+            NAME ${test_name}
+            COMMAND ${target_name}
+        )
+    endfunction()
+
+    cfd_add_test(
+        cfd_mesh_geometry_tests
+        mesh_geometry
+        tests/MeshGeometryTests.cpp
     )
 
-    target_link_libraries(
-        cfd_tests
-        PRIVATE
-            cfd_core
+    cfd_add_test(
+        cfd_mesh_validation_tests
+        mesh_validation
+        tests/MeshValidationTests.cpp
     )
 
-    cfd_enable_warnings(cfd_tests)
-
-    add_test(
-        NAME mesh_preprocessing
-        COMMAND cfd_tests
+    cfd_add_test(
+        cfd_vtk_writer_tests
+        vtk_writer
+        tests/VtkWriterTests.cpp
     )
 endif()

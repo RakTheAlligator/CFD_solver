@@ -1,98 +1,33 @@
-#include "cfd/io/VtkWriter.hpp"
+#include "cfd/mesh/Mesh.hpp"
 #include "cfd/mesh/MeshBuilder.hpp"
 #include "cfd/meshing/GmshMesher.hpp"
 #include "cfd/meshing/RawMeshData.hpp"
-#include "cfd/meshing/RawMeshValidation.hpp"
 
-#include <algorithm>
+#include "support/MeshFixtures.hpp"
+#include "support/TestUtils.hpp"
+
 #include <array>
 #include <cmath>
 #include <cstdint>
-#include <filesystem>
-#include <fstream>
-#include <iostream>
 #include <numeric>
-#include <sstream>
-#include <stdexcept>
-#include <string>
-#include <string_view>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
 namespace
 {
 
-constexpr double test_tolerance{1.0e-12};
+using cfd::test::fail;
+using cfd::test::make_single_triangle_raw_mesh;
+using cfd::test::require;
+using cfd::test::require_near;
+using cfd::test::test_tolerance;
 
-[[noreturn]]
-void fail(const std::string &message)
-{
-    throw std::runtime_error(message);
-}
+static_assert(!std::is_copy_constructible_v<cfd::Mesh>);
+static_assert(!std::is_copy_assignable_v<cfd::Mesh>);
 
-void require(const bool condition, const std::string &message)
-{
-    if (!condition)
-    {
-        fail(message);
-    }
-}
-
-void require_near(const double actual, const double expected, const double tolerance, const std::string &message)
-{
-    const double scale{std::max({1.0, std::abs(actual), std::abs(expected)})};
-
-    if (std::abs(actual - expected) > tolerance * scale)
-    {
-        fail(message + " (actual=" + std::to_string(actual) + ", expected=" + std::to_string(expected) + ")");
-    }
-}
-void require_contains(const std::string &text, const std::string_view expected, const std::string &message)
-{
-    if (text.find(expected) == std::string::npos)
-    {
-        fail(message);
-    }
-}
-
-[[nodiscard]]
-std::string read_text_file(const std::filesystem::path &file_path)
-{
-    std::ifstream input{file_path};
-
-    if (!input)
-    {
-        fail("Unable to open test output file: " + file_path.string());
-    }
-
-    std::ostringstream buffer;
-    buffer << input.rdbuf();
-
-    if (!input.eof() && input.fail())
-    {
-        fail("Error while reading test output file: " + file_path.string());
-    }
-
-    return buffer.str();
-}
-template <typename Exception = std::exception, typename Function>
-void require_throws(Function &&function, const std::string &message)
-{
-    try
-    {
-        std::forward<Function>(function)();
-    }
-    catch (const Exception &)
-    {
-        return;
-    }
-    catch (...)
-    {
-        fail(message + " (unexpected exception type).");
-    }
-
-    fail(message + " (no exception was thrown).");
-}
+static_assert(std::is_nothrow_move_constructible_v<cfd::Mesh>);
+static_assert(std::is_nothrow_move_assignable_v<cfd::Mesh>);
 
 double compute_single_closed_boundary_area(const cfd::RawMeshData &raw_mesh)
 {
@@ -312,85 +247,6 @@ void check_mesh_geometry_invariants(const cfd::Mesh &mesh)
     }
 }
 
-cfd::RawMeshData make_single_triangle_raw_mesh()
-{
-    constexpr cfd::BoundaryId boundary_id{0};
-
-    cfd::RawMeshData raw_mesh;
-
-    raw_mesh.nodes = {
-        {0.0, 0.0},
-        {1.0, 0.0},
-        {0.0, 1.0},
-    };
-
-    raw_mesh.cell_types = {
-        cfd::CellType::Triangle,
-    };
-
-    raw_mesh.cell_nodes = {
-        0,
-        1,
-        2,
-    };
-
-    raw_mesh.cell_node_offsets = {
-        0,
-        3,
-    };
-
-    raw_mesh.boundary_groups = {
-        {boundary_id, "wall"},
-    };
-
-    raw_mesh.boundary_edges = {
-        {{0, 1}, boundary_id},
-        {{1, 2}, boundary_id},
-        {{2, 0}, boundary_id},
-    };
-
-    return raw_mesh;
-}
-
-cfd::RawMeshData make_non_manifold_raw_mesh()
-{
-    constexpr cfd::BoundaryId boundary_id{0};
-
-    cfd::RawMeshData raw_mesh;
-
-    raw_mesh.nodes = {
-        {0.0, 0.0}, {1.0, 0.0}, {0.5, 1.0}, {0.5, -1.0}, {0.5, 2.0},
-    };
-
-    raw_mesh.cell_types = {
-        cfd::CellType::Triangle,
-        cfd::CellType::Triangle,
-        cfd::CellType::Triangle,
-    };
-
-    raw_mesh.cell_nodes = {
-        0, 1, 2, 1, 0, 3, 0, 1, 4,
-    };
-
-    raw_mesh.cell_node_offsets = {
-        0,
-        3,
-        6,
-        9,
-    };
-
-    raw_mesh.boundary_groups = {
-        {boundary_id, "wall"},
-    };
-
-    raw_mesh.boundary_edges = {
-        {{1, 2}, boundary_id}, {{2, 0}, boundary_id}, {{0, 3}, boundary_id},
-        {{3, 1}, boundary_id}, {{1, 4}, boundary_id}, {{4, 0}, boundary_id},
-    };
-
-    return raw_mesh;
-}
-
 void test_single_triangle()
 {
     cfd::RawMeshData raw_mesh{make_single_triangle_raw_mesh()};
@@ -424,42 +280,34 @@ void test_single_triangle()
 
     require_near(mesh.cell_qualities()[0], expected_quality, test_tolerance, "Single-triangle quality is incorrect.");
 }
-void test_single_triangle_vtu_export()
+void test_small_translated_equilateral_triangle()
 {
-    cfd::RawMeshData raw_mesh{make_single_triangle_raw_mesh()};
+    constexpr double origin_x{5.0};
+    constexpr double origin_y{1.0};
+    constexpr double side{0.01};
+
+    const double height{std::sqrt(3.0) * side / 2.0};
+    const double expected_area{std::sqrt(3.0) * side * side / 4.0};
+
+    const double expected_centroid_x{origin_x + side / 2.0};
+    const double expected_centroid_y{origin_y + height / 3.0};
+
+    cfd::RawMeshData raw_mesh{cfd::test::make_equilateral_triangle_raw_mesh(origin_x, origin_y, side)};
+
     cfd::Mesh mesh{cfd::build_mesh(std::move(raw_mesh))};
 
-    const std::filesystem::path file_path{std::filesystem::temp_directory_path() / "cfd_single_triangle_test.vtu"};
+    require_near(mesh.cell_areas()[0], expected_area, test_tolerance, "Translated small triangle area is incorrect.");
 
-    std::filesystem::remove(file_path);
+    require_near(mesh.cell_centers()[0].x, expected_centroid_x, test_tolerance,
+                 "Translated small triangle centroid x-coordinate is incorrect.");
 
-    cfd::write_vtu(mesh, file_path);
+    require_near(mesh.cell_centers()[0].y, expected_centroid_y, test_tolerance,
+                 "Translated small triangle centroid y-coordinate is incorrect.");
 
-    require(std::filesystem::exists(file_path), "VTU writer did not create the output file.");
+    require_near(mesh.cell_qualities()[0], 1.0, test_tolerance,
+                 "Translated small equilateral triangle quality is incorrect.");
 
-    require(std::filesystem::file_size(file_path) > 0, "VTU writer created an empty output file.");
-
-    const std::string file_content{read_text_file(file_path)};
-
-    require_contains(file_content, "<VTKFile type=\"UnstructuredGrid\"",
-                     "VTU output does not declare an UnstructuredGrid.");
-
-    require_contains(file_content, "<Piece NumberOfPoints=\"3\" NumberOfCells=\"1\">",
-                     "VTU output contains incorrect mesh dimensions.");
-
-    require_contains(file_content, "Name=\"connectivity\"", "VTU output does not contain cell connectivity.");
-
-    require_contains(file_content, "Name=\"offsets\"", "VTU output does not contain cell offsets.");
-
-    require_contains(file_content, "Name=\"types\"", "VTU output does not contain VTK cell types.");
-
-    require_contains(file_content, "Name=\"cell_id\"", "VTU output does not contain cell IDs.");
-
-    require_contains(file_content, "Name=\"cell_area\"", "VTU output does not contain cell areas.");
-
-    require_contains(file_content, "Name=\"cell_quality\"", "VTU output does not contain cell qualities.");
-
-    std::filesystem::remove(file_path);
+    check_mesh_geometry_invariants(mesh);
 }
 void test_reference_rectangle()
 {
@@ -510,120 +358,10 @@ void test_reference_rectangle()
     require(boundary_face_count == boundary_edge_count,
             "Constructed boundary-face count does not match imported boundary-edge count.");
 
-    require(mesh.cell_nodes().size() == 2 * internal_face_count + boundary_face_count,
+    require(mesh.cell_faces().size() == 2 * internal_face_count + boundary_face_count,
             "Global face-incidence relation is not satisfied.");
 
     check_mesh_geometry_invariants(mesh);
-}
-
-void test_rejects_inconsistent_cell_offsets()
-{
-    cfd::RawMeshData raw_mesh{make_single_triangle_raw_mesh()};
-
-    raw_mesh.cell_node_offsets.back() = 2;
-
-    require_throws<std::runtime_error>([&raw_mesh]() { cfd::validate_raw_mesh(raw_mesh); },
-                                       "Raw mesh validation accepted inconsistent cell offsets.");
-}
-
-void test_rejects_duplicate_node_in_cell()
-{
-    cfd::RawMeshData raw_mesh{make_single_triangle_raw_mesh()};
-
-    raw_mesh.cell_nodes[2] = raw_mesh.cell_nodes[1];
-
-    require_throws<std::runtime_error>([&raw_mesh]() { cfd::validate_raw_mesh(raw_mesh); },
-                                       "Raw mesh validation accepted a duplicated node inside a cell.");
-}
-
-void test_rejects_invalid_node_index()
-{
-    cfd::RawMeshData raw_mesh{make_single_triangle_raw_mesh()};
-
-    raw_mesh.cell_nodes[2] = raw_mesh.nodes.size();
-
-    require_throws<std::runtime_error>([&raw_mesh]() { cfd::validate_raw_mesh(raw_mesh); },
-                                       "Raw mesh validation accepted an out-of-range node index.");
-}
-
-void test_rejects_duplicate_boundary_edge()
-{
-    cfd::RawMeshData raw_mesh{make_single_triangle_raw_mesh()};
-
-    raw_mesh.boundary_edges.push_back({
-        {1, 0},
-        raw_mesh.boundary_groups[0].id,
-    });
-
-    require_throws<std::runtime_error>([&raw_mesh]() { cfd::validate_raw_mesh(raw_mesh); },
-                                       "Raw mesh validation accepted a duplicated boundary edge.");
-}
-
-void test_rejects_open_boundary()
-{
-    cfd::RawMeshData raw_mesh{make_single_triangle_raw_mesh()};
-
-    raw_mesh.boundary_edges.pop_back();
-
-    require_throws<std::runtime_error>(
-        [&raw_mesh]() { static_cast<void>(compute_single_closed_boundary_area(raw_mesh)); },
-        "Boundary-area reconstruction accepted an open contour.");
-
-    require_throws<std::runtime_error>([&raw_mesh]() { static_cast<void>(cfd::build_mesh(std::move(raw_mesh))); },
-                                       "Mesh construction accepted an incomplete physical boundary.");
-}
-
-void test_rejects_zero_area_triangle()
-{
-    cfd::RawMeshData raw_mesh{make_single_triangle_raw_mesh()};
-
-    raw_mesh.nodes[0] = {0.0, 0.0};
-    raw_mesh.nodes[1] = {1.0, 0.0};
-    raw_mesh.nodes[2] = {2.0, 0.0};
-
-    cfd::validate_raw_mesh(raw_mesh);
-
-    require_throws<std::runtime_error>([&raw_mesh]() { static_cast<void>(cfd::build_mesh(std::move(raw_mesh))); },
-                                       "Mesh construction accepted a zero-area triangle.");
-}
-
-void test_rejects_non_manifold_face()
-{
-    cfd::RawMeshData raw_mesh{make_non_manifold_raw_mesh()};
-
-    cfd::validate_raw_mesh(raw_mesh);
-
-    require_throws<std::runtime_error>([&raw_mesh]() { static_cast<void>(cfd::build_mesh(std::move(raw_mesh))); },
-                                       "Mesh construction accepted a face shared by more than two cells.");
-}
-void test_rejects_invalid_boundary_group_id()
-{
-    cfd::RawMeshData raw_mesh{make_single_triangle_raw_mesh()};
-
-    raw_mesh.boundary_groups[0].id = cfd::invalid_boundary_id;
-
-    for (cfd::BoundaryEdge &edge : raw_mesh.boundary_edges)
-    {
-        edge.boundary_id = cfd::invalid_boundary_id;
-    }
-
-    require_throws<std::runtime_error>([&raw_mesh]() { cfd::validate_raw_mesh(raw_mesh); },
-                                       "Raw mesh validation accepted invalid_boundary_id as a physical boundary ID.");
-}
-
-template <typename TestFunction> int run_test(const std::string_view name, TestFunction test_function)
-{
-    try
-    {
-        test_function();
-        std::cout << "[PASS] " << name << '\n';
-        return 0;
-    }
-    catch (const std::exception &error)
-    {
-        std::cerr << "[FAIL] " << name << ": " << error.what() << '\n';
-        return 1;
-    }
 }
 
 } // namespace
@@ -632,25 +370,12 @@ int main()
 {
     int failure_count{};
 
-    failure_count += run_test("single triangle geometry", test_single_triangle);
-    failure_count += run_test("single triangle VTU export", test_single_triangle_vtu_export);
-    failure_count += run_test("reference rectangle preprocessing", test_reference_rectangle);
+    failure_count += cfd::test::run_test("single triangle geometry", test_single_triangle);
 
-    failure_count += run_test("reject inconsistent cell offsets", test_rejects_inconsistent_cell_offsets);
-    failure_count += run_test("reject duplicate node in cell", test_rejects_duplicate_node_in_cell);
-    failure_count += run_test("reject invalid node index", test_rejects_invalid_node_index);
-    failure_count += run_test("reject duplicate boundary edge", test_rejects_duplicate_boundary_edge);
-    failure_count += run_test("reject open boundary", test_rejects_open_boundary);
-    failure_count += run_test("reject zero-area triangle", test_rejects_zero_area_triangle);
-    failure_count += run_test("reject non-manifold face", test_rejects_non_manifold_face);
-    failure_count += run_test("reject invalid boundary group ID", test_rejects_invalid_boundary_group_id);
+    failure_count +=
+        cfd::test::run_test("small translated equilateral triangle", test_small_translated_equilateral_triangle);
 
-    if (failure_count == 0)
-    {
-        std::cout << "[PASS] All mesh preprocessing tests passed.\n";
-        return 0;
-    }
+    failure_count += cfd::test::run_test("reference rectangle preprocessing", test_reference_rectangle);
 
-    std::cerr << "[FAIL] " << failure_count << " mesh preprocessing test(s) failed.\n";
-    return 1;
+    return cfd::test::finish_tests(failure_count, "mesh geometry");
 }
