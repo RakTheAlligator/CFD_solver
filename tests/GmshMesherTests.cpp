@@ -5,6 +5,7 @@
 
 #include "support/TestUtils.hpp"
 
+#include <cmath>
 #include <limits>
 #include <stdexcept>
 #include <string>
@@ -193,6 +194,101 @@ void test_generates_quadrilateral_rectangle()
     }
 }
 
+void test_builds_quadrilateral_rectangle_end_to_end()
+{
+    constexpr double length{5.0};
+    constexpr double height{1.0};
+    constexpr double mesh_size{0.2};
+    constexpr double tolerance{1.0e-10};
+
+    const cfd::RectangleGeometry geometry{
+        .length = length,
+        .height = height,
+    };
+
+    const cfd::MeshGenerationOptions options{
+        .mesh_size = mesh_size,
+        .cell_type = cfd::CellType::Quadrilateral,
+    };
+
+    cfd::RawMeshData raw_mesh{cfd::generate_mesh(geometry, options)};
+
+    cfd::MeshBuildResult build_result{cfd::build_mesh(std::move(raw_mesh))};
+
+    const cfd::Mesh &mesh{build_result.mesh};
+
+    require(mesh.node_count() > 0, "Quadrilateral end-to-end mesh contains no nodes.");
+
+    require(mesh.cell_count() > 0, "Quadrilateral end-to-end mesh contains no cells.");
+
+    require(mesh.face_count() > 0, "Quadrilateral end-to-end mesh contains no faces.");
+
+    require(mesh.cell_faces().size() == 4 * mesh.cell_count(),
+            "Quadrilateral mesh has an incorrect number of cell-face incidences.");
+
+    double total_area{};
+
+    for (cfd::Index cell_id = 0; cell_id < mesh.cell_count(); ++cell_id)
+    {
+        require(mesh.cell_types()[cell_id] == cfd::CellType::Quadrilateral,
+                "Quadrilateral end-to-end mesh contains a non-quadrilateral cell.");
+
+        const double area{mesh.cell_areas()[cell_id]};
+
+        require(std::isfinite(area) && area > 0.0, "Quadrilateral end-to-end mesh contains an invalid cell area.");
+
+        total_area += area;
+
+        const double quality{mesh.cell_qualities()[cell_id]};
+
+        require(std::isfinite(quality) && quality > 0.0,
+                "Quadrilateral end-to-end mesh contains an invalid cell quality.");
+
+        require(quality <= 1.0 + tolerance, "Quadrilateral end-to-end mesh contains a cell quality greater than 1.");
+    }
+
+    require_near(total_area, length * height, tolerance, "Quadrilateral end-to-end mesh has an incorrect total area.");
+
+    cfd::Index internal_face_count{};
+    cfd::Index boundary_face_count{};
+
+    for (const cfd::FaceAdjacency &adjacency : mesh.face_adjacencies())
+    {
+        if (adjacency.is_boundary())
+        {
+            ++boundary_face_count;
+        }
+        else
+        {
+            ++internal_face_count;
+        }
+    }
+
+    require(4 * mesh.cell_count() == 2 * internal_face_count + boundary_face_count,
+            "Quadrilateral end-to-end mesh violates the face-incidence identity.");
+
+    const cfd::BoundaryId inlet_id{find_boundary_id(mesh, "inlet")};
+
+    const cfd::BoundaryId wall_id{find_boundary_id(mesh, "wall")};
+
+    const cfd::BoundaryId outlet_id{find_boundary_id(mesh, "outlet")};
+
+    require(inlet_id != cfd::invalid_boundary_id, "Quadrilateral mesh does not contain an inlet boundary.");
+
+    require(wall_id != cfd::invalid_boundary_id, "Quadrilateral mesh does not contain a wall boundary.");
+
+    require(outlet_id != cfd::invalid_boundary_id, "Quadrilateral mesh does not contain an outlet boundary.");
+
+    require_near(compute_boundary_length(mesh, inlet_id), height, tolerance,
+                 "Quadrilateral inlet boundary length is incorrect.");
+
+    require_near(compute_boundary_length(mesh, outlet_id), height, tolerance,
+                 "Quadrilateral outlet boundary length is incorrect.");
+
+    require_near(compute_boundary_length(mesh, wall_id), 2.0 * length, tolerance,
+                 "Quadrilateral wall boundary length is incorrect.");
+}
+
 void test_rectangle_boundary_groups()
 {
     constexpr double length{5.0};
@@ -255,6 +351,9 @@ int main()
     failure_count += cfd::test::run_test("generate triangular rectangle", test_generates_triangular_rectangle);
 
     failure_count += cfd::test::run_test("generate quadrilateral rectangle", test_generates_quadrilateral_rectangle);
+
+    failure_count +=
+        cfd::test::run_test("build quadrilateral rectangle end-to-end", test_builds_quadrilateral_rectangle_end_to_end);
 
     failure_count += cfd::test::run_test("rectangle boundary groups", test_rectangle_boundary_groups);
 
