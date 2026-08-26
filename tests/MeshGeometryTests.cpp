@@ -1,5 +1,6 @@
 #include "cfd/mesh/Mesh.hpp"
 #include "cfd/mesh/MeshBuilder.hpp"
+#include "cfd/mesh/MeshStatistics.hpp"
 #include "cfd/meshing/GmshMesher.hpp"
 #include "cfd/meshing/RawMeshData.hpp"
 
@@ -280,6 +281,42 @@ void test_single_triangle()
 
     require_near(mesh.cell_qualities()[0], expected_quality, test_tolerance, "Single-triangle quality is incorrect.");
 }
+void test_single_triangle_statistics()
+{
+    cfd::RawMeshData raw_mesh{make_single_triangle_raw_mesh()};
+    cfd::Mesh mesh{cfd::build_mesh(std::move(raw_mesh))};
+
+    const cfd::MeshStatistics statistics{cfd::compute_mesh_statistics(mesh)};
+
+    require(statistics.internal_face_count == 0, "Single triangle must have no internal faces.");
+
+    require(statistics.boundary_face_count == 3, "Single triangle must have three boundary faces.");
+
+    require_near(statistics.total_cell_area, 0.5, test_tolerance, "Single-triangle total area statistic is incorrect.");
+
+    require_near(statistics.cell_areas.minimum, 0.5, test_tolerance,
+                 "Single-triangle minimum cell area statistic is incorrect.");
+
+    require_near(statistics.cell_areas.mean, 0.5, test_tolerance,
+                 "Single-triangle mean cell area statistic is incorrect.");
+
+    require_near(statistics.cell_areas.maximum, 0.5, test_tolerance,
+                 "Single-triangle maximum cell area statistic is incorrect.");
+
+    const double expected_quality{std::sqrt(3.0) / 2.0};
+
+    require_near(statistics.triangle_quality.minimum, expected_quality, test_tolerance,
+                 "Single-triangle minimum quality statistic is incorrect.");
+
+    require_near(statistics.triangle_quality.mean, expected_quality, test_tolerance,
+                 "Single-triangle mean quality statistic is incorrect.");
+
+    require_near(statistics.triangle_quality.maximum, expected_quality, test_tolerance,
+                 "Single-triangle maximum quality statistic is incorrect.");
+
+    require(statistics.worst_quality_cell == 0, "Single triangle must be its own worst-quality cell.");
+}
+
 void test_small_translated_equilateral_triangle()
 {
     constexpr double origin_x{5.0};
@@ -376,6 +413,8 @@ int main()
         cfd::test::run_test("small translated equilateral triangle", test_small_translated_equilateral_triangle);
 
     failure_count += cfd::test::run_test("reference rectangle preprocessing", test_reference_rectangle);
+
+    failure_count += cfd::test::run_test("single triangle statistics", test_single_triangle_statistics);
 
     return cfd::test::finish_tests(failure_count, "mesh geometry");
 }

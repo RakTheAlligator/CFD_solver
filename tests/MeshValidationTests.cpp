@@ -14,7 +14,7 @@ namespace
 
 using cfd::test::make_non_manifold_raw_mesh;
 using cfd::test::make_single_triangle_raw_mesh;
-using cfd::test::require_throws;
+using cfd::test::require_throws_with_message;
 
 void test_rejects_inconsistent_cell_offsets()
 {
@@ -22,8 +22,9 @@ void test_rejects_inconsistent_cell_offsets()
 
     raw_mesh.cell_node_offsets.back() = 2;
 
-    require_throws<std::runtime_error>([&raw_mesh]() { cfd::validate_raw_mesh(raw_mesh); },
-                                       "Raw mesh validation accepted inconsistent cell offsets.");
+    require_throws_with_message<std::runtime_error>(
+        [&raw_mesh]() { cfd::validate_raw_mesh(raw_mesh); },
+        "Raw mesh validation failed:", "Raw mesh validation accepted inconsistent cell offsets.");
 }
 
 void test_rejects_duplicate_node_in_cell()
@@ -32,8 +33,9 @@ void test_rejects_duplicate_node_in_cell()
 
     raw_mesh.cell_nodes[2] = raw_mesh.cell_nodes[1];
 
-    require_throws<std::runtime_error>([&raw_mesh]() { cfd::validate_raw_mesh(raw_mesh); },
-                                       "Raw mesh validation accepted a duplicated node inside a cell.");
+    require_throws_with_message<std::runtime_error>(
+        [&raw_mesh]() { cfd::validate_raw_mesh(raw_mesh); },
+        "Raw mesh validation failed:", "Raw mesh validation accepted a duplicated node inside a cell.");
 }
 
 void test_rejects_invalid_node_index()
@@ -42,8 +44,9 @@ void test_rejects_invalid_node_index()
 
     raw_mesh.cell_nodes[2] = raw_mesh.nodes.size();
 
-    require_throws<std::runtime_error>([&raw_mesh]() { cfd::validate_raw_mesh(raw_mesh); },
-                                       "Raw mesh validation accepted an out-of-range node index.");
+    require_throws_with_message<std::runtime_error>(
+        [&raw_mesh]() { cfd::validate_raw_mesh(raw_mesh); },
+        "Raw mesh validation failed:", "Raw mesh validation accepted an out-of-range node index.");
 }
 
 void test_rejects_duplicate_boundary_edge()
@@ -55,8 +58,9 @@ void test_rejects_duplicate_boundary_edge()
         raw_mesh.boundary_groups[0].id,
     });
 
-    require_throws<std::runtime_error>([&raw_mesh]() { cfd::validate_raw_mesh(raw_mesh); },
-                                       "Raw mesh validation accepted a duplicated boundary edge.");
+    require_throws_with_message<std::runtime_error>(
+        [&raw_mesh]() { cfd::validate_raw_mesh(raw_mesh); },
+        "Raw mesh validation failed:", "Raw mesh validation accepted a duplicated boundary edge.");
 }
 
 void test_rejects_open_boundary()
@@ -65,8 +69,9 @@ void test_rejects_open_boundary()
 
     raw_mesh.boundary_edges.pop_back();
 
-    require_throws<std::runtime_error>([&raw_mesh]() { static_cast<void>(cfd::build_mesh(std::move(raw_mesh))); },
-                                       "Mesh construction accepted an incomplete physical boundary.");
+    require_throws_with_message<std::runtime_error>(
+        [&raw_mesh]() { static_cast<void>(cfd::build_mesh(std::move(raw_mesh))); },
+        "Topology validation failed:", "Mesh construction accepted an incomplete physical boundary.");
 }
 
 void test_rejects_zero_area_triangle()
@@ -79,8 +84,9 @@ void test_rejects_zero_area_triangle()
 
     cfd::validate_raw_mesh(raw_mesh);
 
-    require_throws<std::runtime_error>([&raw_mesh]() { static_cast<void>(cfd::build_mesh(std::move(raw_mesh))); },
-                                       "Mesh construction accepted a zero-area triangle.");
+    require_throws_with_message<std::runtime_error>(
+        [&raw_mesh]() { static_cast<void>(cfd::build_mesh(std::move(raw_mesh))); },
+        "Geometry construction failed:", "Mesh construction accepted a zero-area triangle.");
 }
 
 void test_rejects_non_manifold_face()
@@ -89,8 +95,9 @@ void test_rejects_non_manifold_face()
 
     cfd::validate_raw_mesh(raw_mesh);
 
-    require_throws<std::runtime_error>([&raw_mesh]() { static_cast<void>(cfd::build_mesh(std::move(raw_mesh))); },
-                                       "Mesh construction accepted a face shared by more than two cells.");
+    require_throws_with_message<std::runtime_error>(
+        [&raw_mesh]() { static_cast<void>(cfd::build_mesh(std::move(raw_mesh))); },
+        "Topology construction failed:", "Mesh construction accepted a face shared by more than two cells.");
 }
 
 void test_rejects_invalid_boundary_group_id()
@@ -104,8 +111,9 @@ void test_rejects_invalid_boundary_group_id()
         edge.boundary_id = cfd::invalid_boundary_id;
     }
 
-    require_throws<std::runtime_error>([&raw_mesh]() { cfd::validate_raw_mesh(raw_mesh); },
-                                       "Raw mesh validation accepted invalid_boundary_id as a physical boundary ID.");
+    require_throws_with_message<std::runtime_error>(
+        [&raw_mesh]() { cfd::validate_raw_mesh(raw_mesh); },
+        "Raw mesh validation failed:", "Raw mesh validation accepted invalid_boundary_id as a physical boundary ID.");
 }
 
 } // namespace

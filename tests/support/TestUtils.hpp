@@ -89,6 +89,33 @@ void require_throws(Function &&function, const std::string &message)
     fail(message + " (no exception was thrown).");
 }
 
+template <typename Exception = std::exception, typename Function>
+void require_throws_with_message(Function &&function, const std::string_view expected_message,
+                                 const std::string &failure_message)
+{
+    try
+    {
+        std::forward<Function>(function)();
+    }
+    catch (const Exception &error)
+    {
+        const std::string_view actual_message{error.what()};
+
+        if (actual_message.find(expected_message) == std::string_view::npos)
+        {
+            fail(failure_message + " (unexpected exception message: \"" + error.what() + "\").");
+        }
+
+        return;
+    }
+    catch (...)
+    {
+        fail(failure_message + " (unexpected exception type).");
+    }
+
+    fail(failure_message + " (no exception was thrown).");
+}
+
 template <typename TestFunction> int run_test(const std::string_view name, TestFunction test_function)
 {
     try

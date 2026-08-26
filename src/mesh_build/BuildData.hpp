@@ -9,7 +9,6 @@
 
 namespace cfd::detail
 {
-
 struct TopologyBuildData
 {
     std::vector<Face> faces;
@@ -21,12 +20,6 @@ struct TopologyBuildData
     std::vector<BoundaryId> face_boundary_ids;
 };
 
-struct TopologyStats
-{
-    Index internal_face_count{};
-    Index boundary_face_count{};
-};
-
 struct GeometryBuildData
 {
     std::vector<double> cell_areas;
@@ -36,24 +29,5 @@ struct GeometryBuildData
     std::vector<Vector2> face_centers;
     std::vector<double> face_lengths;
     std::vector<Vector2> face_area_vectors;
-};
-
-struct ScalarStats
-{
-    double minimum{};
-    double maximum{};
-    double mean{};
-};
-
-struct GeometryStats
-{
-    ScalarStats cell_areas;
-    ScalarStats cell_sizes;
-    ScalarStats face_lengths;
-
-    double total_cell_area{};
-
-    ScalarStats triangle_quality;
-    Index worst_quality_cell{invalid_index};
 };
 } // namespace cfd::detail

@@ -19,20 +19,6 @@ namespace cfd::detail
 namespace
 {
 
-struct ScalarAccumulator
-{
-    double minimum{std::numeric_limits<double>::infinity()};
-    double maximum{-std::numeric_limits<double>::infinity()};
-    double sum{};
-};
-
-void update_stats(ScalarAccumulator &stats, const double value)
-{
-    stats.minimum = std::min(stats.minimum, value);
-    stats.maximum = std::max(stats.maximum, value);
-    stats.sum += value;
-}
-
 [[noreturn]]
 void throw_geometry_validation_error(const std::string &message)
 {
@@ -83,18 +69,9 @@ void validate_geometry_storage(const RawMeshData &raw_mesh, const TopologyBuildD
     }
 }
 
-void validate_cell_geometry(const RawMeshData &raw_mesh, const GeometryBuildData &geometry, GeometryStats &stats)
+void validate_cell_geometry(const RawMeshData &raw_mesh, const GeometryBuildData &geometry)
 {
-    ScalarAccumulator area_stats;
-    ScalarAccumulator size_stats;
-    ScalarAccumulator triangle_quality_stats;
-
     const Index cell_count{raw_mesh.cell_types.size()};
-
-    double total_area{};
-    Index triangle_count{};
-    Index worst_quality_cell{invalid_index};
-    double worst_quality{std::numeric_limits<double>::infinity()};
 
     for (Index cell_id = 0; cell_id < cell_count; ++cell_id)
     {
@@ -111,72 +88,33 @@ void validate_cell_geometry(const RawMeshData &raw_mesh, const GeometryBuildData
             throw_geometry_validation_error("cell " + std::to_string(cell_id) + " has non-finite center coordinates.");
         }
 
-        if (area <= 0.0)
+        if (!(area > 0.0))
         {
             throw_geometry_validation_error("cell " + std::to_string(cell_id) + " has non-positive area.");
         }
 
-        const double cell_size{std::sqrt(area)};
-
-        update_stats(area_stats, area);
-        update_stats(size_stats, cell_size);
-
-        total_area += area;
-
-        if (raw_mesh.cell_types[cell_id] == CellType::Triangle)
+        if (raw_mesh.cell_types[cell_id] != CellType::Triangle)
         {
-            const double quality{geometry.cell_qualities[cell_id]};
-
-            if (!std::isfinite(quality) || !(quality > 0.0))
-            {
-                throw_geometry_validation_error("cell " + std::to_string(cell_id) + " has invalid triangle quality.");
-            }
-
-            if (quality > 1.0 && !nearly_equal(quality, 1.0))
-            {
-                std::ostringstream message;
-
-                message << std::setprecision(17) << "cell " << cell_id
-                        << " has triangle quality greater than 1: q = " << quality << ", excess = " << quality - 1.0;
-
-                throw_geometry_validation_error(message.str());
-            }
-
-            ++triangle_count;
-
-            update_stats(triangle_quality_stats, quality);
-
-            if (quality < worst_quality)
-            {
-                worst_quality = quality;
-                worst_quality_cell = cell_id;
-            }
+            continue;
         }
-    }
-    stats.total_cell_area = total_area;
 
-    stats.cell_areas = {.minimum = area_stats.minimum,
-                        .maximum = area_stats.maximum,
-                        .mean = area_stats.sum / static_cast<double>(cell_count)};
+        const double quality{geometry.cell_qualities[cell_id]};
 
-    stats.cell_sizes = {.minimum = size_stats.minimum,
-                        .maximum = size_stats.maximum,
-                        .mean = size_stats.sum / static_cast<double>(cell_count)};
+        if (!std::isfinite(quality) || !(quality > 0.0))
+        {
+            throw_geometry_validation_error("cell " + std::to_string(cell_id) + " has invalid triangle quality.");
+        }
 
-    if (triangle_count > 0)
-    {
-        stats.triangle_quality = {.minimum = triangle_quality_stats.minimum,
-                                  .maximum = triangle_quality_stats.maximum,
-                                  .mean = triangle_quality_stats.sum / static_cast<double>(triangle_count)};
-
-        stats.worst_quality_cell = worst_quality_cell;
+        if (quality > 1.0 && !nearly_equal(quality, 1.0))
+        {
+            throw_geometry_validation_error("cell " + std::to_string(cell_id) +
+                                            " has triangle quality greater than 1.");
+        }
     }
 }
 
-void validate_face_geometry(const TopologyBuildData &topology, const GeometryBuildData &geometry, GeometryStats &stats)
+void validate_face_geometry(const TopologyBuildData &topology, const GeometryBuildData &geometry)
 {
-    ScalarAccumulator length_stats;
-
     const Index face_count{topology.faces.size()};
 
     for (Index face_id = 0; face_id < face_count; ++face_id)
@@ -201,7 +139,7 @@ void validate_face_geometry(const TopologyBuildData &topology, const GeometryBui
                                             " has non-finite area vector components.");
         }
 
-        if (length <= 0.0)
+        if (!(length > 0.0))
         {
             throw_geometry_validation_error("face " + std::to_string(face_id) + " has non-positive length.");
         }
@@ -215,6 +153,7 @@ void validate_face_geometry(const TopologyBuildData &topology, const GeometryBui
         }
 
         const FaceAdjacency &adjacency{topology.face_adjacencies[face_id]};
+
         const Vector2 &owner_center{geometry.cell_centers[adjacency.owner]};
 
         const double owner_orientation{area_vector.x * (center.x - owner_center.x) +
@@ -226,41 +165,32 @@ void validate_face_geometry(const TopologyBuildData &topology, const GeometryBui
                                             " has an area vector not oriented outward from its owner.");
         }
 
-        if (adjacency.neighbor != invalid_index)
+        if (adjacency.neighbor == invalid_index)
         {
-            const Vector2 &neighbor_center{geometry.cell_centers[adjacency.neighbor]};
-
-            const double owner_to_neighbor_orientation{area_vector.x * (neighbor_center.x - owner_center.x) +
-                                                       area_vector.y * (neighbor_center.y - owner_center.y)};
-
-            if (!(owner_to_neighbor_orientation > 0.0))
-            {
-                throw_geometry_validation_error("internal face " + std::to_string(face_id) +
-                                                " has inconsistent owner-neighbor orientation.");
-            }
+            continue;
         }
 
-        update_stats(length_stats, length);
-    }
+        const Vector2 &neighbor_center{geometry.cell_centers[adjacency.neighbor]};
 
-    stats.face_lengths = {.minimum = length_stats.minimum,
-                          .maximum = length_stats.maximum,
-                          .mean = length_stats.sum / static_cast<double>(face_count)};
+        const double owner_to_neighbor_orientation{area_vector.x * (neighbor_center.x - owner_center.x) +
+                                                   area_vector.y * (neighbor_center.y - owner_center.y)};
+
+        if (!(owner_to_neighbor_orientation > 0.0))
+        {
+            throw_geometry_validation_error("internal face " + std::to_string(face_id) +
+                                            " has inconsistent owner-neighbor orientation.");
+        }
+    }
 }
 
 } // namespace
 
-GeometryStats validate_geometry(const RawMeshData &raw_mesh, const TopologyBuildData &topology,
-                                const GeometryBuildData &geometry)
+void validate_geometry(const RawMeshData &raw_mesh, const TopologyBuildData &topology,
+                       const GeometryBuildData &geometry)
 {
     validate_geometry_storage(raw_mesh, topology, geometry);
-
-    GeometryStats stats;
-
-    validate_cell_geometry(raw_mesh, geometry, stats);
-    validate_face_geometry(topology, geometry, stats);
-
-    return stats;
+    validate_cell_geometry(raw_mesh, geometry);
+    validate_face_geometry(topology, geometry);
 }
 
 } // namespace cfd::detail

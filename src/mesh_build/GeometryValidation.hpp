@@ -10,9 +10,8 @@ struct RawMeshData;
 namespace detail
 {
 
-[[nodiscard]]
-GeometryStats validate_geometry(const RawMeshData &raw_mesh, const TopologyBuildData &topology,
-                                const GeometryBuildData &geometry);
+void validate_geometry(const RawMeshData &raw_mesh, const TopologyBuildData &topology,
+                       const GeometryBuildData &geometry);
 
 } // namespace detail
 

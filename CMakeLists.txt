@@ -63,6 +63,8 @@ add_library(
 
     src/io/VtkWriter.cpp
 
+    src/mesh/MeshStatistics.cpp
+
     src/MeshBuilder.cpp
 
     src/meshing/GmshMesher.cpp

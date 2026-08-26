@@ -13,12 +13,6 @@ namespace cfd::detail
 namespace
 {
 
-[[noreturn]]
-void throw_topology_validation_error(const std::string &message)
-{
-    throw std::runtime_error("Topology validation failed: " + message);
-}
-
 struct CellPair
 {
     Index cell_0{};
@@ -37,6 +31,18 @@ struct CellPair
     }
 };
 
+struct FaceCounts
+{
+    Index internal{};
+    Index boundary{};
+};
+
+[[noreturn]]
+void throw_topology_validation_error(const std::string &message)
+{
+    throw std::runtime_error("Topology validation failed: " + message);
+}
+
 [[nodiscard]]
 CellPair make_cell_pair(const Index cell_0, const Index cell_1) noexcept
 {
@@ -54,14 +60,17 @@ void validate_topology_storage(const RawMeshData &raw_mesh, const TopologyBuildD
     {
         throw_topology_validation_error("no faces were constructed.");
     }
+
     if (topology.cell_faces.size() != raw_mesh.cell_nodes.size())
     {
         throw_topology_validation_error("cell_faces size must equal cell_nodes size.");
     }
+
     if (topology.face_adjacencies.size() != topology.faces.size())
     {
         throw_topology_validation_error("face_adjacencies size must equal faces size.");
     }
+
     if (topology.face_boundary_ids.size() != topology.faces.size())
     {
         throw_topology_validation_error("face_boundary_ids size must equal faces size.");
@@ -90,7 +99,6 @@ void validate_cell_face_connectivity(const RawMeshData &raw_mesh, const Topology
 {
     for (Index cell_id = 0; cell_id < raw_mesh.cell_types.size(); ++cell_id)
     {
-
         const Index begin{raw_mesh.cell_node_offsets[cell_id]};
         const Index end{raw_mesh.cell_node_offsets[cell_id + 1]};
         const Index local_face_count{end - begin};
@@ -124,6 +132,7 @@ void validate_cell_face_connectivity(const RawMeshData &raw_mesh, const Topology
             const Index next_local_node{(local_face + 1) % local_face_count};
             const Index expected_node_0{raw_mesh.cell_nodes[begin + local_face]};
             const Index expected_node_1{raw_mesh.cell_nodes[begin + next_local_node]};
+
             const Face &face{topology.faces[face_id]};
 
             const auto matches{(face.node_ids[0] == expected_node_0 && face.node_ids[1] == expected_node_1) ||
@@ -139,13 +148,14 @@ void validate_cell_face_connectivity(const RawMeshData &raw_mesh, const Topology
 }
 
 [[nodiscard]]
-TopologyStats validate_faces(const RawMeshData &raw_mesh, const TopologyBuildData &topology)
+FaceCounts validate_faces(const RawMeshData &raw_mesh, const TopologyBuildData &topology)
 {
-    TopologyStats stats;
+    FaceCounts counts;
 
     for (Index face_id = 0; face_id < topology.faces.size(); ++face_id)
     {
         const Face &face{topology.faces[face_id]};
+
         const Index node_0{face.node_ids[0]};
         const Index node_1{face.node_ids[1]};
 
@@ -154,6 +164,7 @@ TopologyStats validate_faces(const RawMeshData &raw_mesh, const TopologyBuildDat
             throw_topology_validation_error("face " + std::to_string(face_id) +
                                             " references a node outside the nodes array.");
         }
+
         if (node_0 == node_1)
         {
             throw_topology_validation_error("face " + std::to_string(face_id) + " references the same node twice.");
@@ -165,6 +176,7 @@ TopologyStats validate_faces(const RawMeshData &raw_mesh, const TopologyBuildDat
         {
             throw_topology_validation_error("face " + std::to_string(face_id) + " has an invalid owner cell.");
         }
+
         if (!cell_references_face(raw_mesh, topology, adjacency.owner, face_id))
         {
             throw_topology_validation_error("face " + std::to_string(face_id) +
@@ -175,7 +187,7 @@ TopologyStats validate_faces(const RawMeshData &raw_mesh, const TopologyBuildDat
 
         if (adjacency.neighbor == invalid_index)
         {
-            ++stats.boundary_face_count;
+            ++counts.boundary;
 
             if (boundary_id == invalid_boundary_id)
             {
@@ -186,21 +198,24 @@ TopologyStats validate_faces(const RawMeshData &raw_mesh, const TopologyBuildDat
             continue;
         }
 
-        ++stats.internal_face_count;
+        ++counts.internal;
 
         if (adjacency.neighbor >= raw_mesh.cell_types.size())
         {
             throw_topology_validation_error("face " + std::to_string(face_id) + " has an invalid neighbor cell.");
         }
+
         if (adjacency.owner == adjacency.neighbor)
         {
             throw_topology_validation_error("face " + std::to_string(face_id) +
                                             " has identical owner and neighbor cells.");
         }
+
         if (boundary_id != invalid_boundary_id)
         {
             throw_topology_validation_error("internal face " + std::to_string(face_id) + " has a boundary assignment.");
         }
+
         if (!cell_references_face(raw_mesh, topology, adjacency.neighbor, face_id))
         {
             throw_topology_validation_error("face " + std::to_string(face_id) +
@@ -208,12 +223,12 @@ TopologyStats validate_faces(const RawMeshData &raw_mesh, const TopologyBuildDat
         }
     }
 
-    if (stats.boundary_face_count != raw_mesh.boundary_edges.size())
+    if (counts.boundary != raw_mesh.boundary_edges.size())
     {
         throw_topology_validation_error("number of external faces does not match the number of boundary edges.");
     }
 
-    return stats;
+    return counts;
 }
 
 void validate_unique_cell_neighbors(const TopologyBuildData &topology)
@@ -242,23 +257,22 @@ void validate_unique_cell_neighbors(const TopologyBuildData &topology)
                                         std::to_string(duplicate->cell_1) + " share more than one face.");
     }
 }
+
 } // namespace
 
-TopologyStats validate_topology(const RawMeshData &raw_mesh, const TopologyBuildData &topology)
+void validate_topology(const RawMeshData &raw_mesh, const TopologyBuildData &topology)
 {
     validate_topology_storage(raw_mesh, topology);
-
     validate_cell_face_connectivity(raw_mesh, topology);
 
-    const TopologyStats stats{validate_faces(raw_mesh, topology)};
+    const FaceCounts face_counts{validate_faces(raw_mesh, topology)};
 
     validate_unique_cell_neighbors(topology);
 
-    if (raw_mesh.cell_nodes.size() != 2 * stats.internal_face_count + stats.boundary_face_count)
+    if (raw_mesh.cell_nodes.size() != 2 * face_counts.internal + face_counts.boundary)
     {
         throw_topology_validation_error("local face count is inconsistent with internal and boundary face counts.");
     }
-
-    return stats;
 }
+
 } // namespace cfd::detail
