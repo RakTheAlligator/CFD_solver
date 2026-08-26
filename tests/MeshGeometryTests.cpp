@@ -256,7 +256,9 @@ void test_single_triangle()
 
     require_near(boundary_area, 0.5, test_tolerance, "Single-triangle boundary area is incorrect.");
 
-    cfd::Mesh mesh{cfd::build_mesh(std::move(raw_mesh))};
+    cfd::MeshBuildResult result{cfd::build_mesh(std::move(raw_mesh))};
+
+    const cfd::Mesh &mesh{result.mesh};
 
     require(mesh.node_count() == 3, "Single triangle must contain three nodes.");
     require(mesh.cell_count() == 1, "Single triangle must contain one cell.");
@@ -284,7 +286,9 @@ void test_single_triangle()
 void test_single_triangle_statistics()
 {
     cfd::RawMeshData raw_mesh{make_single_triangle_raw_mesh()};
-    cfd::Mesh mesh{cfd::build_mesh(std::move(raw_mesh))};
+    cfd::MeshBuildResult result{cfd::build_mesh(std::move(raw_mesh))};
+
+    const cfd::Mesh &mesh{result.mesh};
 
     const cfd::MeshStatistics statistics{cfd::compute_mesh_statistics(mesh)};
 
@@ -331,7 +335,9 @@ void test_small_translated_equilateral_triangle()
 
     cfd::RawMeshData raw_mesh{cfd::test::make_equilateral_triangle_raw_mesh(origin_x, origin_y, side)};
 
-    cfd::Mesh mesh{cfd::build_mesh(std::move(raw_mesh))};
+    cfd::MeshBuildResult result{cfd::build_mesh(std::move(raw_mesh))};
+
+    const cfd::Mesh &mesh{result.mesh};
 
     require_near(mesh.cell_areas()[0], expected_area, test_tolerance, "Translated small triangle area is incorrect.");
 
@@ -367,7 +373,9 @@ void test_reference_rectangle()
     require_near(boundary_area, analytical_area, test_tolerance,
                  "Rectangle boundary area does not match analytical area.");
 
-    cfd::Mesh mesh{cfd::build_mesh(std::move(raw_mesh))};
+    cfd::MeshBuildResult result{cfd::build_mesh(std::move(raw_mesh))};
+
+    const cfd::Mesh &mesh{result.mesh};
 
     const double total_cell_area{compute_total_cell_area(mesh)};
 

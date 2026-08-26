@@ -1,6 +1,9 @@
 #include "cfd/mesh/MeshBuilder.hpp"
+#include "cfd/mesh/MeshStatistics.hpp"
+
 #include "cfd/meshing/GmshMesher.hpp"
 
+#include "cfd/io/MeshReport.hpp"
 #include "cfd/io/VtkWriter.hpp"
 
 #include <chrono>
@@ -71,18 +74,22 @@ int main()
         std::cout << std::fixed << std::setprecision(2) << "  Time              : " << generation_elapsed.count()
                   << " ms\n";
 
-        cfd::Mesh mesh{cfd::build_mesh(std::move(raw_mesh))};
+        cfd::MeshBuildResult mesh_build{cfd::build_mesh(std::move(raw_mesh))};
+
+        const cfd::MeshStatistics mesh_statistics{cfd::compute_mesh_statistics(mesh_build.mesh)};
+
+        cfd::write_mesh_report(std::cout, mesh_build.mesh, mesh_statistics, mesh_build.timings);
 
         const std::filesystem::path output_directory{"results"};
         const std::filesystem::path mesh_output_file{output_directory / "mesh.vtu"};
 
         std::filesystem::create_directories(output_directory);
 
-        cfd::write_vtu(mesh, mesh_output_file);
+        cfd::write_vtu(mesh_build.mesh, mesh_output_file);
 
         std::cout << "\n[Summary]\n"
-                  << "  Mesh              : " << mesh.node_count() << " nodes | " << mesh.cell_count() << " cells | "
-                  << mesh.face_count() << " faces\n";
+                  << "  Mesh              : " << mesh_build.mesh.node_count() << " nodes | "
+                  << mesh_build.mesh.cell_count() << " cells | " << mesh_build.mesh.face_count() << " faces\n";
 
         std::cout << "\n[Output]\n"
                   << "  Mesh              : " << mesh_output_file.string() << '\n';

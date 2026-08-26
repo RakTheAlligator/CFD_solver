@@ -61,6 +61,7 @@ add_library(
     cfd_core
     STATIC
 
+    src/io/MeshReport.cpp
     src/io/VtkWriter.cpp
 
     src/mesh/MeshStatistics.cpp
@@ -145,15 +146,21 @@ if(BUILD_TESTING)
     endfunction()
 
     cfd_add_test(
-        cfd_mesh_geometry_tests
-        mesh_geometry
-        tests/MeshGeometryTests.cpp
+    cfd_mesh_geometry_tests
+    mesh_geometry
+    tests/MeshGeometryTests.cpp
     )
 
     cfd_add_test(
         cfd_mesh_validation_tests
         mesh_validation
         tests/MeshValidationTests.cpp
+    )
+
+    cfd_add_test(
+        cfd_mesh_report_tests
+        mesh_report
+        tests/MeshReportTests.cpp
     )
 
     cfd_add_test(

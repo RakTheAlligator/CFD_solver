@@ -20,7 +20,9 @@ using cfd::test::require_contains;
 void test_single_triangle_vtu_export()
 {
     cfd::RawMeshData raw_mesh{make_single_triangle_raw_mesh()};
-    cfd::Mesh mesh{cfd::build_mesh(std::move(raw_mesh))};
+    cfd::MeshBuildResult build_result{cfd::build_mesh(std::move(raw_mesh))};
+
+    const cfd::Mesh &mesh{build_result.mesh};
 
     const std::filesystem::path file_path{std::filesystem::temp_directory_path() / "cfd_single_triangle_test.vtu"};
 

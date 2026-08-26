@@ -14,6 +14,7 @@ namespace cfd
 {
 
 struct RawMeshData;
+struct MeshBuildResult;
 
 class Mesh
 {
@@ -160,7 +161,7 @@ class Mesh
     std::vector<double> face_lengths_;
     std::vector<Vector2> face_area_vectors_;
 
-    friend Mesh build_mesh(RawMeshData &&raw_mesh);
+    friend MeshBuildResult build_mesh(RawMeshData &&raw_mesh);
 };
 
 } // namespace cfd
