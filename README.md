@@ -2,7 +2,7 @@
 
 A 2D finite-volume CFD solver written in modern C++.
 
-This project is developed as a learning project in both CFD and scientific C++, with an emphasis on correctness, simple architecture, robust validation, contiguous data structures, automated testing, and performance-aware design.
+This project is developed as a learning project in both CFD and scientific C++, with an emphasis on mathematical correctness, robust validation, simple architecture, contiguous data structures, automated testing, and performance-aware design.
 
 > **Current status:** mesh preprocessing and visualization are implemented. The CFD equations are not implemented yet.
 
@@ -26,42 +26,107 @@ Geometry construction
 Geometry validation
       ↓
 Mesh
-      ↓
-VTU export
-      ↓
-ParaView
+      ├── MeshStatistics / MeshReport
+      └── VTU export
+              ↓
+           ParaView
 ```
 
-## Implemented features
+## Implemented preprocessing features
 
 - 2D rectangular domains
 - Gmsh C++ API integration
-- triangular unstructured meshes
+- unstructured triangular meshes
+- recombined quadrilateral meshes
 - compact zero-based internal indexing
 - flattened cell connectivity
-- face construction with owner/neighbor adjacency
+- unique face construction
+- owner/neighbor face adjacency
 - physical boundary groups
+- cell-to-face connectivity
 - cell areas and centroids
-- face centers, lengths and oriented area vectors
-- triangle-quality computation
-- topology and geometry validation
+- face centers and lengths
+- oriented face-area vectors
+- triangle and quadrilateral cell-quality metrics
+- raw-mesh validation
+- topology validation
+- geometry validation
+- per-cell face-area-vector closure validation
+- preprocessing timings and mesh statistics
 - VTU export for ParaView
-- automated positive and negative tests
-- `clang-format` and `clang-tidy` integration
 
-The current VTU export includes:
+The final `Mesh` owns contiguous arrays and exposes read-only views through `std::span`. It is move-only to avoid accidental copies of large mesh storage.
+
+## Cell types
+
+The preprocessing pipeline currently supports:
 
 ```text
-cell_id
-cell_area
+Triangle
+Quadrilateral
+```
+
+For quadrilateral generation, the Gmsh surface is recombined. The imported mesh is checked so that the generated cells match the requested cell type.
+
+Concave or self-intersecting quadrilaterals are currently rejected.
+
+## Geometry conventions
+
+For a face shared by an owner cell `P` and a neighbor cell `N`, the stored face-area vector is oriented outward from the owner:
+
+```text
+Sf : owner → neighbor
+```
+
+For the neighbor cell, the corresponding outward vector is therefore `-Sf`.
+
+For every closed cell, preprocessing verifies the finite-volume closure relation
+
+```text
+sum(Sf_cell) ≈ 0
+```
+
+using the appropriate sign for owner and neighbor incidences.
+
+## Mesh quality
+
+Triangle quality is based on
+
+```text
+q = 4 sqrt(3) A / (l1² + l2² + l3²)
+```
+
+with `q = 1` for an equilateral triangle.
+
+Quadrilateral quality uses a local corner metric and keeps the worst corner. A square has quality `1`; skewness, poor angles, and large aspect ratios reduce the value.
+
+The public mesh representation exposes the result generically as:
+
+```text
 cell_quality
 ```
 
-which can be visualized directly in ParaView.
+## Physical boundaries
+
+The reference rectangle uses the physical groups:
+
+```text
+inlet
+wall
+outlet
+```
+
+Automated tests verify that the groups survive the complete
+
+```text
+Gmsh → RawMeshData → Mesh
+```
+
+pipeline and that their accumulated boundary lengths match the analytical rectangle geometry.
 
 ## Reference case
 
-Current rectangular test case:
+The demonstration case uses a rectangular domain:
 
 ```text
 Length    = 5.0 m
@@ -69,24 +134,13 @@ Height    = 1.0 m
 Mesh size = 0.2 m
 ```
 
-Typical mesh:
+The expected total cell area is:
 
 ```text
-183 nodes
-304 triangular cells
-486 faces
-├── 426 internal faces
-└── 60 boundary faces
+5.0 m²
 ```
 
-Typical preprocessing diagnostics:
-
-```text
-Total area        = 5.0000 m²
-Triangle quality  ≈ 0.892 ... 1.000
-```
-
-The total cell area is also checked against an independent Shoelace reconstruction of the external boundary.
+Exact node and cell counts are intentionally not treated as regression values because they may legitimately vary with the Gmsh version or meshing algorithm.
 
 ## Visualization
 
@@ -102,14 +156,16 @@ Open it with ParaView:
 paraview results/mesh.vtu
 ```
 
-Useful views:
+Useful views include:
 
-- `Surface With Edges` for the mesh
-- `cell_area` for cell-size distribution
-- `cell_quality` for mesh-quality visualization
-- `cell_id` for identifying individual cells
+- `Surface With Edges`
+- `cell_area`
+- `cell_quality`
+- `cell_id`
 
-The visualization layer is intentionally separate from the numerical core. The C++ solver only writes a standard VTU file; ParaView handles interactive rendering.
+The VTU writer supports both VTK triangle type `5` and VTK quadrilateral type `9`.
+
+ParaView is not linked to the solver. The numerical code only writes a standard VTU file.
 
 ## Project structure
 
@@ -117,18 +173,28 @@ The visualization layer is intentionally separate from the numerical core. The C
 CFD_solver/
 ├── include/cfd/
 │   ├── io/
+│   │   ├── MeshReport.hpp
 │   │   └── VtkWriter.hpp
 │   ├── mesh/
 │   └── meshing/
 ├── src/
 │   ├── io/
-│   │   └── VtkWriter.cpp
+│   ├── mesh/
 │   ├── mesh_build/
 │   ├── meshing/
 │   ├── MeshBuilder.cpp
 │   └── main.cpp
 ├── tests/
-│   └── MeshPreprocessingTests.cpp
+│   ├── GmshMesherTests.cpp
+│   ├── MeshTopologyTests.cpp
+│   ├── MeshGeometryTests.cpp
+│   ├── MeshValidationTests.cpp
+│   ├── MeshReportTests.cpp
+│   ├── VtkWriterTests.cpp
+│   └── support/
+│       ├── MeshFixtures.hpp
+│       └── TestUtils.hpp
+├── .github/workflows/ci.yml
 ├── .clang-format
 ├── .clang-tidy
 ├── CMakeLists.txt
@@ -137,9 +203,9 @@ CFD_solver/
 
 Main CMake targets:
 
-- `cfd_core` — reusable mesh/preprocessing library
+- `cfd_core` — reusable preprocessing library
 - `CFD_solver` — main executable
-- `cfd_tests` — automated tests
+- dedicated CTest executables for meshing, topology, geometry, validation, reporting, and VTU output
 
 ## Requirements
 
@@ -153,18 +219,21 @@ Ubuntu:
 sudo apt install gmsh libgmsh-dev
 ```
 
-Optional development/visualization tools:
+Optional development and visualization tools:
 
 ```bash
 sudo apt install clang-format clang-tidy paraview
 ```
 
-ParaView is not linked to the solver.
-
 ## Build
 
+Debug build:
+
 ```bash
-cmake -S . -B build -DBUILD_TESTING=ON
+cmake -S . -B build \
+    -DCMAKE_BUILD_TYPE=Debug \
+    -DBUILD_TESTING=ON
+
 cmake --build build
 ```
 
@@ -174,32 +243,81 @@ Run:
 ./build/CFD_solver
 ```
 
-Run tests:
+Run all tests:
 
 ```bash
 ctest --test-dir build --output-on-failure
 ```
 
+Release build:
+
+```bash
+cmake -S . -B build-release \
+    -DCMAKE_BUILD_TYPE=Release \
+    -DBUILD_TESTING=ON
+
+cmake --build build-release --parallel
+ctest --test-dir build-release --output-on-failure
+```
+
 ## Testing
 
-Current tests include:
+The test suite covers several levels of the preprocessing pipeline.
 
-- analytical single-triangle geometry
-- rectangular Gmsh mesh
-- cell-area sum versus boundary Shoelace area
-- face orientation consistency
-- invalid connectivity
-- duplicated cell nodes
-- duplicated boundary edges
-- open boundaries
+### Gmsh meshing
+
+- invalid and non-finite domain dimensions
+- invalid mesh sizes
+- triangle generation
+- quadrilateral generation
+- physical boundary groups
+- complete quadrilateral Gmsh-to-Mesh preprocessing
+
+### Topology
+
+- deterministic two-triangle connectivity
+- unique shared face
+- owner/neighbor assignment
+- boundary-face assignment
+- non-manifold rejection
+
+### Geometry
+
+- analytical triangle area and centroid
+- translated small-cell numerical robustness
+- analytical quadrilateral geometry
+- clockwise quadrilateral connectivity
+- face orientation
+- face-area-vector norms
+- cell-quality bounds
+- per-cell face-area-vector closure
+- total cell area versus independent boundary Shoelace area
+
+### Raw-mesh and failure validation
+
+- empty mandatory arrays
+- non-finite node coordinates
+- malformed offsets
+- incorrect cell cardinality
+- unsupported cell types
+- invalid and duplicated node indices
+- malformed boundary groups
+- malformed boundary edges
+- unused boundary groups
+- open physical boundaries
 - zero-area cells
-- non-manifold faces
-- invalid boundary IDs
-- VTU export of a reference triangle
+- concave quadrilaterals
+
+### Output and reporting
+
+- mesh statistics
+- report contents and stream-state preservation
+- VTU triangle export
+- VTU quadrilateral export
 
 ## Code quality
 
-The project currently uses:
+The project uses:
 
 ```text
 -Wall
@@ -208,6 +326,9 @@ The project currently uses:
 clang-format
 clang-tidy
 CTest
+GitHub Actions
+AddressSanitizer
+UndefinedBehaviorSanitizer
 ```
 
 Formatting is based on the Microsoft `clang-format` preset.
@@ -221,26 +342,45 @@ cppcoreguidelines-*
 performance-*
 ```
 
-The project follows the C++ Core Guidelines where they provide practical value for scientific code, while avoiding unnecessary abstraction in numerical data structures.
+CI builds and tests the project in both Debug and Release configurations, runs sanitizers, checks formatting, and runs `clang-tidy`.
+
+Leak detection is disabled in the sanitizer CI job because Gmsh is an external library; AddressSanitizer still checks invalid memory accesses in the process.
 
 ## Design principles
 
-- correctness before optimization
+- mathematical correctness before optimization
+- software correctness before optimization
 - explicit ownership
 - contiguous storage for frequently traversed data
 - no unnecessary copies of large mesh arrays
 - no dynamic allocation inside future numerical loops
-- validate data early
-- keep Gmsh and visualization outside the numerical core
+- validate imported data early
+- separate construction, validation, statistics, reporting, and visualization
+- keep Gmsh outside the future numerical hot loops
 - test both valid and invalid inputs
 - measure performance before optimizing
 
+## Preprocessing v1 status
+
+The preprocessing architecture is considered complete enough to serve as the stable base of the finite-volume solver.
+
+Future geometric quantities should only be added when required by the numerical schemes. Likely examples include:
+
+```text
+owner-neighbor vectors
+face interpolation weights
+non-orthogonality measures
+skewness corrections
+```
+
+These should be introduced when their mathematical use is defined, rather than precomputed speculatively.
+
 ## Next development stage
 
-The next step is the numerical-field infrastructure required by the finite-volume solver:
+The next stage is the numerical-field infrastructure:
 
 1. cell-centered scalar fields
-2. scalar boundary conditions
+2. boundary conditions
 3. vector fields
 4. gradient reconstruction
 5. diffusion and convection operators
@@ -257,8 +397,6 @@ Planned CFD validation cases:
 
 ## Scope
 
-The solver is currently limited to 2D.
+The solver currently targets 2D finite-volume CFD with triangular and quadrilateral cells.
 
-Triangles are supported first. Quadrilateral support may be added later without changing the fundamental mesh representation.
-
-The project does not currently target general 3D polyhedral meshes.
+General 3D polyhedral meshes are outside the current scope.

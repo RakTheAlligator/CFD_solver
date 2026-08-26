@@ -54,6 +54,45 @@ jobs:
             --test-dir build \
             --output-on-failure
 
+  sanitizers:
+    name: Address and undefined behavior sanitizers
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes \
+            cmake \
+            g++ \
+            libgmsh-dev
+
+      - name: Configure
+        run: |
+          cmake \
+            -S . \
+            -B build-sanitizers \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DBUILD_TESTING=ON \
+            -DCMAKE_CXX_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer" \
+            -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=address,undefined"
+
+      - name: Build
+        run: |
+          cmake --build build-sanitizers --parallel
+
+      - name: Run sanitizer tests
+        env:
+          ASAN_OPTIONS: detect_leaks=0:halt_on_error=1
+          UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
+        run: |
+          ctest \
+            --test-dir build-sanitizers \
+            --output-on-failure
+
   code-quality:
     name: Code quality
     runs-on: ubuntu-24.04

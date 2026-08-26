@@ -7,24 +7,25 @@
 
 #include <filesystem>
 #include <string>
+#include <string_view>
 #include <utility>
 
 namespace
 {
 
+using cfd::test::make_single_quadrilateral_raw_mesh;
 using cfd::test::make_single_triangle_raw_mesh;
 using cfd::test::read_text_file;
 using cfd::test::require;
 using cfd::test::require_contains;
 
-void test_single_triangle_vtu_export()
+[[nodiscard]]
+std::string export_mesh_and_read(cfd::RawMeshData raw_mesh, const std::string_view file_name)
 {
-    cfd::RawMeshData raw_mesh{make_single_triangle_raw_mesh()};
     cfd::MeshBuildResult build_result{cfd::build_mesh(std::move(raw_mesh))};
-
     const cfd::Mesh &mesh{build_result.mesh};
 
-    const std::filesystem::path file_path{std::filesystem::temp_directory_path() / "cfd_single_triangle_test.vtu"};
+    const std::filesystem::path file_path{std::filesystem::temp_directory_path() / file_name};
 
     std::filesystem::remove(file_path);
 
@@ -34,13 +35,16 @@ void test_single_triangle_vtu_export()
 
     require(std::filesystem::file_size(file_path) > 0, "VTU writer created an empty output file.");
 
-    const std::string file_content{read_text_file(file_path)};
+    std::string file_content{read_text_file(file_path)};
+    std::filesystem::remove(file_path);
 
+    return file_content;
+}
+
+void require_common_vtu_content(const std::string &file_content)
+{
     require_contains(file_content, "<VTKFile type=\"UnstructuredGrid\"",
                      "VTU output does not declare an UnstructuredGrid.");
-
-    require_contains(file_content, "<Piece NumberOfPoints=\"3\" NumberOfCells=\"1\">",
-                     "VTU output contains incorrect mesh dimensions.");
 
     require_contains(file_content, "Name=\"connectivity\"", "VTU output does not contain cell connectivity.");
 
@@ -53,8 +57,34 @@ void test_single_triangle_vtu_export()
     require_contains(file_content, "Name=\"cell_area\"", "VTU output does not contain cell areas.");
 
     require_contains(file_content, "Name=\"cell_quality\"", "VTU output does not contain cell qualities.");
+}
 
-    std::filesystem::remove(file_path);
+void test_single_triangle_vtu_export()
+{
+    const std::string file_content{
+        export_mesh_and_read(make_single_triangle_raw_mesh(), "cfd_single_triangle_test.vtu")};
+
+    require_common_vtu_content(file_content);
+
+    require_contains(file_content, "<Piece NumberOfPoints=\"3\" NumberOfCells=\"1\">",
+                     "Triangle VTU output contains incorrect mesh dimensions.");
+
+    require_contains(file_content, "Name=\"types\" format=\"ascii\">\n          5\n",
+                     "Triangle VTU output does not contain VTK_TRIANGLE type 5.");
+}
+
+void test_single_quadrilateral_vtu_export()
+{
+    const std::string file_content{
+        export_mesh_and_read(make_single_quadrilateral_raw_mesh(), "cfd_single_quadrilateral_test.vtu")};
+
+    require_common_vtu_content(file_content);
+
+    require_contains(file_content, "<Piece NumberOfPoints=\"4\" NumberOfCells=\"1\">",
+                     "Quadrilateral VTU output contains incorrect mesh dimensions.");
+
+    require_contains(file_content, "Name=\"types\" format=\"ascii\">\n          9\n",
+                     "Quadrilateral VTU output does not contain VTK_QUAD type 9.");
 }
 
 } // namespace
@@ -64,6 +94,8 @@ int main()
     int failure_count{};
 
     failure_count += cfd::test::run_test("single triangle VTU export", test_single_triangle_vtu_export);
+
+    failure_count += cfd::test::run_test("single quadrilateral VTU export", test_single_quadrilateral_vtu_export);
 
     return cfd::test::finish_tests(failure_count, "vtk writer");
 }
