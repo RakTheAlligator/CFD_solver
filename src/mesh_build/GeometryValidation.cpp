@@ -105,17 +105,6 @@ void validate_cell_geometry(const RawMeshData &raw_mesh, const GeometryBuildData
         {
             throw_geometry_validation_error("cell " + std::to_string(cell_id) + " has cell quality greater than 1.");
         }
-
-        if (!std::isfinite(quality) || !(quality > 0.0))
-        {
-            throw_geometry_validation_error("cell " + std::to_string(cell_id) + " has invalid triangle quality.");
-        }
-
-        if (quality > 1.0 && !nearly_equal(quality, 1.0))
-        {
-            throw_geometry_validation_error("cell " + std::to_string(cell_id) +
-                                            " has triangle quality greater than 1.");
-        }
     }
 }
 
@@ -188,15 +177,73 @@ void validate_face_geometry(const TopologyBuildData &topology, const GeometryBui
         }
     }
 }
+void validate_cell_face_closure(const RawMeshData &raw_mesh, const TopologyBuildData &topology,
+                                const GeometryBuildData &geometry)
+{
+    constexpr double tolerance_factor{256.0 * std::numeric_limits<double>::epsilon()};
 
+    const Index cell_count{raw_mesh.cell_types.size()};
+
+    for (Index cell_id = 0; cell_id < cell_count; ++cell_id)
+    {
+        const Index begin{raw_mesh.cell_node_offsets[cell_id]};
+
+        const Index end{raw_mesh.cell_node_offsets[cell_id + 1]};
+
+        double sum_x{};
+        double sum_y{};
+        double perimeter{};
+
+        for (Index position = begin; position < end; ++position)
+        {
+            const Index face_id{topology.cell_faces[position]};
+
+            const FaceAdjacency &adjacency{topology.face_adjacencies[face_id]};
+
+            const Vector2 &area_vector{geometry.face_area_vectors[face_id]};
+
+            perimeter += geometry.face_lengths[face_id];
+
+            if (adjacency.owner == cell_id)
+            {
+                sum_x += area_vector.x;
+                sum_y += area_vector.y;
+            }
+            else if (adjacency.neighbor == cell_id)
+            {
+                sum_x -= area_vector.x;
+                sum_y -= area_vector.y;
+            }
+            else
+            {
+                throw_geometry_validation_error("cell " + std::to_string(cell_id) +
+                                                " references a face to which it does not belong.");
+            }
+        }
+
+        const double closure_norm{std::hypot(sum_x, sum_y)};
+
+        const double tolerance{tolerance_factor * perimeter};
+
+        if (!std::isfinite(closure_norm) || closure_norm > tolerance)
+        {
+            throw_geometry_validation_error("cell " + std::to_string(cell_id) +
+                                            " does not satisfy face-area-vector closure.");
+        }
+    }
+}
 } // namespace
 
 void validate_geometry(const RawMeshData &raw_mesh, const TopologyBuildData &topology,
                        const GeometryBuildData &geometry)
 {
     validate_geometry_storage(raw_mesh, topology, geometry);
+
     validate_cell_geometry(raw_mesh, geometry);
+
     validate_face_geometry(topology, geometry);
+
+    validate_cell_face_closure(raw_mesh, topology, geometry);
 }
 
 } // namespace cfd::detail

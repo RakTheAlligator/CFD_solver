@@ -245,6 +245,44 @@ void check_mesh_geometry_invariants(const cfd::Mesh &mesh)
 
         require(quality <= 1.0 + test_tolerance, "Cell quality is greater than 1.");
     }
+    for (cfd::Index cell_id = 0; cell_id < mesh.cell_count(); ++cell_id)
+    {
+        const cfd::Index begin{mesh.cell_node_offsets()[cell_id]};
+
+        const cfd::Index end{mesh.cell_node_offsets()[cell_id + 1]};
+
+        double sum_x{};
+        double sum_y{};
+        double perimeter{};
+
+        for (cfd::Index position = begin; position < end; ++position)
+        {
+            const cfd::Index face_id{mesh.cell_faces()[position]};
+
+            const cfd::FaceAdjacency &adjacency{mesh.face_adjacencies()[face_id]};
+
+            const cfd::Vector2 &area_vector{mesh.face_area_vectors()[face_id]};
+
+            perimeter += mesh.face_lengths()[face_id];
+
+            if (adjacency.owner == cell_id)
+            {
+                sum_x += area_vector.x;
+                sum_y += area_vector.y;
+            }
+            else
+            {
+                require(adjacency.neighbor == cell_id, "Cell references a face to which it does not belong.");
+
+                sum_x -= area_vector.x;
+                sum_y -= area_vector.y;
+            }
+        }
+
+        const double closure_norm{std::hypot(sum_x, sum_y)};
+
+        require(closure_norm <= test_tolerance * perimeter, "Cell face-area vectors do not close.");
+    }
 }
 
 void test_single_triangle()
