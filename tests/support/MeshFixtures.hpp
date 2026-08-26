@@ -152,6 +152,49 @@ inline RawMeshData make_single_clockwise_quadrilateral_raw_mesh()
 }
 
 [[nodiscard]]
+inline RawMeshData make_two_triangle_raw_mesh()
+{
+    constexpr BoundaryId boundary_id{0};
+
+    RawMeshData raw_mesh;
+
+    raw_mesh.nodes = {
+        {0.0, 0.0},
+        {1.0, 0.0},
+        {1.0, 1.0},
+        {0.0, 1.0},
+    };
+
+    raw_mesh.cell_types = {
+        CellType::Triangle,
+        CellType::Triangle,
+    };
+
+    raw_mesh.cell_nodes = {
+        0, 1, 2, 0, 2, 3,
+    };
+
+    raw_mesh.cell_node_offsets = {
+        0,
+        3,
+        6,
+    };
+
+    raw_mesh.boundary_groups = {
+        {boundary_id, "wall"},
+    };
+
+    raw_mesh.boundary_edges = {
+        {{0, 1}, boundary_id},
+        {{1, 2}, boundary_id},
+        {{2, 3}, boundary_id},
+        {{3, 0}, boundary_id},
+    };
+
+    return raw_mesh;
+}
+
+[[nodiscard]]
 inline RawMeshData make_non_manifold_raw_mesh()
 {
     constexpr BoundaryId boundary_id{0};

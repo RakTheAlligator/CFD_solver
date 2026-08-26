@@ -152,9 +152,15 @@ if(BUILD_TESTING)
     )
 
     cfd_add_test(
-    cfd_mesh_geometry_tests
-    mesh_geometry
-    tests/MeshGeometryTests.cpp
+        cfd_mesh_topology_tests
+        mesh_topology
+        tests/MeshTopologyTests.cpp
+    )
+
+    cfd_add_test(
+        cfd_mesh_geometry_tests
+        mesh_geometry
+        tests/MeshGeometryTests.cpp
     )
 
     cfd_add_test(
