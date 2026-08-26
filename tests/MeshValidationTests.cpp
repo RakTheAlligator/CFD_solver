@@ -13,6 +13,7 @@ namespace
 {
 
 using cfd::test::make_non_manifold_raw_mesh;
+using cfd::test::make_single_quadrilateral_raw_mesh;
 using cfd::test::make_single_triangle_raw_mesh;
 using cfd::test::require_throws_with_message;
 
@@ -25,6 +26,22 @@ void test_rejects_inconsistent_cell_offsets()
     require_throws_with_message<std::runtime_error>(
         [&raw_mesh]() { cfd::validate_raw_mesh(raw_mesh); },
         "Raw mesh validation failed:", "Raw mesh validation accepted inconsistent cell offsets.");
+}
+
+void test_rejects_concave_quadrilateral()
+{
+    cfd::RawMeshData raw_mesh{make_single_quadrilateral_raw_mesh()};
+
+    raw_mesh.nodes[2] = {
+        0.25,
+        0.25,
+    };
+
+    cfd::validate_raw_mesh(raw_mesh);
+
+    require_throws_with_message<std::runtime_error>(
+        [&raw_mesh]() { static_cast<void>(cfd::build_mesh(std::move(raw_mesh))); },
+        "non-convex or self-intersecting quadrilateral", "Mesh construction accepted a concave quadrilateral.");
 }
 
 void test_rejects_duplicate_node_in_cell()
@@ -137,6 +154,8 @@ int main()
     failure_count += cfd::test::run_test("reject non-manifold face", test_rejects_non_manifold_face);
 
     failure_count += cfd::test::run_test("reject invalid boundary group ID", test_rejects_invalid_boundary_group_id);
+
+    failure_count += cfd::test::run_test("reject concave quadrilateral", test_rejects_concave_quadrilateral);
 
     return cfd::test::finish_tests(failure_count, "mesh validation");
 }

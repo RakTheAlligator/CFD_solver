@@ -69,9 +69,9 @@ void test_single_triangle_mesh_report()
 
     require_contains(report, "Face length", "Mesh report does not contain face-length statistics.");
 
-    require_contains(report, "Triangle quality", "Mesh report does not contain triangle-quality statistics.");
+    require_contains(report, "Cell quality", "Mesh report does not contain cell-quality statistics.");
 
-    require_contains(report, "Worst triangle    : cell 0", "Mesh report contains an incorrect worst-quality cell.");
+    require_contains(report, "Worst cell    : cell 0", "Mesh report contains an incorrect worst-quality cell.");
 }
 
 } // namespace

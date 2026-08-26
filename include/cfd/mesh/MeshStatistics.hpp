@@ -24,7 +24,7 @@ struct MeshStatistics
     ScalarStats cell_areas;
     ScalarStats cell_sizes;
     ScalarStats face_lengths;
-    ScalarStats triangle_quality;
+    ScalarStats cell_quality;
 
     Index worst_quality_cell{invalid_index};
 };

@@ -46,7 +46,7 @@ int main()
 
         const cfd::MeshGenerationOptions options{
             .mesh_size = 0.2,
-            .cell_type = cfd::CellType::Triangle,
+            .cell_type = cfd::CellType::Quadrilateral,
         };
 
         std::cout << "============================================================\n"

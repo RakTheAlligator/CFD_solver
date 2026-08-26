@@ -52,9 +52,8 @@ void write_mesh_report(std::ostream &output, const Mesh &mesh, const MeshStatist
 
     if (statistics.worst_quality_cell != invalid_index)
     {
-        write_statistics_row(report, "Triangle quality", "-", statistics.triangle_quality);
-
-        report << "\n  Worst triangle    : cell " << statistics.worst_quality_cell << '\n';
+       report << "\n  Worst cell        : cell "
+       << statistics.worst_quality_cell << '\n';
     }
 
     output << report.str();

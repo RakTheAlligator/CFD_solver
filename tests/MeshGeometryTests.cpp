@@ -19,6 +19,8 @@ namespace
 {
 
 using cfd::test::fail;
+using cfd::test::make_single_clockwise_quadrilateral_raw_mesh;
+using cfd::test::make_single_quadrilateral_raw_mesh;
 using cfd::test::make_single_triangle_raw_mesh;
 using cfd::test::require;
 using cfd::test::require_near;
@@ -235,16 +237,13 @@ void check_mesh_geometry_invariants(const cfd::Mesh &mesh)
     }
     for (cfd::Index cell_id = 0; cell_id < mesh.cell_count(); ++cell_id)
     {
-        if (mesh.cell_types()[cell_id] == cfd::CellType::Triangle)
-        {
-            const double quality{mesh.cell_qualities()[cell_id]};
+        const double quality{mesh.cell_qualities()[cell_id]};
 
-            require(std::isfinite(quality), "Triangle quality is not finite.");
+        require(std::isfinite(quality), "Cell quality is not finite.");
 
-            require(quality > 0.0, "Triangle quality is not positive.");
+        require(quality > 0.0, "Cell quality is not positive.");
 
-            require(quality <= 1.0 + test_tolerance, "Triangle quality is greater than 1.");
-        }
+        require(quality <= 1.0 + test_tolerance, "Cell quality is greater than 1.");
     }
 }
 
@@ -309,13 +308,13 @@ void test_single_triangle_statistics()
 
     const double expected_quality{std::sqrt(3.0) / 2.0};
 
-    require_near(statistics.triangle_quality.minimum, expected_quality, test_tolerance,
+    require_near(statistics.cell_quality.minimum, expected_quality, test_tolerance,
                  "Single-triangle minimum quality statistic is incorrect.");
 
-    require_near(statistics.triangle_quality.mean, expected_quality, test_tolerance,
+    require_near(statistics.cell_quality.mean, expected_quality, test_tolerance,
                  "Single-triangle mean quality statistic is incorrect.");
 
-    require_near(statistics.triangle_quality.maximum, expected_quality, test_tolerance,
+    require_near(statistics.cell_quality.maximum, expected_quality, test_tolerance,
                  "Single-triangle maximum quality statistic is incorrect.");
 
     require(statistics.worst_quality_cell == 0, "Single triangle must be its own worst-quality cell.");
@@ -352,6 +351,64 @@ void test_small_translated_equilateral_triangle()
 
     check_mesh_geometry_invariants(mesh);
 }
+
+void test_single_quadrilateral()
+{
+    cfd::RawMeshData raw_mesh{make_single_quadrilateral_raw_mesh()};
+
+    const double boundary_area{compute_single_closed_boundary_area(raw_mesh)};
+
+    require_near(boundary_area, 1.0, test_tolerance, "Single-quadrilateral boundary area is incorrect.");
+
+    cfd::MeshBuildResult build_result{cfd::build_mesh(std::move(raw_mesh))};
+
+    const cfd::Mesh &mesh{build_result.mesh};
+
+    require(mesh.node_count() == 4, "Single quadrilateral must contain four nodes.");
+
+    require(mesh.cell_count() == 1, "Single quadrilateral must contain one cell.");
+
+    require(mesh.face_count() == 4, "Single quadrilateral must contain four faces.");
+
+    require_near(mesh.cell_areas()[0], 1.0, test_tolerance, "Single-quadrilateral area is incorrect.");
+
+    require_near(mesh.cell_centers()[0].x, 0.5, test_tolerance,
+                 "Single-quadrilateral centroid x-coordinate is incorrect.");
+
+    require_near(mesh.cell_centers()[0].y, 0.5, test_tolerance,
+                 "Single-quadrilateral centroid y-coordinate is incorrect.");
+
+    require_near(mesh.cell_qualities()[0], 1.0, test_tolerance, "Square quality must be equal to 1.");
+
+    for (const double face_length : mesh.face_lengths())
+    {
+        require_near(face_length, 1.0, test_tolerance, "Square face length is incorrect.");
+    }
+
+    check_mesh_geometry_invariants(mesh);
+}
+
+void test_clockwise_quadrilateral()
+{
+    cfd::RawMeshData raw_mesh{make_single_clockwise_quadrilateral_raw_mesh()};
+
+    cfd::MeshBuildResult build_result{cfd::build_mesh(std::move(raw_mesh))};
+
+    const cfd::Mesh &mesh{build_result.mesh};
+
+    require_near(mesh.cell_areas()[0], 1.0, test_tolerance, "Clockwise quadrilateral area is incorrect.");
+
+    require_near(mesh.cell_centers()[0].x, 0.5, test_tolerance,
+                 "Clockwise quadrilateral centroid x-coordinate is incorrect.");
+
+    require_near(mesh.cell_centers()[0].y, 0.5, test_tolerance,
+                 "Clockwise quadrilateral centroid y-coordinate is incorrect.");
+
+    require_near(mesh.cell_qualities()[0], 1.0, test_tolerance, "Clockwise square quality must be equal to 1.");
+
+    check_mesh_geometry_invariants(mesh);
+}
+
 void test_reference_rectangle()
 {
     const cfd::RectangleGeometry geometry{
@@ -424,5 +481,8 @@ int main()
 
     failure_count += cfd::test::run_test("single triangle statistics", test_single_triangle_statistics);
 
+    failure_count += cfd::test::run_test("single quadrilateral geometry", test_single_quadrilateral);
+
+    failure_count += cfd::test::run_test("clockwise quadrilateral geometry", test_clockwise_quadrilateral);
     return cfd::test::finish_tests(failure_count, "mesh geometry");
 }

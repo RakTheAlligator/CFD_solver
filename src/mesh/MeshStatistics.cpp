@@ -1,6 +1,5 @@
 #include "cfd/mesh/MeshStatistics.hpp"
 
-#include "cfd/mesh/Cell.hpp"
 #include "cfd/mesh/Mesh.hpp"
 
 #include <algorithm>
@@ -53,7 +52,7 @@ MeshStatistics compute_mesh_statistics(const Mesh &mesh)
     ScalarAccumulator cell_area_statistics;
     ScalarAccumulator cell_size_statistics;
     ScalarAccumulator face_length_statistics;
-    ScalarAccumulator triangle_quality_statistics;
+    ScalarAccumulator cell_quality_statistics;
 
     for (const FaceAdjacency &adjacency : mesh.face_adjacencies())
     {
@@ -84,14 +83,9 @@ MeshStatistics compute_mesh_statistics(const Mesh &mesh)
 
     for (Index cell_id = 0; cell_id < mesh.cell_count(); ++cell_id)
     {
-        if (mesh.cell_types()[cell_id] != CellType::Triangle)
-        {
-            continue;
-        }
-
         const double quality{mesh.cell_qualities()[cell_id]};
 
-        add_value(triangle_quality_statistics, quality);
+        add_value(cell_quality_statistics, quality);
 
         if (quality < worst_quality)
         {
@@ -103,7 +97,7 @@ MeshStatistics compute_mesh_statistics(const Mesh &mesh)
     statistics.cell_areas = finalize(cell_area_statistics);
     statistics.cell_sizes = finalize(cell_size_statistics);
     statistics.face_lengths = finalize(face_length_statistics);
-    statistics.triangle_quality = finalize(triangle_quality_statistics);
+    statistics.cell_quality = finalize(cell_quality_statistics);
 
     return statistics;
 }

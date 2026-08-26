@@ -5,6 +5,7 @@
 #include "cfd/mesh/Types.hpp"
 #include "cfd/meshing/RawMeshData.hpp"
 
+#include <algorithm>
 #include <cmath>
 #include <limits>
 #include <stdexcept>
@@ -49,6 +50,105 @@ double compute_triangle_quality(const RawMeshData &raw_mesh, const Index cell_id
     }
 
     return 4.0 * std::sqrt(3.0) * area / squared_length_sum;
+}
+
+[[nodiscard]]
+double compute_quadrilateral_quality(const RawMeshData &raw_mesh, const Index cell_id)
+{
+    constexpr Index node_count{4};
+
+    const Index begin{raw_mesh.cell_node_offsets[cell_id]};
+
+    double minimum_quality{std::numeric_limits<double>::infinity()};
+
+    for (Index local_node = 0; local_node < node_count; ++local_node)
+    {
+        const Index previous_local_node{(local_node + node_count - 1) % node_count};
+
+        const Index next_local_node{(local_node + 1) % node_count};
+
+        const Node &previous{raw_mesh.nodes[raw_mesh.cell_nodes[begin + previous_local_node]]};
+
+        const Node &current{raw_mesh.nodes[raw_mesh.cell_nodes[begin + local_node]]};
+
+        const Node &next{raw_mesh.nodes[raw_mesh.cell_nodes[begin + next_local_node]]};
+
+        const double previous_dx{previous.x - current.x};
+        const double previous_dy{previous.y - current.y};
+
+        const double next_dx{next.x - current.x};
+        const double next_dy{next.y - current.y};
+
+        const double cross{std::abs(previous_dx * next_dy - previous_dy * next_dx)};
+
+        const double squared_length_sum{previous_dx * previous_dx + previous_dy * previous_dy + next_dx * next_dx +
+                                        next_dy * next_dy};
+
+        if (!std::isfinite(cross) || !std::isfinite(squared_length_sum) || !(squared_length_sum > 0.0))
+        {
+            throw_geometry_build_error("cell " + std::to_string(cell_id) + " has invalid quadrilateral edge geometry.");
+        }
+
+        const double corner_quality{2.0 * cross / squared_length_sum};
+
+        minimum_quality = std::min(minimum_quality, corner_quality);
+    }
+
+    return minimum_quality;
+}
+
+void ensure_valid_quadrilateral_shape(const RawMeshData &raw_mesh, const Index cell_id)
+{
+    constexpr Index node_count{4};
+
+    const Index begin{raw_mesh.cell_node_offsets[cell_id]};
+
+    bool orientation_initialized{};
+    bool positive_orientation{};
+
+    for (Index local_node = 0; local_node < node_count; ++local_node)
+    {
+        const Index previous_local_node{(local_node + node_count - 1) % node_count};
+
+        const Index next_local_node{(local_node + 1) % node_count};
+
+        const Node &previous{raw_mesh.nodes[raw_mesh.cell_nodes[begin + previous_local_node]]};
+
+        const Node &current{raw_mesh.nodes[raw_mesh.cell_nodes[begin + local_node]]};
+
+        const Node &next{raw_mesh.nodes[raw_mesh.cell_nodes[begin + next_local_node]]};
+
+        const double incoming_x{current.x - previous.x};
+
+        const double incoming_y{current.y - previous.y};
+
+        const double outgoing_x{next.x - current.x};
+
+        const double outgoing_y{next.y - current.y};
+
+        const double cross{incoming_x * outgoing_y - incoming_y * outgoing_x};
+
+        if (!std::isfinite(cross) || cross == 0.0)
+        {
+            throw_geometry_build_error("cell " + std::to_string(cell_id) + " has a degenerate quadrilateral corner.");
+        }
+
+        const bool current_positive_orientation{cross > 0.0};
+
+        if (!orientation_initialized)
+        {
+            positive_orientation = current_positive_orientation;
+
+            orientation_initialized = true;
+            continue;
+        }
+
+        if (current_positive_orientation != positive_orientation)
+        {
+            throw_geometry_build_error("cell " + std::to_string(cell_id) +
+                                       " has a non-convex or self-intersecting quadrilateral.");
+        }
+    }
 }
 
 void build_cell_geometry(const RawMeshData &raw_mesh, GeometryBuildData &geometry)
@@ -116,9 +216,17 @@ void build_cell_geometry(const RawMeshData &raw_mesh, GeometryBuildData &geometr
 
         geometry.cell_centers[cell_id] = {centroid_x, centroid_y};
 
-        if (raw_mesh.cell_types[cell_id] == CellType::Triangle)
+        switch (raw_mesh.cell_types[cell_id])
         {
+        case CellType::Triangle:
             geometry.cell_qualities[cell_id] = compute_triangle_quality(raw_mesh, cell_id, area);
+            break;
+
+        case CellType::Quadrilateral:
+            ensure_valid_quadrilateral_shape(raw_mesh, cell_id);
+
+            geometry.cell_qualities[cell_id] = compute_quadrilateral_quality(raw_mesh, cell_id);
+            break;
         }
     }
 }

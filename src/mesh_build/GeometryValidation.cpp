@@ -1,6 +1,7 @@
 #include "mesh_build/GeometryValidation.hpp"
 
 #include "cfd/mesh/Cell.hpp"
+#include "cfd/mesh/Node.hpp"
 #include "cfd/mesh/Types.hpp"
 
 #include "cfd/meshing/RawMeshData.hpp"
@@ -93,12 +94,17 @@ void validate_cell_geometry(const RawMeshData &raw_mesh, const GeometryBuildData
             throw_geometry_validation_error("cell " + std::to_string(cell_id) + " has non-positive area.");
         }
 
-        if (raw_mesh.cell_types[cell_id] != CellType::Triangle)
+        const double quality{geometry.cell_qualities[cell_id]};
+
+        if (!std::isfinite(quality) || !(quality > 0.0))
         {
-            continue;
+            throw_geometry_validation_error("cell " + std::to_string(cell_id) + " has invalid cell quality.");
         }
 
-        const double quality{geometry.cell_qualities[cell_id]};
+        if (quality > 1.0 && !nearly_equal(quality, 1.0))
+        {
+            throw_geometry_validation_error("cell " + std::to_string(cell_id) + " has cell quality greater than 1.");
+        }
 
         if (!std::isfinite(quality) || !(quality > 0.0))
         {
