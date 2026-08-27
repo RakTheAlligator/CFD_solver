@@ -29,6 +29,8 @@ void write_statistics_row(std::ostream &output, const std::string_view quantity,
 void write_mesh_report(std::ostream &output, const Mesh &mesh, const MeshStatistics &statistics,
                        const MeshBuildTimings &timings)
 {
+    // Format into a local stream so manipulators such as fixed, left, and
+    // setprecision do not alter the formatting state of the caller's stream.
     std::ostringstream report;
 
     report << "\n[Mesh topology]\n"
@@ -53,7 +55,6 @@ void write_mesh_report(std::ostream &output, const Mesh &mesh, const MeshStatist
     if (statistics.worst_quality_cell_id != invalid_index)
     {
         write_statistics_row(report, "Cell quality", "-", statistics.cell_quality);
-
         report << "\n  Worst cell        : cell " << statistics.worst_quality_cell_id << '\n';
     }
 

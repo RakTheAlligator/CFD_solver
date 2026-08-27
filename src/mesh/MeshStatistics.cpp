@@ -1,6 +1,8 @@
 #include "cfd/mesh/MeshStatistics.hpp"
 
+#include "cfd/mesh/Face.hpp"
 #include "cfd/mesh/Mesh.hpp"
+#include "cfd/mesh/Types.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -12,6 +14,8 @@ namespace cfd
 namespace
 {
 
+// Running accumulator for one-pass descriptive statistics. Derived quantities
+// do not need to be stored solely for reporting their minimum, maximum, and mean.
 struct ScalarAccumulator
 {
     double minimum{std::numeric_limits<double>::infinity()};
@@ -69,6 +73,9 @@ MeshStatistics compute_mesh_statistics(const Mesh &mesh)
     for (const double area : mesh.cell_areas())
     {
         add_value(cell_area_accumulator, area);
+
+        // sqrt(area) provides a topology-independent characteristic linear
+        // cell size; it is not intended to represent an actual edge length.
         add_value(cell_size_accumulator, std::sqrt(area));
 
         statistics.total_cell_area += area;
@@ -81,6 +88,8 @@ MeshStatistics compute_mesh_statistics(const Mesh &mesh)
 
     double worst_quality{std::numeric_limits<double>::infinity()};
 
+    // A strict comparison keeps the first cell ID when several cells share the
+    // same minimum quality, making the reported result deterministic.
     for (Index cell_id = 0; cell_id < mesh.cell_count(); ++cell_id)
     {
         const double quality{mesh.cell_qualities()[cell_id]};

@@ -1,10 +1,11 @@
-#include "cfd/mesh/MeshBuilder.hpp"
-#include "cfd/mesh/MeshStatistics.hpp"
-
-#include "cfd/meshing/GmshMesher.hpp"
-
 #include "cfd/io/MeshReport.hpp"
 #include "cfd/io/VtkWriter.hpp"
+#include "cfd/mesh/Cell.hpp"
+#include "cfd/mesh/MeshBuilder.hpp"
+#include "cfd/mesh/MeshStatistics.hpp"
+#include "cfd/meshing/GmshMesher.hpp"
+#include "cfd/meshing/RawMeshData.hpp"
+#include "cfd/meshing/RectangleGeometry.hpp"
 
 #include <chrono>
 #include <exception>
@@ -63,7 +64,6 @@ int main()
             std::chrono::duration<double, std::milli>(mesh_generation_end - mesh_generation_start)};
 
         std::cout << "\n[Mesh generation]\n";
-
         std::cout << std::fixed << std::setprecision(3) << "  Domain            : rectangle " << geometry.length
                   << " x " << geometry.height << " m\n"
                   << "  Target mesh size  : " << options.mesh_size << " m\n";

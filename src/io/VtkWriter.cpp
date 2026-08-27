@@ -1,25 +1,27 @@
 #include "cfd/io/VtkWriter.hpp"
 
+#include "cfd/mesh/Cell.hpp"
 #include "cfd/mesh/Mesh.hpp"
+#include "cfd/mesh/Node.hpp"
+#include "cfd/mesh/Types.hpp"
 
 #include <cstdint>
 #include <fstream>
 #include <iomanip>
 #include <limits>
 #include <stdexcept>
-#include <string>
 
 namespace cfd
 {
+
 namespace
 {
 
 [[nodiscard]]
 std::uint8_t vtk_cell_type(const CellType cell_type)
 {
-    // VTK cell-type identifiers:
-    // 5 = VTK_TRIANGLE
-    // 9 = VTK_QUAD
+    // VTK legacy cell-type identifiers used by the XML UnstructuredGrid
+    // format: 5 = VTK_TRIANGLE, 9 = VTK_QUAD.
     switch (cell_type)
     {
     case CellType::Triangle:
@@ -38,6 +40,8 @@ std::int64_t vtk_index(const Index index)
 {
     constexpr auto vtk_index_max{static_cast<std::uintmax_t>(std::numeric_limits<std::int64_t>::max())};
 
+    // Mesh Index is unsigned, whereas this VTU writer stores connectivity and
+    // offsets as signed Int64. Check representability before conversion.
     if (static_cast<std::uintmax_t>(index) > vtk_index_max)
     {
         throw std::runtime_error("Mesh index is too large for VTU Int64 storage.");
@@ -54,8 +58,8 @@ void write_points(std::ofstream &output, const Mesh &mesh)
 
     for (const Node &node : mesh.nodes())
     {
-        // VTK coordinates are three-dimensional.
-        // The solver is 2D, so z = 0.
+        // VTK point coordinates are three-dimensional. Embed the solver's 2D
+        // mesh in the z = 0 plane.
         output << "          " << node.x << ' ' << node.y << " 0\n";
     }
 
@@ -103,11 +107,11 @@ void write_cell_offsets(std::ofstream &output, const Mesh &mesh)
 
     const auto cell_node_offsets{mesh.cell_node_offsets()};
 
-    // Our compressed connectivity begins with offset 0:
+    // Mesh connectivity uses CSR-like offsets including the initial zero:
     //
     //   {0, 3, 6, 9}
     //
-    // VTK expects the end offset of each cell:
+    // VTK instead stores only the exclusive end offset of each cell:
     //
     //   {3, 6, 9}
     for (Index cell_id = 0; cell_id < mesh.cell_count(); ++cell_id)
@@ -134,9 +138,8 @@ void write_cell_types(std::ofstream &output, const Mesh &mesh)
 
     for (Index cell_id = 0; cell_id < mesh.cell_count(); ++cell_id)
     {
-        // std::uint8_t is generally an alias of unsigned char.
-        // Cast to unsigned int so operator<< writes a number rather than
-        // a character.
+        // std::uint8_t is typically an alias of unsigned char. Cast before
+        // streaming so the numeric VTK identifier is written, not a character.
         output << static_cast<unsigned int>(vtk_cell_type(cell_types[cell_id]));
 
         if (cell_id + 1 < mesh.cell_count())
@@ -246,10 +249,13 @@ void write_vtu(const Mesh &mesh, const std::filesystem::path &file_path)
         throw std::runtime_error("Unable to open VTU output file: " + file_path.string());
     }
 
-    // Keep enough digits to reconstruct stored double values accurately.
-    // This is intentionally different from the concise terminal formatting.
+    // max_digits10 preserves enough decimal digits for a written double to
+    // round-trip back to the same binary value.
     output << std::setprecision(std::numeric_limits<double>::max_digits10);
 
+    // ASCII keeps this diagnostic export simple and inspectable. If VTU output
+    // becomes a significant cost for large or transient simulations, binary or
+    // appended VTK data should be evaluated from measurements.
     output << "<?xml version=\"1.0\"?>\n";
     output << "<VTKFile type=\"UnstructuredGrid\" "
               "version=\"0.1\" byte_order=\"LittleEndian\">\n";
