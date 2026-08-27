@@ -92,6 +92,7 @@ inline RawMeshData make_equilateral_triangle_raw_mesh(const double origin_x, con
 
     return raw_mesh;
 }
+
 [[nodiscard]]
 inline RawMeshData make_single_quadrilateral_raw_mesh()
 {

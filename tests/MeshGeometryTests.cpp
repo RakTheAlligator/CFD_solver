@@ -319,6 +319,7 @@ void test_single_triangle()
 
     require_near(mesh.cell_qualities()[0], expected_quality, test_tolerance, "Single-triangle quality is incorrect.");
 }
+
 void test_single_triangle_statistics()
 {
     cfd::RawMeshData raw_mesh{make_single_triangle_raw_mesh()};
