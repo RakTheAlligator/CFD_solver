@@ -18,20 +18,12 @@ MeshBuildResult build_mesh(RawMeshData &&raw_mesh)
 {
     validate_raw_mesh(raw_mesh);
 
-    // -------------------------------------------------------------------------
-    // Topology
-    // -------------------------------------------------------------------------
-
     const auto topology_start{std::chrono::steady_clock::now()};
 
     auto topology{detail::build_topology(raw_mesh)};
     detail::validate_topology(raw_mesh, topology);
 
     const auto topology_end{std::chrono::steady_clock::now()};
-
-    // -------------------------------------------------------------------------
-    // Geometry
-    // -------------------------------------------------------------------------
 
     const auto geometry_start{std::chrono::steady_clock::now()};
 
@@ -40,12 +32,10 @@ MeshBuildResult build_mesh(RawMeshData &&raw_mesh)
 
     const auto geometry_end{std::chrono::steady_clock::now()};
 
-    // -------------------------------------------------------------------------
-    // Final mesh
-    // -------------------------------------------------------------------------
-
     Mesh mesh;
 
+    // Transfer validated storage into the final Mesh. Moving the vectors keeps
+    // ownership explicit and avoids copying potentially large mesh arrays.
     mesh.nodes_ = std::move(raw_mesh.nodes);
 
     mesh.cell_types_ = std::move(raw_mesh.cell_types);
@@ -62,6 +52,7 @@ MeshBuildResult build_mesh(RawMeshData &&raw_mesh)
     mesh.cell_areas_ = std::move(geometry.cell_areas);
     mesh.cell_centers_ = std::move(geometry.cell_centers);
     mesh.cell_qualities_ = std::move(geometry.cell_qualities);
+
     mesh.face_centers_ = std::move(geometry.face_centers);
     mesh.face_lengths_ = std::move(geometry.face_lengths);
     mesh.face_area_vectors_ = std::move(geometry.face_area_vectors);

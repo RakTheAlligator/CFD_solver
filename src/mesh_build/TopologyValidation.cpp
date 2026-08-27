@@ -1,4 +1,4 @@
-#include "mesh_build/MeshBuildData.hpp"
+#include "mesh_build/TopologyValidation.hpp"
 
 #include "cfd/meshing/RawMeshData.hpp"
 
@@ -43,6 +43,8 @@ void throw_topology_validation_error(const std::string &message)
     throw std::runtime_error("Topology validation failed: " + message);
 }
 
+// Canonicalize the cell pair so that adjacency identity is independent of
+// which cell was assigned as owner during topology construction.
 [[nodiscard]]
 CellPair make_cell_pair(const Index cell_0_id, const Index cell_1_id) noexcept
 {
@@ -114,6 +116,9 @@ void validate_cell_face_connectivity(const RawMeshData &raw_mesh, const Topology
                 throw_topology_validation_error("cell " + std::to_string(cell_id) + " references an invalid face.");
             }
 
+            // Cells currently have only three or four local faces. A bounded
+            // O(n^2) scan detects duplicates without allocating temporary
+            // storage for every cell.
             for (Index previous_cell_face_position = cell_face_begin_offset;
                  previous_cell_face_position < cell_face_position; ++previous_cell_face_position)
             {
@@ -137,6 +142,8 @@ void validate_cell_face_connectivity(const RawMeshData &raw_mesh, const Topology
 
             const Face &face{topology.faces[face_id]};
 
+            // Face identity is orientation-independent: either stored node
+            // ordering is valid as long as it matches the local cell edge.
             const bool has_expected_nodes{
                 (face.node_ids[0] == expected_node_0_id && face.node_ids[1] == expected_node_1_id) ||
                 (face.node_ids[0] == expected_node_1_id && face.node_ids[1] == expected_node_0_id)};
@@ -188,6 +195,8 @@ FaceCounts validate_faces(const RawMeshData &raw_mesh, const TopologyBuildData &
 
         const BoundaryId boundary_id{topology.face_boundary_ids[face_id]};
 
+        // Boundary status is encoded topologically by the absence of a
+        // neighbor. Boundary assignment must agree with that topology.
         if (adjacency.neighbor == invalid_index)
         {
             ++face_counts.boundary_face_count;
@@ -237,7 +246,6 @@ FaceCounts validate_faces(const RawMeshData &raw_mesh, const TopologyBuildData &
 void validate_unique_cell_neighbors(const TopologyBuildData &topology)
 {
     std::vector<CellPair> neighboring_cell_pairs;
-
     neighboring_cell_pairs.reserve(topology.faces.size());
 
     for (const FaceAdjacency &adjacency : topology.face_adjacencies)
@@ -250,6 +258,9 @@ void validate_unique_cell_neighbors(const TopologyBuildData &topology)
         neighboring_cell_pairs.push_back(make_cell_pair(adjacency.owner, adjacency.neighbor));
     }
 
+    // This O(F log F) validation runs only during preprocessing. Sorting
+    // canonical cell pairs keeps the final Mesh free of additional lookup
+    // structures while detecting cells that incorrectly share multiple faces.
     std::sort(neighboring_cell_pairs.begin(), neighboring_cell_pairs.end());
 
     const auto duplicate_pair_iterator{
@@ -274,6 +285,8 @@ void validate_topology(const RawMeshData &raw_mesh, const TopologyBuildData &top
 
     validate_unique_cell_neighbors(topology);
 
+    // Count cell-face incidences independently of the constructed face count.
+    // Every internal face contributes twice and every boundary face once.
     if (raw_mesh.cell_nodes.size() != 2 * face_counts.internal_face_count + face_counts.boundary_face_count)
     {
         throw_topology_validation_error("local face count is inconsistent with internal and boundary face counts.");

@@ -1,8 +1,8 @@
 #include "mesh_build/GeometryValidation.hpp"
 
-#include "cfd/mesh/Cell.hpp"
-#include "cfd/mesh/Node.hpp"
+#include "cfd/mesh/Face.hpp"
 #include "cfd/mesh/Types.hpp"
+#include "cfd/mesh/Vector2.hpp"
 #include "cfd/meshing/RawMeshData.hpp"
 
 #include <algorithm>
@@ -28,6 +28,8 @@ bool nearly_equal(const double a, const double b) noexcept
 {
     constexpr double tolerance{64.0 * std::numeric_limits<double>::epsilon()};
 
+    // Use a scale-relative comparison because this helper validates positive
+    // geometric quantities whose magnitudes may vary with mesh resolution.
     const double scale{std::max(std::abs(a), std::abs(b))};
 
     return std::abs(a - b) <= tolerance * scale;
@@ -98,6 +100,8 @@ void validate_cell_geometry(const RawMeshData &raw_mesh, const GeometryBuildData
             throw_geometry_validation_error("cell " + std::to_string(cell_id) + " has invalid cell quality.");
         }
 
+        // The analytical quality metrics are bounded by one. Allow only the
+        // small overshoot that can result from floating-point roundoff.
         if (quality > 1.0 && !nearly_equal(quality, 1.0))
         {
             throw_geometry_validation_error("cell " + std::to_string(cell_id) + " has cell quality greater than 1.");
@@ -136,6 +140,8 @@ void validate_face_geometry(const TopologyBuildData &topology, const GeometryBui
             throw_geometry_validation_error("face " + std::to_string(face_id) + " has non-positive length.");
         }
 
+        // In two dimensions, the magnitude of the face-area vector is the
+        // physical face length.
         const double area_vector_norm{std::hypot(face_area_vector.x, face_area_vector.y)};
 
         if (!nearly_equal(area_vector_norm, length))
@@ -145,9 +151,11 @@ void validate_face_geometry(const TopologyBuildData &topology, const GeometryBui
         }
 
         const FaceAdjacency &adjacency{topology.face_adjacencies[face_id]};
-
         const Vector2 &owner_center{geometry.cell_centers[adjacency.owner]};
 
+        // Sf must point outward from the owner. The owner-to-face vector
+        // provides an orientation test independent of the stored face-node
+        // ordering.
         const double owner_to_face_dot{face_area_vector.x * (face_center.x - owner_center.x) +
                                        face_area_vector.y * (face_center.y - owner_center.y)};
 
@@ -164,6 +172,8 @@ void validate_face_geometry(const TopologyBuildData &topology, const GeometryBui
 
         const Vector2 &neighbor_center{geometry.cell_centers[adjacency.neighbor]};
 
+        // For an internal face, the owner-oriented Sf must also point toward
+        // the neighboring cell.
         const double owner_to_neighbor_dot{face_area_vector.x * (neighbor_center.x - owner_center.x) +
                                            face_area_vector.y * (neighbor_center.y - owner_center.y)};
 
@@ -191,13 +201,14 @@ void validate_cell_face_closure(const RawMeshData &raw_mesh, const TopologyBuild
         double area_vector_sum_y{};
         double perimeter{};
 
+        // face_area_vectors are stored outward from each face owner. Reverse
+        // the sign when the current cell is the neighbor to recover the
+        // outward vector relative to this cell.
         for (Index cell_face_position = cell_face_begin_offset; cell_face_position < cell_face_end_offset;
              ++cell_face_position)
         {
             const Index face_id{topology.cell_faces[cell_face_position]};
-
             const FaceAdjacency &adjacency{topology.face_adjacencies[face_id]};
-
             const Vector2 &face_area_vector{geometry.face_area_vectors[face_id]};
 
             perimeter += geometry.face_lengths[face_id];
@@ -219,8 +230,10 @@ void validate_cell_face_closure(const RawMeshData &raw_mesh, const TopologyBuild
             }
         }
 
+        // A closed control volume satisfies sum(Sf) = 0. Scale the floating-
+        // point tolerance with the cell perimeter so both sides retain the
+        // dimensions of length and the test adapts to cell size.
         const double closure_norm{std::hypot(area_vector_sum_x, area_vector_sum_y)};
-
         const double closure_tolerance{tolerance_factor * perimeter};
 
         if (!std::isfinite(closure_norm) || closure_norm > closure_tolerance)
@@ -237,11 +250,8 @@ void validate_geometry(const RawMeshData &raw_mesh, const TopologyBuildData &top
                        const GeometryBuildData &geometry)
 {
     validate_geometry_storage(raw_mesh, topology, geometry);
-
     validate_cell_geometry(raw_mesh, geometry);
-
     validate_face_geometry(topology, geometry);
-
     validate_cell_face_closure(raw_mesh, topology, geometry);
 }
 

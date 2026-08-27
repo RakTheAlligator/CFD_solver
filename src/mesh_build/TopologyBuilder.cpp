@@ -3,6 +3,7 @@
 #include "cfd/mesh/Types.hpp"
 #include "cfd/meshing/RawMeshData.hpp"
 
+#include <cstddef>
 #include <functional>
 #include <stdexcept>
 #include <string>
@@ -28,6 +29,8 @@ struct FaceKey
     bool operator==(const FaceKey &other) const noexcept = default;
 };
 
+// Canonicalize the node pair so that the same geometric face has one
+// topological identity regardless of the local orientation of either cell.
 [[nodiscard]]
 FaceKey make_face_key(const Index node_0_id, const Index node_1_id) noexcept
 {
@@ -54,6 +57,9 @@ struct FaceKeyHash
 [[nodiscard]]
 Index estimate_face_count(const RawMeshData &raw_mesh) noexcept
 {
+    // This deliberately overestimates the number of unique faces for a valid
+    // 2D mesh. The extra capacity is temporary and reduces vector reallocations
+    // and unordered-map rehashing during topology construction.
     return raw_mesh.cell_nodes.size() / 2 + raw_mesh.boundary_edges.size();
 }
 
@@ -71,13 +77,13 @@ TopologyBuildData build_topology(const RawMeshData &raw_mesh)
 
     topology.cell_faces.resize(raw_mesh.cell_nodes.size(), invalid_index);
 
+    // The hash table is required only while constructing topology. Keeping it
+    // out of Mesh avoids paying its fragmented-memory and lookup costs in the
+    // numerical solver.
     std::unordered_map<FaceKey, Index, FaceKeyHash> face_id_by_key;
     face_id_by_key.reserve(estimated_face_count);
 
-    // -------------------------------------------------------------------------
-    // Build unique faces and cell <-> face connectivity.
-    // -------------------------------------------------------------------------
-
+    // Build each unique face while filling the cell-to-face connectivity.
     for (Index cell_id = 0; cell_id < raw_mesh.cell_types.size(); ++cell_id)
     {
         const Index cell_node_begin_offset{raw_mesh.cell_node_offsets[cell_id]};
@@ -87,23 +93,22 @@ TopologyBuildData build_topology(const RawMeshData &raw_mesh)
         for (Index local_face_index = 0; local_face_index < local_face_count; ++local_face_index)
         {
             const Index next_local_node_index{(local_face_index + 1) % local_face_count};
+
             const Index node_0_id{raw_mesh.cell_nodes[cell_node_begin_offset + local_face_index]};
             const Index node_1_id{raw_mesh.cell_nodes[cell_node_begin_offset + next_local_node_index]};
 
             const FaceKey face_key{make_face_key(node_0_id, node_1_id)};
-
             const Index candidate_face_id{topology.faces.size()};
 
             const auto [iterator, is_inserted]{face_id_by_key.try_emplace(face_key, candidate_face_id)};
-
             const Index face_id{iterator->second};
 
             if (is_inserted)
             {
+                // The first cell encountering a face defines its stored node
+                // ordering and becomes the topological owner.
                 topology.faces.push_back(Face{{node_0_id, node_1_id}});
-
                 topology.face_adjacencies.push_back(FaceAdjacency{.owner = cell_id, .neighbor = invalid_index});
-
                 topology.face_boundary_ids.push_back(invalid_boundary_id);
             }
             else
@@ -121,9 +126,13 @@ TopologyBuildData build_topology(const RawMeshData &raw_mesh)
                     throw_topology_build_error("face " + std::to_string(face_id) + " belongs to more than two cells.");
                 }
 
+                // In a manifold 2D mesh, the second cell encountering the face
+                // is its only possible neighbor.
                 adjacency.neighbor = cell_id;
             }
 
+            // cell_faces deliberately reuses the flattened cell-node layout:
+            // local face i connects local node i to local node (i + 1) mod N.
             const Index cell_face_position{cell_node_begin_offset + local_face_index};
 
             if (topology.cell_faces[cell_face_position] != invalid_index)
@@ -140,10 +149,8 @@ TopologyBuildData build_topology(const RawMeshData &raw_mesh)
         throw_topology_build_error("internal face-indexing inconsistency.");
     }
 
-    // -------------------------------------------------------------------------
-    // Attach physical boundary information.
-    // -------------------------------------------------------------------------
-
+    // Map physical boundary edges onto the already constructed topological
+    // faces using the same orientation-independent key.
     for (const BoundaryEdge &boundary_edge : raw_mesh.boundary_edges)
     {
         const FaceKey face_key{make_face_key(boundary_edge.node_ids[0], boundary_edge.node_ids[1])};
