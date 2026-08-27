@@ -26,11 +26,11 @@ void throw_geometry_build_error(const std::string &message)
 [[nodiscard]]
 double compute_triangle_quality(const RawMeshData &raw_mesh, const Index cell_id, const double area)
 {
-    const Index begin{raw_mesh.cell_node_offsets[cell_id]};
+    const Index cell_node_begin{raw_mesh.cell_node_offsets[cell_id]};
 
-    const Node &node_0{raw_mesh.nodes[raw_mesh.cell_nodes[begin]]};
-    const Node &node_1{raw_mesh.nodes[raw_mesh.cell_nodes[begin + 1]]};
-    const Node &node_2{raw_mesh.nodes[raw_mesh.cell_nodes[begin + 2]]};
+    const Node &node_0{raw_mesh.nodes[raw_mesh.cell_nodes[cell_node_begin]]};
+    const Node &node_1{raw_mesh.nodes[raw_mesh.cell_nodes[cell_node_begin + 1]]};
+    const Node &node_2{raw_mesh.nodes[raw_mesh.cell_nodes[cell_node_begin + 2]]};
 
     const double dx_01{node_1.x - node_0.x};
     const double dy_01{node_1.y - node_0.y};
@@ -57,21 +57,20 @@ double compute_quadrilateral_quality(const RawMeshData &raw_mesh, const Index ce
 {
     constexpr Index node_count{4};
 
-    const Index begin{raw_mesh.cell_node_offsets[cell_id]};
+    const Index cell_node_begin{raw_mesh.cell_node_offsets[cell_id]};
 
-    double minimum_quality{std::numeric_limits<double>::infinity()};
+    double minimum_corner_quality{std::numeric_limits<double>::infinity()};
 
-    for (Index local_node = 0; local_node < node_count; ++local_node)
+    for (Index local_node_index = 0; local_node_index < node_count; ++local_node_index)
     {
-        const Index previous_local_node{(local_node + node_count - 1) % node_count};
+        const Index previous_local_node_index{(local_node_index + node_count - 1) % node_count};
+        const Index next_local_node_index{(local_node_index + 1) % node_count};
 
-        const Index next_local_node{(local_node + 1) % node_count};
+        const Node &previous{raw_mesh.nodes[raw_mesh.cell_nodes[cell_node_begin + previous_local_node_index]]};
 
-        const Node &previous{raw_mesh.nodes[raw_mesh.cell_nodes[begin + previous_local_node]]};
+        const Node &current{raw_mesh.nodes[raw_mesh.cell_nodes[cell_node_begin + local_node_index]]};
 
-        const Node &current{raw_mesh.nodes[raw_mesh.cell_nodes[begin + local_node]]};
-
-        const Node &next{raw_mesh.nodes[raw_mesh.cell_nodes[begin + next_local_node]]};
+        const Node &next{raw_mesh.nodes[raw_mesh.cell_nodes[cell_node_begin + next_local_node_index]]};
 
         const double previous_dx{previous.x - current.x};
         const double previous_dy{previous.y - current.y};
@@ -79,71 +78,67 @@ double compute_quadrilateral_quality(const RawMeshData &raw_mesh, const Index ce
         const double next_dx{next.x - current.x};
         const double next_dy{next.y - current.y};
 
-        const double cross{std::abs(previous_dx * next_dy - previous_dy * next_dx)};
+        const double corner_cross_magnitude{std::abs(previous_dx * next_dy - previous_dy * next_dx)};
 
         const double squared_length_sum{previous_dx * previous_dx + previous_dy * previous_dy + next_dx * next_dx +
                                         next_dy * next_dy};
 
-        if (!std::isfinite(cross) || !std::isfinite(squared_length_sum) || !(squared_length_sum > 0.0))
+        if (!std::isfinite(corner_cross_magnitude) || !std::isfinite(squared_length_sum) || !(squared_length_sum > 0.0))
         {
             throw_geometry_build_error("cell " + std::to_string(cell_id) + " has invalid quadrilateral edge geometry.");
         }
 
-        const double corner_quality{2.0 * cross / squared_length_sum};
+        const double corner_quality{2.0 * corner_cross_magnitude / squared_length_sum};
 
-        minimum_quality = std::min(minimum_quality, corner_quality);
+        minimum_corner_quality = std::min(minimum_corner_quality, corner_quality);
     }
 
-    return minimum_quality;
+    return minimum_corner_quality;
 }
 
 void ensure_valid_quadrilateral_shape(const RawMeshData &raw_mesh, const Index cell_id)
 {
     constexpr Index node_count{4};
 
-    const Index begin{raw_mesh.cell_node_offsets[cell_id]};
+    const Index cell_node_begin{raw_mesh.cell_node_offsets[cell_id]};
 
     bool orientation_initialized{};
-    bool positive_orientation{};
+    bool reference_positive_orientation{};
 
-    for (Index local_node = 0; local_node < node_count; ++local_node)
+    for (Index local_node_index = 0; local_node_index < node_count; ++local_node_index)
     {
-        const Index previous_local_node{(local_node + node_count - 1) % node_count};
+        const Index previous_local_node_index{(local_node_index + node_count - 1) % node_count};
+        const Index next_local_node_index{(local_node_index + 1) % node_count};
 
-        const Index next_local_node{(local_node + 1) % node_count};
+        const Node &previous{raw_mesh.nodes[raw_mesh.cell_nodes[cell_node_begin + previous_local_node_index]]};
 
-        const Node &previous{raw_mesh.nodes[raw_mesh.cell_nodes[begin + previous_local_node]]};
+        const Node &current{raw_mesh.nodes[raw_mesh.cell_nodes[cell_node_begin + local_node_index]]};
 
-        const Node &current{raw_mesh.nodes[raw_mesh.cell_nodes[begin + local_node]]};
-
-        const Node &next{raw_mesh.nodes[raw_mesh.cell_nodes[begin + next_local_node]]};
+        const Node &next{raw_mesh.nodes[raw_mesh.cell_nodes[cell_node_begin + next_local_node_index]]};
 
         const double incoming_x{current.x - previous.x};
-
         const double incoming_y{current.y - previous.y};
 
         const double outgoing_x{next.x - current.x};
-
         const double outgoing_y{next.y - current.y};
 
-        const double cross{incoming_x * outgoing_y - incoming_y * outgoing_x};
+        const double signed_corner_cross{incoming_x * outgoing_y - incoming_y * outgoing_x};
 
-        if (!std::isfinite(cross) || cross == 0.0)
+        if (!std::isfinite(signed_corner_cross) || signed_corner_cross == 0.0)
         {
             throw_geometry_build_error("cell " + std::to_string(cell_id) + " has a degenerate quadrilateral corner.");
         }
 
-        const bool current_positive_orientation{cross > 0.0};
+        const bool current_positive_orientation{signed_corner_cross > 0.0};
 
         if (!orientation_initialized)
         {
-            positive_orientation = current_positive_orientation;
-
+            reference_positive_orientation = current_positive_orientation;
             orientation_initialized = true;
             continue;
         }
 
-        if (current_positive_orientation != positive_orientation)
+        if (current_positive_orientation != reference_positive_orientation)
         {
             throw_geometry_build_error("cell " + std::to_string(cell_id) +
                                        " has a non-convex or self-intersecting quadrilateral.");
@@ -162,26 +157,26 @@ void build_cell_geometry(const RawMeshData &raw_mesh, GeometryBuildData &geometr
 
     for (Index cell_id = 0; cell_id < cell_count; ++cell_id)
     {
-        const Index begin{raw_mesh.cell_node_offsets[cell_id]};
-        const Index end{raw_mesh.cell_node_offsets[cell_id + 1]};
-        const Index node_count{end - begin};
+        const Index cell_node_begin{raw_mesh.cell_node_offsets[cell_id]};
+        const Index cell_node_end{raw_mesh.cell_node_offsets[cell_id + 1]};
+        const Index node_count{cell_node_end - cell_node_begin};
 
         // Use the first cell node as a local origin.
         //
         // The Shoelace formula is translation invariant, but evaluating it
         // with local coordinates reduces cancellation when small cells are
         // located far from the global origin.
-        const Node &reference_node{raw_mesh.nodes[raw_mesh.cell_nodes[begin]]};
+        const Node &reference_node{raw_mesh.nodes[raw_mesh.cell_nodes[cell_node_begin]]};
 
         double twice_signed_area{};
         double centroid_x_numerator{};
         double centroid_y_numerator{};
 
-        for (Index i = 0; i < node_count; ++i)
+        for (Index local_node_index = 0; local_node_index < node_count; ++local_node_index)
         {
-            const Index current_node_id{raw_mesh.cell_nodes[begin + i]};
+            const Index current_node_id{raw_mesh.cell_nodes[cell_node_begin + local_node_index]};
 
-            const Index next_node_id{raw_mesh.cell_nodes[begin + (i + 1) % node_count]};
+            const Index next_node_id{raw_mesh.cell_nodes[cell_node_begin + (local_node_index + 1) % node_count]};
 
             const Node &current{raw_mesh.nodes[current_node_id]};
             const Node &next{raw_mesh.nodes[next_node_id]};
@@ -192,13 +187,13 @@ void build_cell_geometry(const RawMeshData &raw_mesh, GeometryBuildData &geometr
             const double next_x{next.x - reference_node.x};
             const double next_y{next.y - reference_node.y};
 
-            const double cross{current_x * next_y - next_x * current_y};
+            const double shoelace_cross{current_x * next_y - next_x * current_y};
 
-            twice_signed_area += cross;
+            twice_signed_area += shoelace_cross;
 
-            centroid_x_numerator += (current_x + next_x) * cross;
+            centroid_x_numerator += (current_x + next_x) * shoelace_cross;
 
-            centroid_y_numerator += (current_y + next_y) * cross;
+            centroid_y_numerator += (current_y + next_y) * shoelace_cross;
         }
 
         if (twice_signed_area == 0.0)
@@ -213,7 +208,6 @@ void build_cell_geometry(const RawMeshData &raw_mesh, GeometryBuildData &geometr
         const double centroid_y{reference_node.y + centroid_y_numerator / (3.0 * twice_signed_area)};
 
         geometry.cell_areas[cell_id] = area;
-
         geometry.cell_centers[cell_id] = {centroid_x, centroid_y};
 
         switch (raw_mesh.cell_types[cell_id])
@@ -258,7 +252,7 @@ void build_face_geometry(const RawMeshData &raw_mesh, const TopologyBuildData &t
 
         const Vector2 face_center{0.5 * (node_0.x + node_1.x), 0.5 * (node_0.y + node_1.y)};
 
-        Vector2 area_vector{dy, -dx};
+        Vector2 face_area_vector{dy, -dx};
 
         const FaceAdjacency &adjacency{topology.face_adjacencies[face_id]};
 
@@ -268,23 +262,23 @@ void build_face_geometry(const RawMeshData &raw_mesh, const TopologyBuildData &t
 
         const double owner_to_face_y{face_center.y - owner_center.y};
 
-        const double orientation{area_vector.x * owner_to_face_x + area_vector.y * owner_to_face_y};
+        const double owner_to_face_dot{face_area_vector.x * owner_to_face_x + face_area_vector.y * owner_to_face_y};
 
-        if (orientation == 0.0)
+        if (owner_to_face_dot == 0.0)
         {
             throw_geometry_build_error("face " + std::to_string(face_id) +
                                        " has ambiguous orientation relative to its owner cell.");
         }
 
-        if (orientation < 0.0)
+        if (owner_to_face_dot < 0.0)
         {
-            area_vector.x = -area_vector.x;
-            area_vector.y = -area_vector.y;
+            face_area_vector.x = -face_area_vector.x;
+            face_area_vector.y = -face_area_vector.y;
         }
 
         geometry.face_centers[face_id] = face_center;
         geometry.face_lengths[face_id] = face_length;
-        geometry.face_area_vectors[face_id] = area_vector;
+        geometry.face_area_vectors[face_id] = face_area_vector;
     }
 }
 

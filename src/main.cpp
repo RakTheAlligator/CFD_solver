@@ -53,13 +53,14 @@ int main()
                   << " CFD Solver\n"
                   << "============================================================\n";
 
-        const auto generation_start{std::chrono::steady_clock::now()};
+        const auto mesh_generation_start{std::chrono::steady_clock::now()};
 
         cfd::RawMeshData raw_mesh{cfd::generate_mesh(geometry, options)};
 
-        const auto generation_end{std::chrono::steady_clock::now()};
+        const auto mesh_generation_end{std::chrono::steady_clock::now()};
 
-        const auto generation_elapsed{std::chrono::duration<double, std::milli>(generation_end - generation_start)};
+        const auto mesh_generation_duration{
+            std::chrono::duration<double, std::milli>(mesh_generation_end - mesh_generation_start)};
 
         std::cout << "\n[Mesh generation]\n";
 
@@ -71,25 +72,26 @@ int main()
                   << "  Nodes             : " << raw_mesh.nodes.size() << '\n'
                   << "  Cells             : " << raw_mesh.cell_types.size() << '\n';
 
-        std::cout << std::fixed << std::setprecision(2) << "  Time              : " << generation_elapsed.count()
+        std::cout << std::fixed << std::setprecision(2) << "  Time              : " << mesh_generation_duration.count()
                   << " ms\n";
 
-        cfd::MeshBuildResult mesh_build{cfd::build_mesh(std::move(raw_mesh))};
+        cfd::MeshBuildResult mesh_build_result{cfd::build_mesh(std::move(raw_mesh))};
 
-        const cfd::MeshStatistics mesh_statistics{cfd::compute_mesh_statistics(mesh_build.mesh)};
+        const cfd::MeshStatistics mesh_statistics{cfd::compute_mesh_statistics(mesh_build_result.mesh)};
 
-        cfd::write_mesh_report(std::cout, mesh_build.mesh, mesh_statistics, mesh_build.timings);
+        cfd::write_mesh_report(std::cout, mesh_build_result.mesh, mesh_statistics, mesh_build_result.timings);
 
         const std::filesystem::path output_directory{"results"};
         const std::filesystem::path mesh_output_file{output_directory / "mesh.vtu"};
 
         std::filesystem::create_directories(output_directory);
 
-        cfd::write_vtu(mesh_build.mesh, mesh_output_file);
+        cfd::write_vtu(mesh_build_result.mesh, mesh_output_file);
 
         std::cout << "\n[Summary]\n"
-                  << "  Mesh              : " << mesh_build.mesh.node_count() << " nodes | "
-                  << mesh_build.mesh.cell_count() << " cells | " << mesh_build.mesh.face_count() << " faces\n";
+                  << "  Mesh              : " << mesh_build_result.mesh.node_count() << " nodes | "
+                  << mesh_build_result.mesh.cell_count() << " cells | " << mesh_build_result.mesh.face_count()
+                  << " faces\n";
 
         std::cout << "\n[Output]\n"
                   << "  Mesh              : " << mesh_output_file.string() << '\n';

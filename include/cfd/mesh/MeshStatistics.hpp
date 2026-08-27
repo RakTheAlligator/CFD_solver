@@ -7,7 +7,7 @@ namespace cfd
 
 class Mesh;
 
-struct ScalarStats
+struct ScalarStatistics
 {
     double minimum{};
     double maximum{};
@@ -21,10 +21,10 @@ struct MeshStatistics
 
     double total_cell_area{};
 
-    ScalarStats cell_areas;
-    ScalarStats cell_sizes;
-    ScalarStats face_lengths;
-    ScalarStats cell_quality;
+    ScalarStatistics cell_areas;
+    ScalarStatistics cell_sizes;
+    ScalarStatistics face_lengths;
+    ScalarStatistics cell_quality;
 
     Index worst_quality_cell{invalid_index};
 };

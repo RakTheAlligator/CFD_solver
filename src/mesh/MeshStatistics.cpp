@@ -29,7 +29,7 @@ void add_value(ScalarAccumulator &accumulator, const double value) noexcept
 }
 
 [[nodiscard]]
-ScalarStats finalize(const ScalarAccumulator &accumulator) noexcept
+ScalarStatistics finalize_statistics(const ScalarAccumulator &accumulator) noexcept
 {
     if (accumulator.count == 0)
     {
@@ -49,10 +49,10 @@ MeshStatistics compute_mesh_statistics(const Mesh &mesh)
 {
     MeshStatistics statistics;
 
-    ScalarAccumulator cell_area_statistics;
-    ScalarAccumulator cell_size_statistics;
-    ScalarAccumulator face_length_statistics;
-    ScalarAccumulator cell_quality_statistics;
+    ScalarAccumulator cell_area_accumulator;
+    ScalarAccumulator cell_size_accumulator;
+    ScalarAccumulator face_length_accumulator;
+    ScalarAccumulator cell_quality_accumulator;
 
     for (const FaceAdjacency &adjacency : mesh.face_adjacencies())
     {
@@ -68,15 +68,15 @@ MeshStatistics compute_mesh_statistics(const Mesh &mesh)
 
     for (const double area : mesh.cell_areas())
     {
-        add_value(cell_area_statistics, area);
-        add_value(cell_size_statistics, std::sqrt(area));
+        add_value(cell_area_accumulator, area);
+        add_value(cell_size_accumulator, std::sqrt(area));
 
         statistics.total_cell_area += area;
     }
 
     for (const double length : mesh.face_lengths())
     {
-        add_value(face_length_statistics, length);
+        add_value(face_length_accumulator, length);
     }
 
     double worst_quality{std::numeric_limits<double>::infinity()};
@@ -85,7 +85,7 @@ MeshStatistics compute_mesh_statistics(const Mesh &mesh)
     {
         const double quality{mesh.cell_qualities()[cell_id]};
 
-        add_value(cell_quality_statistics, quality);
+        add_value(cell_quality_accumulator, quality);
 
         if (quality < worst_quality)
         {
@@ -94,10 +94,10 @@ MeshStatistics compute_mesh_statistics(const Mesh &mesh)
         }
     }
 
-    statistics.cell_areas = finalize(cell_area_statistics);
-    statistics.cell_sizes = finalize(cell_size_statistics);
-    statistics.face_lengths = finalize(face_length_statistics);
-    statistics.cell_quality = finalize(cell_quality_statistics);
+    statistics.cell_areas = finalize_statistics(cell_area_accumulator);
+    statistics.cell_sizes = finalize_statistics(cell_size_accumulator);
+    statistics.face_lengths = finalize_statistics(face_length_accumulator);
+    statistics.cell_quality = finalize_statistics(cell_quality_accumulator);
 
     return statistics;
 }

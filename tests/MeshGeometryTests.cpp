@@ -196,7 +196,7 @@ double compute_total_cell_area(const cfd::Mesh &mesh)
     return std::accumulate(mesh.cell_areas().begin(), mesh.cell_areas().end(), 0.0);
 }
 
-void check_mesh_geometry_invariants(const cfd::Mesh &mesh)
+void require_mesh_geometry_invariants(const cfd::Mesh &mesh)
 {
     require(mesh.cell_areas().size() == mesh.cell_count(), "Cell-area storage size is inconsistent.");
     require(mesh.cell_centers().size() == mesh.cell_count(), "Cell-center storage size is inconsistent.");
@@ -314,7 +314,7 @@ void test_single_triangle()
     require_near(total_cell_area, boundary_area, test_tolerance,
                  "Single-triangle boundary area and cell-area sum differ.");
 
-    check_mesh_geometry_invariants(mesh);
+    require_mesh_geometry_invariants(mesh);
 
     const double expected_quality{std::sqrt(3.0) / 2.0};
 
@@ -387,7 +387,7 @@ void test_small_translated_equilateral_triangle()
     require_near(mesh.cell_qualities()[0], 1.0, test_tolerance,
                  "Translated small equilateral triangle quality is incorrect.");
 
-    check_mesh_geometry_invariants(mesh);
+    require_mesh_geometry_invariants(mesh);
 }
 
 void test_single_quadrilateral()
@@ -423,7 +423,7 @@ void test_single_quadrilateral()
         require_near(face_length, 1.0, test_tolerance, "Square face length is incorrect.");
     }
 
-    check_mesh_geometry_invariants(mesh);
+    require_mesh_geometry_invariants(mesh);
 }
 
 void test_clockwise_quadrilateral()
@@ -444,7 +444,7 @@ void test_clockwise_quadrilateral()
 
     require_near(mesh.cell_qualities()[0], 1.0, test_tolerance, "Clockwise square quality must be equal to 1.");
 
-    check_mesh_geometry_invariants(mesh);
+    require_mesh_geometry_invariants(mesh);
 }
 
 void test_reference_rectangle()
@@ -501,7 +501,7 @@ void test_reference_rectangle()
     require(mesh.cell_faces().size() == 2 * internal_face_count + boundary_face_count,
             "Global face-incidence relation is not satisfied.");
 
-    check_mesh_geometry_invariants(mesh);
+    require_mesh_geometry_invariants(mesh);
 }
 
 } // namespace

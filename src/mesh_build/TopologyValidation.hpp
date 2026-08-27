@@ -1,6 +1,6 @@
 #pragma once
 
-#include "mesh_build/BuildData.hpp"
+#include "mesh_build/MeshBuildData.hpp"
 
 namespace cfd
 {

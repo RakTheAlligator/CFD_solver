@@ -64,9 +64,8 @@ add_library(
     src/io/MeshReport.cpp
     src/io/VtkWriter.cpp
 
+    src/mesh/MeshBuilder.cpp
     src/mesh/MeshStatistics.cpp
-
-    src/MeshBuilder.cpp
 
     src/meshing/GmshMesher.cpp
     src/meshing/RawMeshValidation.cpp
@@ -146,9 +145,9 @@ if(BUILD_TESTING)
     endfunction()
 
     cfd_add_test(
-    cfd_gmsh_mesher_tests
-    gmsh_mesher
-    tests/GmshMesherTests.cpp
+        cfd_gmsh_mesher_tests
+        gmsh_mesher
+        tests/GmshMesherTests.cpp
     )
 
     cfd_add_test(

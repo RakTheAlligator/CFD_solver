@@ -1,8 +1,8 @@
 #pragma once
 
 #include "cfd/mesh/Cell.hpp"
-#include "cfd/meshing/DomainGeometry.hpp"
 #include "cfd/meshing/RawMeshData.hpp"
+#include "cfd/meshing/RectangleGeometry.hpp"
 
 namespace cfd
 {
@@ -14,6 +14,7 @@ struct MeshGenerationOptions
 
     CellType cell_type{CellType::Triangle};
 };
+
 [[nodiscard]]
 RawMeshData generate_mesh(const RectangleGeometry &geometry, const MeshGenerationOptions &options);
 

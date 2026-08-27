@@ -1,4 +1,4 @@
-#include "mesh_build/TopologyBuilder.hpp"
+#include "mesh_build/MeshBuildData.hpp"
 
 #include "cfd/mesh/Types.hpp"
 #include "cfd/meshing/RawMeshData.hpp"
@@ -19,32 +19,33 @@ void throw_topology_build_error(const std::string &message)
 {
     throw std::runtime_error("Topology construction failed: " + message);
 }
-struct EdgeKey
-{
-    Index node_0{};
-    Index node_1{};
 
-    bool operator==(const EdgeKey &other) const noexcept = default;
+struct FaceKey
+{
+    Index node_0_id{};
+    Index node_1_id{};
+
+    bool operator==(const FaceKey &other) const noexcept = default;
 };
 
 [[nodiscard]]
-EdgeKey make_edge_key(const Index node_0, const Index node_1) noexcept
+FaceKey make_face_key(const Index node_0_id, const Index node_1_id) noexcept
 {
-    if (node_0 < node_1)
+    if (node_0_id < node_1_id)
     {
-        return {node_0, node_1};
+        return {node_0_id, node_1_id};
     }
 
-    return {node_1, node_0};
+    return {node_1_id, node_0_id};
 }
 
-struct EdgeKeyHash
+struct FaceKeyHash
 {
     [[nodiscard]]
-    std::size_t operator()(const EdgeKey &edge) const noexcept
+    std::size_t operator()(const FaceKey &face_key) const noexcept
     {
-        const std::size_t hash_0{std::hash<Index>{}(edge.node_0)};
-        const std::size_t hash_1{std::hash<Index>{}(edge.node_1)};
+        const std::size_t hash_0{std::hash<Index>{}(face_key.node_0_id)};
+        const std::size_t hash_1{std::hash<Index>{}(face_key.node_1_id)};
 
         return hash_0 ^ (hash_1 + 0x9e3779b9U + (hash_0 << 6U) + (hash_0 >> 2U));
     }
@@ -70,8 +71,8 @@ TopologyBuildData build_topology(const RawMeshData &raw_mesh)
 
     topology.cell_faces.resize(raw_mesh.cell_nodes.size(), invalid_index);
 
-    std::unordered_map<EdgeKey, Index, EdgeKeyHash> face_ids;
-    face_ids.reserve(estimated_face_count);
+    std::unordered_map<FaceKey, Index, FaceKeyHash> face_id_by_key;
+    face_id_by_key.reserve(estimated_face_count);
 
     // -------------------------------------------------------------------------
     // Build unique faces and cell <-> face connectivity.
@@ -79,27 +80,27 @@ TopologyBuildData build_topology(const RawMeshData &raw_mesh)
 
     for (Index cell_id = 0; cell_id < raw_mesh.cell_types.size(); ++cell_id)
     {
-        const Index begin{raw_mesh.cell_node_offsets[cell_id]};
-        const Index end{raw_mesh.cell_node_offsets[cell_id + 1]};
-        const Index node_count{end - begin};
+        const Index cell_node_begin{raw_mesh.cell_node_offsets[cell_id]};
+        const Index cell_node_end{raw_mesh.cell_node_offsets[cell_id + 1]};
+        const Index local_face_count{cell_node_end - cell_node_begin};
 
-        for (Index local_face = 0; local_face < node_count; ++local_face)
+        for (Index local_face_index = 0; local_face_index < local_face_count; ++local_face_index)
         {
-            const Index next_local_node{(local_face + 1) % node_count};
-            const Index node_0{raw_mesh.cell_nodes[begin + local_face]};
-            const Index node_1{raw_mesh.cell_nodes[begin + next_local_node]};
+            const Index next_local_node_index{(local_face_index + 1) % local_face_count};
+            const Index node_0_id{raw_mesh.cell_nodes[cell_node_begin + local_face_index]};
+            const Index node_1_id{raw_mesh.cell_nodes[cell_node_begin + next_local_node_index]};
 
-            const EdgeKey edge_key{make_edge_key(node_0, node_1)};
+            const FaceKey face_key{make_face_key(node_0_id, node_1_id)};
 
             const Index candidate_face_id{topology.faces.size()};
 
-            const auto [iterator, inserted]{face_ids.try_emplace(edge_key, candidate_face_id)};
+            const auto [iterator, inserted]{face_id_by_key.try_emplace(face_key, candidate_face_id)};
 
             const Index face_id{iterator->second};
 
             if (inserted)
             {
-                topology.faces.push_back(Face{{node_0, node_1}});
+                topology.faces.push_back(Face{{node_0_id, node_1_id}});
 
                 topology.face_adjacencies.push_back(FaceAdjacency{.owner = cell_id, .neighbor = invalid_index});
 
@@ -114,6 +115,7 @@ TopologyBuildData build_topology(const RawMeshData &raw_mesh)
                     throw_topology_build_error("cell " + std::to_string(cell_id) +
                                                " references the same face more than once.");
                 }
+
                 if (adjacency.neighbor != invalid_index)
                 {
                     throw_topology_build_error("face " + std::to_string(face_id) + " belongs to more than two cells.");
@@ -122,7 +124,7 @@ TopologyBuildData build_topology(const RawMeshData &raw_mesh)
                 adjacency.neighbor = cell_id;
             }
 
-            const Index cell_face_position{begin + local_face};
+            const Index cell_face_position{cell_node_begin + local_face_index};
 
             if (topology.cell_faces[cell_face_position] != invalid_index)
             {
@@ -133,7 +135,7 @@ TopologyBuildData build_topology(const RawMeshData &raw_mesh)
         }
     }
 
-    if (face_ids.size() != topology.faces.size())
+    if (face_id_by_key.size() != topology.faces.size())
     {
         throw_topology_build_error("internal face-indexing inconsistency.");
     }
@@ -144,10 +146,10 @@ TopologyBuildData build_topology(const RawMeshData &raw_mesh)
 
     for (const BoundaryEdge &boundary_edge : raw_mesh.boundary_edges)
     {
-        const EdgeKey edge_key{make_edge_key(boundary_edge.node_ids[0], boundary_edge.node_ids[1])};
-        const auto iterator{face_ids.find(edge_key)};
+        const FaceKey face_key{make_face_key(boundary_edge.node_ids[0], boundary_edge.node_ids[1])};
+        const auto iterator{face_id_by_key.find(face_key)};
 
-        if (iterator == face_ids.end())
+        if (iterator == face_id_by_key.end())
         {
             throw_topology_build_error("a boundary edge does not correspond to any cell face.");
         }
@@ -159,6 +161,7 @@ TopologyBuildData build_topology(const RawMeshData &raw_mesh)
         {
             throw_topology_build_error("face " + std::to_string(face_id) + " is internal but is marked as a boundary.");
         }
+
         if (topology.face_boundary_ids[face_id] != invalid_boundary_id)
         {
             throw_topology_build_error("face " + std::to_string(face_id) +
@@ -170,4 +173,5 @@ TopologyBuildData build_topology(const RawMeshData &raw_mesh)
 
     return topology;
 }
+
 } // namespace cfd::detail

@@ -1,4 +1,4 @@
-#include "mesh_build/TopologyValidation.hpp"
+#include "mesh_build/MeshBuildData.hpp"
 
 #include "cfd/meshing/RawMeshData.hpp"
 
@@ -15,26 +15,26 @@ namespace
 
 struct CellPair
 {
-    Index cell_0{};
-    Index cell_1{};
+    Index cell_0_id{};
+    Index cell_1_id{};
 
     bool operator==(const CellPair &other) const noexcept = default;
 
     bool operator<(const CellPair &other) const noexcept
     {
-        if (cell_0 != other.cell_0)
+        if (cell_0_id != other.cell_0_id)
         {
-            return cell_0 < other.cell_0;
+            return cell_0_id < other.cell_0_id;
         }
 
-        return cell_1 < other.cell_1;
+        return cell_1_id < other.cell_1_id;
     }
 };
 
 struct FaceCounts
 {
-    Index internal{};
-    Index boundary{};
+    Index internal_face_count{};
+    Index boundary_face_count{};
 };
 
 [[noreturn]]
@@ -44,14 +44,14 @@ void throw_topology_validation_error(const std::string &message)
 }
 
 [[nodiscard]]
-CellPair make_cell_pair(const Index cell_0, const Index cell_1) noexcept
+CellPair make_cell_pair(const Index cell_0_id, const Index cell_1_id) noexcept
 {
-    if (cell_0 < cell_1)
+    if (cell_0_id < cell_1_id)
     {
-        return {cell_0, cell_1};
+        return {cell_0_id, cell_1_id};
     }
 
-    return {cell_1, cell_0};
+    return {cell_1_id, cell_0_id};
 }
 
 void validate_topology_storage(const RawMeshData &raw_mesh, const TopologyBuildData &topology)
@@ -81,12 +81,12 @@ void validate_topology_storage(const RawMeshData &raw_mesh, const TopologyBuildD
 bool cell_references_face(const RawMeshData &raw_mesh, const TopologyBuildData &topology, const Index cell_id,
                           const Index face_id) noexcept
 {
-    const Index begin{raw_mesh.cell_node_offsets[cell_id]};
-    const Index end{raw_mesh.cell_node_offsets[cell_id + 1]};
+    const Index cell_face_begin{raw_mesh.cell_node_offsets[cell_id]};
+    const Index cell_face_end{raw_mesh.cell_node_offsets[cell_id + 1]};
 
-    for (Index position = begin; position < end; ++position)
+    for (Index cell_face_position = cell_face_begin; cell_face_position < cell_face_end; ++cell_face_position)
     {
-        if (topology.cell_faces[position] == face_id)
+        if (topology.cell_faces[cell_face_position] == face_id)
         {
             return true;
         }
@@ -99,23 +99,24 @@ void validate_cell_face_connectivity(const RawMeshData &raw_mesh, const Topology
 {
     for (Index cell_id = 0; cell_id < raw_mesh.cell_types.size(); ++cell_id)
     {
-        const Index begin{raw_mesh.cell_node_offsets[cell_id]};
-        const Index end{raw_mesh.cell_node_offsets[cell_id + 1]};
-        const Index local_face_count{end - begin};
+        const Index cell_face_begin{raw_mesh.cell_node_offsets[cell_id]};
+        const Index cell_face_end{raw_mesh.cell_node_offsets[cell_id + 1]};
+        const Index local_face_count{cell_face_end - cell_face_begin};
 
-        for (Index local_face = 0; local_face < local_face_count; ++local_face)
+        for (Index local_face_index = 0; local_face_index < local_face_count; ++local_face_index)
         {
-            const Index position{begin + local_face};
-            const Index face_id{topology.cell_faces[position]};
+            const Index cell_face_position{cell_face_begin + local_face_index};
+            const Index face_id{topology.cell_faces[cell_face_position]};
 
             if (face_id == invalid_index || face_id >= topology.faces.size())
             {
                 throw_topology_validation_error("cell " + std::to_string(cell_id) + " references an invalid face.");
             }
 
-            for (Index previous_position = begin; previous_position < position; ++previous_position)
+            for (Index previous_cell_face_position = cell_face_begin; previous_cell_face_position < cell_face_position;
+                 ++previous_cell_face_position)
             {
-                if (topology.cell_faces[previous_position] == face_id)
+                if (topology.cell_faces[previous_cell_face_position] == face_id)
                 {
                     throw_topology_validation_error("cell " + std::to_string(cell_id) +
                                                     " references the same face more than once.");
@@ -129,16 +130,17 @@ void validate_cell_face_connectivity(const RawMeshData &raw_mesh, const Topology
                 throw_topology_validation_error("cell-to-face and face-to-cell connectivities are inconsistent.");
             }
 
-            const Index next_local_node{(local_face + 1) % local_face_count};
-            const Index expected_node_0{raw_mesh.cell_nodes[begin + local_face]};
-            const Index expected_node_1{raw_mesh.cell_nodes[begin + next_local_node]};
+            const Index next_local_node_index{(local_face_index + 1) % local_face_count};
+            const Index expected_node_0_id{raw_mesh.cell_nodes[cell_face_begin + local_face_index]};
+            const Index expected_node_1_id{raw_mesh.cell_nodes[cell_face_begin + next_local_node_index]};
 
             const Face &face{topology.faces[face_id]};
 
-            const auto matches{(face.node_ids[0] == expected_node_0 && face.node_ids[1] == expected_node_1) ||
-                               (face.node_ids[0] == expected_node_1 && face.node_ids[1] == expected_node_0)};
+            const bool face_nodes_match{
+                (face.node_ids[0] == expected_node_0_id && face.node_ids[1] == expected_node_1_id) ||
+                (face.node_ids[0] == expected_node_1_id && face.node_ids[1] == expected_node_0_id)};
 
-            if (!matches)
+            if (!face_nodes_match)
             {
                 throw_topology_validation_error("cell " + std::to_string(cell_id) +
                                                 " references a face with incorrect nodes.");
@@ -150,22 +152,22 @@ void validate_cell_face_connectivity(const RawMeshData &raw_mesh, const Topology
 [[nodiscard]]
 FaceCounts validate_faces(const RawMeshData &raw_mesh, const TopologyBuildData &topology)
 {
-    FaceCounts counts;
+    FaceCounts face_counts;
 
     for (Index face_id = 0; face_id < topology.faces.size(); ++face_id)
     {
         const Face &face{topology.faces[face_id]};
 
-        const Index node_0{face.node_ids[0]};
-        const Index node_1{face.node_ids[1]};
+        const Index node_0_id{face.node_ids[0]};
+        const Index node_1_id{face.node_ids[1]};
 
-        if (node_0 >= raw_mesh.nodes.size() || node_1 >= raw_mesh.nodes.size())
+        if (node_0_id >= raw_mesh.nodes.size() || node_1_id >= raw_mesh.nodes.size())
         {
             throw_topology_validation_error("face " + std::to_string(face_id) +
                                             " references a node outside the nodes array.");
         }
 
-        if (node_0 == node_1)
+        if (node_0_id == node_1_id)
         {
             throw_topology_validation_error("face " + std::to_string(face_id) + " references the same node twice.");
         }
@@ -187,7 +189,7 @@ FaceCounts validate_faces(const RawMeshData &raw_mesh, const TopologyBuildData &
 
         if (adjacency.neighbor == invalid_index)
         {
-            ++counts.boundary;
+            ++face_counts.boundary_face_count;
 
             if (boundary_id == invalid_boundary_id)
             {
@@ -198,7 +200,7 @@ FaceCounts validate_faces(const RawMeshData &raw_mesh, const TopologyBuildData &
             continue;
         }
 
-        ++counts.internal;
+        ++face_counts.internal_face_count;
 
         if (adjacency.neighbor >= raw_mesh.cell_types.size())
         {
@@ -223,12 +225,12 @@ FaceCounts validate_faces(const RawMeshData &raw_mesh, const TopologyBuildData &
         }
     }
 
-    if (counts.boundary != raw_mesh.boundary_edges.size())
+    if (face_counts.boundary_face_count != raw_mesh.boundary_edges.size())
     {
         throw_topology_validation_error("number of external faces does not match the number of boundary edges.");
     }
 
-    return counts;
+    return face_counts;
 }
 
 void validate_unique_cell_neighbors(const TopologyBuildData &topology)
@@ -249,12 +251,14 @@ void validate_unique_cell_neighbors(const TopologyBuildData &topology)
 
     std::sort(neighboring_cell_pairs.begin(), neighboring_cell_pairs.end());
 
-    const auto duplicate{std::adjacent_find(neighboring_cell_pairs.begin(), neighboring_cell_pairs.end())};
+    const auto duplicate_pair_iterator{
+        std::adjacent_find(neighboring_cell_pairs.begin(), neighboring_cell_pairs.end())};
 
-    if (duplicate != neighboring_cell_pairs.end())
+    if (duplicate_pair_iterator != neighboring_cell_pairs.end())
     {
-        throw_topology_validation_error("cells " + std::to_string(duplicate->cell_0) + " and " +
-                                        std::to_string(duplicate->cell_1) + " share more than one face.");
+        throw_topology_validation_error("cells " + std::to_string(duplicate_pair_iterator->cell_0_id) + " and " +
+                                        std::to_string(duplicate_pair_iterator->cell_1_id) +
+                                        " share more than one face.");
     }
 }
 
@@ -269,7 +273,7 @@ void validate_topology(const RawMeshData &raw_mesh, const TopologyBuildData &top
 
     validate_unique_cell_neighbors(topology);
 
-    if (raw_mesh.cell_nodes.size() != 2 * face_counts.internal + face_counts.boundary)
+    if (raw_mesh.cell_nodes.size() != 2 * face_counts.internal_face_count + face_counts.boundary_face_count)
     {
         throw_topology_validation_error("local face count is inconsistent with internal and boundary face counts.");
     }

@@ -20,7 +20,7 @@ bool face_matches_nodes(const cfd::Face &face, const cfd::Index node_0, const cf
 }
 
 [[nodiscard]]
-cfd::Index find_face(const cfd::Mesh &mesh, const cfd::Index node_0, const cfd::Index node_1)
+cfd::Index find_face_id(const cfd::Mesh &mesh, const cfd::Index node_0, const cfd::Index node_1)
 {
     for (cfd::Index face_id = 0; face_id < mesh.face_count(); ++face_id)
     {
@@ -54,7 +54,7 @@ bool cell_contains_face(const cfd::Mesh &mesh, const cfd::Index cell_id, const c
 void require_boundary_face(const cfd::Mesh &mesh, const cfd::Index node_0, const cfd::Index node_1,
                            const cfd::Index expected_owner, const cfd::BoundaryId expected_boundary_id)
 {
-    const cfd::Index face_id{find_face(mesh, node_0, node_1)};
+    const cfd::Index face_id{find_face_id(mesh, node_0, node_1)};
 
     require(face_id != cfd::invalid_index, "Expected boundary face was not constructed.");
 
@@ -104,7 +104,7 @@ void test_two_triangle_topology()
 
     require(boundary_face_count == 4, "Two-triangle mesh must contain four boundary faces.");
 
-    const cfd::Index shared_face{find_face(mesh, 0, 2)};
+    const cfd::Index shared_face{find_face_id(mesh, 0, 2)};
 
     require(shared_face != cfd::invalid_index, "Shared triangle face was not constructed.");
 

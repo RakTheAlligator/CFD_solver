@@ -3,14 +3,11 @@
 #include "cfd/mesh/Cell.hpp"
 #include "cfd/mesh/Node.hpp"
 #include "cfd/mesh/Types.hpp"
-
 #include "cfd/meshing/RawMeshData.hpp"
 
 #include <algorithm>
 #include <cmath>
-#include <iomanip>
 #include <limits>
-#include <sstream>
 #include <stdexcept>
 #include <string>
 
@@ -77,14 +74,14 @@ void validate_cell_geometry(const RawMeshData &raw_mesh, const GeometryBuildData
     for (Index cell_id = 0; cell_id < cell_count; ++cell_id)
     {
         const double area{geometry.cell_areas[cell_id]};
-        const Vector2 &center{geometry.cell_centers[cell_id]};
+        const Vector2 &cell_center{geometry.cell_centers[cell_id]};
 
         if (!std::isfinite(area))
         {
             throw_geometry_validation_error("cell " + std::to_string(cell_id) + " has non-finite area.");
         }
 
-        if (!std::isfinite(center.x) || !std::isfinite(center.y))
+        if (!std::isfinite(cell_center.x) || !std::isfinite(cell_center.y))
         {
             throw_geometry_validation_error("cell " + std::to_string(cell_id) + " has non-finite center coordinates.");
         }
@@ -115,20 +112,20 @@ void validate_face_geometry(const TopologyBuildData &topology, const GeometryBui
     for (Index face_id = 0; face_id < face_count; ++face_id)
     {
         const double length{geometry.face_lengths[face_id]};
-        const Vector2 &center{geometry.face_centers[face_id]};
-        const Vector2 &area_vector{geometry.face_area_vectors[face_id]};
+        const Vector2 &face_center{geometry.face_centers[face_id]};
+        const Vector2 &face_area_vector{geometry.face_area_vectors[face_id]};
 
         if (!std::isfinite(length))
         {
             throw_geometry_validation_error("face " + std::to_string(face_id) + " has non-finite length.");
         }
 
-        if (!std::isfinite(center.x) || !std::isfinite(center.y))
+        if (!std::isfinite(face_center.x) || !std::isfinite(face_center.y))
         {
             throw_geometry_validation_error("face " + std::to_string(face_id) + " has non-finite center coordinates.");
         }
 
-        if (!std::isfinite(area_vector.x) || !std::isfinite(area_vector.y))
+        if (!std::isfinite(face_area_vector.x) || !std::isfinite(face_area_vector.y))
         {
             throw_geometry_validation_error("face " + std::to_string(face_id) +
                                             " has non-finite area vector components.");
@@ -139,7 +136,7 @@ void validate_face_geometry(const TopologyBuildData &topology, const GeometryBui
             throw_geometry_validation_error("face " + std::to_string(face_id) + " has non-positive length.");
         }
 
-        const double area_vector_norm{std::hypot(area_vector.x, area_vector.y)};
+        const double area_vector_norm{std::hypot(face_area_vector.x, face_area_vector.y)};
 
         if (!nearly_equal(area_vector_norm, length))
         {
@@ -151,10 +148,10 @@ void validate_face_geometry(const TopologyBuildData &topology, const GeometryBui
 
         const Vector2 &owner_center{geometry.cell_centers[adjacency.owner]};
 
-        const double owner_orientation{area_vector.x * (center.x - owner_center.x) +
-                                       area_vector.y * (center.y - owner_center.y)};
+        const double owner_to_face_dot{face_area_vector.x * (face_center.x - owner_center.x) +
+                                       face_area_vector.y * (face_center.y - owner_center.y)};
 
-        if (!(owner_orientation > 0.0))
+        if (!(owner_to_face_dot > 0.0))
         {
             throw_geometry_validation_error("face " + std::to_string(face_id) +
                                             " has an area vector not oriented outward from its owner.");
@@ -167,16 +164,17 @@ void validate_face_geometry(const TopologyBuildData &topology, const GeometryBui
 
         const Vector2 &neighbor_center{geometry.cell_centers[adjacency.neighbor]};
 
-        const double owner_to_neighbor_orientation{area_vector.x * (neighbor_center.x - owner_center.x) +
-                                                   area_vector.y * (neighbor_center.y - owner_center.y)};
+        const double owner_to_neighbor_dot{face_area_vector.x * (neighbor_center.x - owner_center.x) +
+                                           face_area_vector.y * (neighbor_center.y - owner_center.y)};
 
-        if (!(owner_to_neighbor_orientation > 0.0))
+        if (!(owner_to_neighbor_dot > 0.0))
         {
             throw_geometry_validation_error("internal face " + std::to_string(face_id) +
                                             " has inconsistent owner-neighbor orientation.");
         }
     }
 }
+
 void validate_cell_face_closure(const RawMeshData &raw_mesh, const TopologyBuildData &topology,
                                 const GeometryBuildData &geometry)
 {
@@ -186,33 +184,32 @@ void validate_cell_face_closure(const RawMeshData &raw_mesh, const TopologyBuild
 
     for (Index cell_id = 0; cell_id < cell_count; ++cell_id)
     {
-        const Index begin{raw_mesh.cell_node_offsets[cell_id]};
+        const Index cell_face_begin{raw_mesh.cell_node_offsets[cell_id]};
+        const Index cell_face_end{raw_mesh.cell_node_offsets[cell_id + 1]};
 
-        const Index end{raw_mesh.cell_node_offsets[cell_id + 1]};
-
-        double sum_x{};
-        double sum_y{};
+        double area_vector_sum_x{};
+        double area_vector_sum_y{};
         double perimeter{};
 
-        for (Index position = begin; position < end; ++position)
+        for (Index cell_face_position = cell_face_begin; cell_face_position < cell_face_end; ++cell_face_position)
         {
-            const Index face_id{topology.cell_faces[position]};
+            const Index face_id{topology.cell_faces[cell_face_position]};
 
             const FaceAdjacency &adjacency{topology.face_adjacencies[face_id]};
 
-            const Vector2 &area_vector{geometry.face_area_vectors[face_id]};
+            const Vector2 &face_area_vector{geometry.face_area_vectors[face_id]};
 
             perimeter += geometry.face_lengths[face_id];
 
             if (adjacency.owner == cell_id)
             {
-                sum_x += area_vector.x;
-                sum_y += area_vector.y;
+                area_vector_sum_x += face_area_vector.x;
+                area_vector_sum_y += face_area_vector.y;
             }
             else if (adjacency.neighbor == cell_id)
             {
-                sum_x -= area_vector.x;
-                sum_y -= area_vector.y;
+                area_vector_sum_x -= face_area_vector.x;
+                area_vector_sum_y -= face_area_vector.y;
             }
             else
             {
@@ -221,17 +218,18 @@ void validate_cell_face_closure(const RawMeshData &raw_mesh, const TopologyBuild
             }
         }
 
-        const double closure_norm{std::hypot(sum_x, sum_y)};
+        const double closure_norm{std::hypot(area_vector_sum_x, area_vector_sum_y)};
 
-        const double tolerance{tolerance_factor * perimeter};
+        const double closure_tolerance{tolerance_factor * perimeter};
 
-        if (!std::isfinite(closure_norm) || closure_norm > tolerance)
+        if (!std::isfinite(closure_norm) || closure_norm > closure_tolerance)
         {
             throw_geometry_validation_error("cell " + std::to_string(cell_id) +
                                             " does not satisfy face-area-vector closure.");
         }
     }
 }
+
 } // namespace
 
 void validate_geometry(const RawMeshData &raw_mesh, const TopologyBuildData &topology,

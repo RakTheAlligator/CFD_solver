@@ -17,7 +17,7 @@ namespace
 {
 
 void write_statistics_row(std::ostream &output, const std::string_view quantity, const std::string_view unit,
-                          const ScalarStats &statistics)
+                          const ScalarStatistics &statistics)
 {
     output << "  " << std::left << std::setw(22) << quantity << std::setw(8) << unit << std::right << std::defaultfloat
            << std::setprecision(5) << std::setw(12) << statistics.minimum << std::setw(12) << statistics.mean

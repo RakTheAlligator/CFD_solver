@@ -18,7 +18,7 @@ namespace
 {
 
 [[noreturn]]
-void throw_validation_error(const std::string &message)
+void throw_raw_mesh_validation_error(const std::string &message)
 {
     throw std::runtime_error("Raw mesh validation failed: " + message);
 }
@@ -27,7 +27,7 @@ void validate_nodes(const RawMeshData &raw_mesh)
 {
     if (raw_mesh.nodes.empty())
     {
-        throw_validation_error("nodes array is empty.");
+        throw_raw_mesh_validation_error("nodes array is empty.");
     }
 
     for (Index node_id = 0; node_id < raw_mesh.nodes.size(); ++node_id)
@@ -36,7 +36,7 @@ void validate_nodes(const RawMeshData &raw_mesh)
 
         if (!std::isfinite(node.x) || !std::isfinite(node.y))
         {
-            throw_validation_error("node " + std::to_string(node_id) + " contains a non-finite coordinate.");
+            throw_raw_mesh_validation_error("node " + std::to_string(node_id) + " contains a non-finite coordinate.");
         }
     }
 }
@@ -45,48 +45,48 @@ void validate_cell_storage(const RawMeshData &raw_mesh)
 {
     if (raw_mesh.cell_types.empty())
     {
-        throw_validation_error("cell_types array is empty.");
+        throw_raw_mesh_validation_error("cell_types array is empty.");
     }
     if (raw_mesh.cell_nodes.empty())
     {
-        throw_validation_error("cell_nodes array is empty.");
+        throw_raw_mesh_validation_error("cell_nodes array is empty.");
     }
     if (raw_mesh.cell_node_offsets.empty())
     {
-        throw_validation_error("cell_node_offsets array is empty.");
+        throw_raw_mesh_validation_error("cell_node_offsets array is empty.");
     }
     if (raw_mesh.cell_node_offsets.size() != raw_mesh.cell_types.size() + 1)
     {
-        throw_validation_error("cell_node_offsets size must equal the number of cells + 1.");
+        throw_raw_mesh_validation_error("cell_node_offsets size must equal the number of cells + 1.");
     }
     if (raw_mesh.cell_node_offsets.front() != 0)
     {
-        throw_validation_error("cell_node_offsets must start at 0.");
+        throw_raw_mesh_validation_error("cell_node_offsets must start at 0.");
     }
 
-    for (std::size_t i = 1; i < raw_mesh.cell_node_offsets.size(); ++i)
+    for (std::size_t offset_index = 1; offset_index < raw_mesh.cell_node_offsets.size(); ++offset_index)
     {
-        const Index previous{raw_mesh.cell_node_offsets[i - 1]};
-        const Index current{raw_mesh.cell_node_offsets[i]};
+        const Index previous_offset{raw_mesh.cell_node_offsets[offset_index - 1]};
+        const Index current_offset{raw_mesh.cell_node_offsets[offset_index]};
 
-        if (current <= previous)
+        if (current_offset <= previous_offset)
         {
-            throw_validation_error("cell_node_offsets must be strictly increasing.");
+            throw_raw_mesh_validation_error("cell_node_offsets must be strictly increasing.");
         }
-        if (current > raw_mesh.cell_nodes.size())
+        if (current_offset > raw_mesh.cell_nodes.size())
         {
-            throw_validation_error("cell_node_offsets contains an offset outside cell_nodes.");
+            throw_raw_mesh_validation_error("cell_node_offsets contains an offset outside cell_nodes.");
         }
     }
 
     if (raw_mesh.cell_node_offsets.back() != raw_mesh.cell_nodes.size())
     {
-        throw_validation_error("last cell_node_offset must equal cell_nodes.size().");
+        throw_raw_mesh_validation_error("last cell_node_offset must equal cell_nodes.size().");
     }
 }
 
 [[nodiscard]]
-Index expected_node_count(const CellType cell_type, const Index cell_id)
+Index expected_cell_node_count(const CellType cell_type, const Index cell_id)
 {
     switch (cell_type)
     {
@@ -97,43 +97,46 @@ Index expected_node_count(const CellType cell_type, const Index cell_id)
         return 4;
     }
 
-    throw_validation_error("cell " + std::to_string(cell_id) + " has an unsupported CellType.");
+    throw_raw_mesh_validation_error("cell " + std::to_string(cell_id) + " has an unsupported CellType.");
 }
 
 void validate_cells(const RawMeshData &raw_mesh)
 {
     for (Index cell_id = 0; cell_id < raw_mesh.cell_types.size(); ++cell_id)
     {
-        const Index begin{raw_mesh.cell_node_offsets[cell_id]};
-        const Index end{raw_mesh.cell_node_offsets[cell_id + 1]};
+        const Index cell_node_begin{raw_mesh.cell_node_offsets[cell_id]};
+        const Index cell_node_end{raw_mesh.cell_node_offsets[cell_id + 1]};
 
-        const Index node_count{end - begin};
-        const Index expected_count{expected_node_count(raw_mesh.cell_types[cell_id], cell_id)};
+        const Index node_count{cell_node_end - cell_node_begin};
+        const Index required_node_count{expected_cell_node_count(raw_mesh.cell_types[cell_id], cell_id)};
 
-        if (node_count != expected_count)
+        if (node_count != required_node_count)
         {
-            throw_validation_error("cell " + std::to_string(cell_id) + " has " + std::to_string(node_count) +
-                                   " nodes, but its type requires " + std::to_string(expected_count) + ".");
+            throw_raw_mesh_validation_error("cell " + std::to_string(cell_id) + " has " + std::to_string(node_count) +
+                                            " nodes, but its type requires " + std::to_string(required_node_count) +
+                                            ".");
         }
 
-        for (Index position = begin; position < end; ++position)
+        for (Index cell_node_position = cell_node_begin; cell_node_position < cell_node_end; ++cell_node_position)
         {
-            const Index node_id{raw_mesh.cell_nodes[position]};
+            const Index node_id{raw_mesh.cell_nodes[cell_node_position]};
 
             if (node_id >= raw_mesh.nodes.size())
             {
-                throw_validation_error("cell " + std::to_string(cell_id) + " references node " +
-                                       std::to_string(node_id) + ", which is outside the nodes array.");
+                throw_raw_mesh_validation_error("cell " + std::to_string(cell_id) + " references node " +
+                                                std::to_string(node_id) + ", which is outside the nodes array.");
             }
 
             // Cells contain only 3 or 4 nodes, so a small
             // O(n^2) local search is simpler and cheaper than
             // allocating a set for every cell.
-            for (Index previous_position = begin; previous_position < position; ++previous_position)
+            for (Index previous_cell_node_position = cell_node_begin; previous_cell_node_position < cell_node_position;
+                 ++previous_cell_node_position)
             {
-                if (raw_mesh.cell_nodes[previous_position] == node_id)
+                if (raw_mesh.cell_nodes[previous_cell_node_position] == node_id)
                 {
-                    throw_validation_error("cell " + std::to_string(cell_id) + " contains duplicate node indices.");
+                    throw_raw_mesh_validation_error("cell " + std::to_string(cell_id) +
+                                                    " contains duplicate node indices.");
                 }
             }
         }
@@ -147,7 +150,7 @@ BoundaryIdSet validate_boundary_groups(const RawMeshData &raw_mesh)
 {
     if (raw_mesh.boundary_groups.empty())
     {
-        throw_validation_error("boundary_groups array is empty.");
+        throw_raw_mesh_validation_error("boundary_groups array is empty.");
     }
 
     BoundaryIdSet boundary_ids;
@@ -160,25 +163,26 @@ BoundaryIdSet validate_boundary_groups(const RawMeshData &raw_mesh)
     {
         if (group.id == invalid_boundary_id)
         {
-            throw_validation_error("boundary group \"" + group.name + "\" uses the reserved invalid boundary ID.");
+            throw_raw_mesh_validation_error("boundary group \"" + group.name +
+                                            "\" uses the reserved invalid boundary ID.");
         }
         if (group.name.empty())
         {
-            throw_validation_error("a boundary group has an empty name.");
+            throw_raw_mesh_validation_error("a boundary group has an empty name.");
         }
 
         const bool id_inserted{boundary_ids.insert(group.id).second};
 
         if (!id_inserted)
         {
-            throw_validation_error("boundary group ID " + std::to_string(group.id) + " is duplicated.");
+            throw_raw_mesh_validation_error("boundary group ID " + std::to_string(group.id) + " is duplicated.");
         }
 
         const bool name_inserted{boundary_names.insert(group.name).second};
 
         if (!name_inserted)
         {
-            throw_validation_error("boundary group name \"" + group.name + "\" is duplicated.");
+            throw_raw_mesh_validation_error("boundary group name \"" + group.name + "\" is duplicated.");
         }
     }
 
@@ -189,7 +193,7 @@ void validate_boundary_edges(const RawMeshData &raw_mesh, const BoundaryIdSet &v
 {
     if (raw_mesh.boundary_edges.empty())
     {
-        throw_validation_error("boundary_edges array is empty.");
+        throw_raw_mesh_validation_error("boundary_edges array is empty.");
     }
 
     std::unordered_set<BoundaryId> used_boundary_ids;
@@ -201,55 +205,57 @@ void validate_boundary_edges(const RawMeshData &raw_mesh, const BoundaryIdSet &v
     std::vector<std::array<Index, 2>> boundary_edge_keys;
     boundary_edge_keys.reserve(raw_mesh.boundary_edges.size());
 
-    for (std::size_t edge_index = 0; edge_index < raw_mesh.boundary_edges.size(); ++edge_index)
+    for (std::size_t boundary_edge_index = 0; boundary_edge_index < raw_mesh.boundary_edges.size();
+         ++boundary_edge_index)
     {
+        const BoundaryEdge &boundary_edge{raw_mesh.boundary_edges[boundary_edge_index]};
 
-        const BoundaryEdge &edge{raw_mesh.boundary_edges[edge_index]};
+        const Index node_0_id{boundary_edge.node_ids[0]};
+        const Index node_1_id{boundary_edge.node_ids[1]};
 
-        const Index node_a{edge.node_ids[0]};
-        const Index node_b{edge.node_ids[1]};
-
-        if (node_a >= raw_mesh.nodes.size() || node_b >= raw_mesh.nodes.size())
+        if (node_0_id >= raw_mesh.nodes.size() || node_1_id >= raw_mesh.nodes.size())
         {
-            throw_validation_error("boundary edge " + std::to_string(edge_index) +
-                                   " references a node outside the nodes array.");
+            throw_raw_mesh_validation_error("boundary edge " + std::to_string(boundary_edge_index) +
+                                            " references a node outside the nodes array.");
         }
-        if (node_a == node_b)
+        if (node_0_id == node_1_id)
         {
-            throw_validation_error("boundary edge " + std::to_string(edge_index) + " references the same node twice.");
+            throw_raw_mesh_validation_error("boundary edge " + std::to_string(boundary_edge_index) +
+                                            " references the same node twice.");
         }
-        if (!valid_boundary_ids.contains(edge.boundary_id))
+        if (!valid_boundary_ids.contains(boundary_edge.boundary_id))
         {
-            throw_validation_error("boundary edge " + std::to_string(edge_index) +
-                                   " references unknown boundary group ID " + std::to_string(edge.boundary_id) + ".");
+            throw_raw_mesh_validation_error("boundary edge " + std::to_string(boundary_edge_index) +
+                                            " references unknown boundary group ID " +
+                                            std::to_string(boundary_edge.boundary_id) + ".");
         }
 
-        used_boundary_ids.insert(edge.boundary_id);
+        used_boundary_ids.insert(boundary_edge.boundary_id);
 
-        if (node_a < node_b)
+        if (node_0_id < node_1_id)
         {
-            boundary_edge_keys.push_back({node_a, node_b});
+            boundary_edge_keys.push_back({node_0_id, node_1_id});
         }
         else
         {
-            boundary_edge_keys.push_back({node_b, node_a});
+            boundary_edge_keys.push_back({node_1_id, node_0_id});
         }
     }
 
     std::sort(boundary_edge_keys.begin(), boundary_edge_keys.end());
 
-    const auto duplicate_edge{std::adjacent_find(boundary_edge_keys.begin(), boundary_edge_keys.end())};
+    const auto duplicate_edge_iterator{std::adjacent_find(boundary_edge_keys.begin(), boundary_edge_keys.end())};
 
-    if (duplicate_edge != boundary_edge_keys.end())
+    if (duplicate_edge_iterator != boundary_edge_keys.end())
     {
-        throw_validation_error("the same boundary edge appears more than once.");
+        throw_raw_mesh_validation_error("the same boundary edge appears more than once.");
     }
 
     for (const BoundaryGroup &group : raw_mesh.boundary_groups)
     {
         if (!used_boundary_ids.contains(group.id))
         {
-            throw_validation_error("boundary group \"" + group.name + "\" contains no boundary edge.");
+            throw_raw_mesh_validation_error("boundary group \"" + group.name + "\" contains no boundary edge.");
         }
     }
 }
@@ -261,8 +267,8 @@ void validate_raw_mesh(const RawMeshData &raw_mesh)
     validate_cell_storage(raw_mesh);
     validate_cells(raw_mesh);
 
-    const BoundaryIdSet boundary_ids{validate_boundary_groups(raw_mesh)};
+    const BoundaryIdSet valid_boundary_ids{validate_boundary_groups(raw_mesh)};
 
-    validate_boundary_edges(raw_mesh, boundary_ids);
+    validate_boundary_edges(raw_mesh, valid_boundary_ids);
 }
 } // namespace cfd

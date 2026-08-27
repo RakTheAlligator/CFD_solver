@@ -15,9 +15,9 @@ namespace cfd
 namespace
 {
 
-constexpr int gmsh_line_2_nodes = 1;
-constexpr int gmsh_triangle_3_nodes = 2;
-constexpr int gmsh_quadrilateral_4_nodes = 3;
+constexpr int gmsh_line_2_element_type = 1;
+constexpr int gmsh_triangle_3_element_type = 2;
+constexpr int gmsh_quadrilateral_4_element_type = 3;
 
 constexpr BoundaryId inlet_boundary_id{0};
 constexpr BoundaryId wall_boundary_id{1};
@@ -44,37 +44,37 @@ class GmshSession
     GmshSession &operator=(GmshSession &&) = delete;
 };
 
-struct RectangleGmshTags
+struct RectangleModelTags
 {
-    int surface{};
-    int inlet_physical_group{};
-    int wall_physical_group{};
-    int outlet_physical_group{};
+    int surface_tag{};
+    int inlet_group_tag{};
+    int wall_group_tag{};
+    int outlet_group_tag{};
 };
 
-struct CellExtractionInfo
+struct CellExtractionSpec
 {
     int gmsh_element_type{};
-    Index node_count{};
+    Index nodes_per_cell{};
     CellType cell_type{};
 };
 
 [[nodiscard]]
-CellExtractionInfo cell_extraction_info(const CellType cell_type)
+CellExtractionSpec cell_extraction_spec(const CellType cell_type)
 {
     switch (cell_type)
     {
     case CellType::Triangle:
         return {
-            .gmsh_element_type = gmsh_triangle_3_nodes,
-            .node_count = 3,
+            .gmsh_element_type = gmsh_triangle_3_element_type,
+            .nodes_per_cell = 3,
             .cell_type = CellType::Triangle,
         };
 
     case CellType::Quadrilateral:
         return {
-            .gmsh_element_type = gmsh_quadrilateral_4_nodes,
-            .node_count = 4,
+            .gmsh_element_type = gmsh_quadrilateral_4_element_type,
+            .nodes_per_cell = 4,
             .cell_type = CellType::Quadrilateral,
         };
     }
@@ -82,7 +82,7 @@ CellExtractionInfo cell_extraction_info(const CellType cell_type)
     throw std::invalid_argument("Unsupported cell type.");
 }
 
-void validate(const RectangleGeometry &geometry, const MeshGenerationOptions &options)
+void validate_mesh_generation_inputs(const RectangleGeometry &geometry, const MeshGenerationOptions &options)
 {
     if (!std::isfinite(geometry.length) || !(geometry.length > 0.0))
     {
@@ -99,56 +99,64 @@ void validate(const RectangleGeometry &geometry, const MeshGenerationOptions &op
         throw std::invalid_argument("Mesh size must be finite and positive.");
     }
 
-    static_cast<void>(cell_extraction_info(options.cell_type));
+    static_cast<void>(cell_extraction_spec(options.cell_type));
 }
 
-RectangleGmshTags create_rectangle(const RectangleGeometry &geometry, const double mesh_size)
+RectangleModelTags create_rectangle(const RectangleGeometry &geometry, const double mesh_size)
 {
-    const int p0{gmsh::model::geo::addPoint(0.0, 0.0, 0.0, mesh_size)};
+    const int bottom_left_point_tag{gmsh::model::geo::addPoint(0.0, 0.0, 0.0, mesh_size)};
 
-    const int p1{gmsh::model::geo::addPoint(geometry.length, 0.0, 0.0, mesh_size)};
+    const int bottom_right_point_tag{gmsh::model::geo::addPoint(geometry.length, 0.0, 0.0, mesh_size)};
 
-    const int p2{gmsh::model::geo::addPoint(geometry.length, geometry.height, 0.0, mesh_size)};
+    const int top_right_point_tag{gmsh::model::geo::addPoint(geometry.length, geometry.height, 0.0, mesh_size)};
 
-    const int p3{gmsh::model::geo::addPoint(0.0, geometry.height, 0.0, mesh_size)};
+    const int top_left_point_tag{gmsh::model::geo::addPoint(0.0, geometry.height, 0.0, mesh_size)};
 
-    const int bottom{gmsh::model::geo::addLine(p0, p1)};
+    const int bottom_curve_tag{gmsh::model::geo::addLine(bottom_left_point_tag, bottom_right_point_tag)};
 
-    const int right{gmsh::model::geo::addLine(p1, p2)};
+    const int right_curve_tag{gmsh::model::geo::addLine(bottom_right_point_tag, top_right_point_tag)};
 
-    const int top{gmsh::model::geo::addLine(p2, p3)};
+    const int top_curve_tag{gmsh::model::geo::addLine(top_right_point_tag, top_left_point_tag)};
 
-    const int left{gmsh::model::geo::addLine(p3, p0)};
+    const int left_curve_tag{gmsh::model::geo::addLine(top_left_point_tag, bottom_left_point_tag)};
 
-    const int contour{gmsh::model::geo::addCurveLoop({bottom, right, top, left})};
+    const int curve_loop_tag{gmsh::model::geo::addCurveLoop({
+        bottom_curve_tag,
+        right_curve_tag,
+        top_curve_tag,
+        left_curve_tag,
+    })};
 
-    const int surface{gmsh::model::geo::addPlaneSurface({contour})};
+    const int surface_tag{gmsh::model::geo::addPlaneSurface({curve_loop_tag})};
 
     // Make the entities created in the geometry kernel
     // available to the rest of the Gmsh model.
     gmsh::model::geo::synchronize();
 
-    const int inlet_group{gmsh::model::addPhysicalGroup(1, {left})};
+    const int inlet_group_tag{gmsh::model::addPhysicalGroup(1, {left_curve_tag})};
 
-    gmsh::model::setPhysicalName(1, inlet_group, "inlet");
+    gmsh::model::setPhysicalName(1, inlet_group_tag, "inlet");
 
-    const int wall_group{gmsh::model::addPhysicalGroup(1, {bottom, top})};
+    const int wall_group_tag{gmsh::model::addPhysicalGroup(1, {
+                                                                  bottom_curve_tag,
+                                                                  top_curve_tag,
+                                                              })};
 
-    gmsh::model::setPhysicalName(1, wall_group, "wall");
+    gmsh::model::setPhysicalName(1, wall_group_tag, "wall");
 
-    const int outlet_group{gmsh::model::addPhysicalGroup(1, {right})};
+    const int outlet_group_tag{gmsh::model::addPhysicalGroup(1, {right_curve_tag})};
 
-    gmsh::model::setPhysicalName(1, outlet_group, "outlet");
+    gmsh::model::setPhysicalName(1, outlet_group_tag, "outlet");
 
-    const int fluid_group{gmsh::model::addPhysicalGroup(2, {surface})};
+    const int fluid_group_tag{gmsh::model::addPhysicalGroup(2, {surface_tag})};
 
-    gmsh::model::setPhysicalName(2, fluid_group, "fluid");
+    gmsh::model::setPhysicalName(2, fluid_group_tag, "fluid");
 
     return {
-        surface,
-        inlet_group,
-        wall_group,
-        outlet_group,
+        surface_tag,
+        inlet_group_tag,
+        wall_group_tag,
+        outlet_group_tag,
     };
 }
 
@@ -174,11 +182,12 @@ void configure_surface_mesh(const CellType cell_type, const int surface_tag)
 }
 
 [[nodiscard]]
-Index local_node_index(const std::unordered_map<std::size_t, Index> &gmsh_to_local, const std::size_t gmsh_node_tag)
+Index node_id_from_gmsh_tag(const std::unordered_map<std::size_t, Index> &node_id_by_gmsh_tag,
+                            const std::size_t gmsh_node_tag)
 {
-    const auto iterator{gmsh_to_local.find(gmsh_node_tag)};
+    const auto iterator{node_id_by_gmsh_tag.find(gmsh_node_tag)};
 
-    if (iterator == gmsh_to_local.end())
+    if (iterator == node_id_by_gmsh_tag.end())
     {
         throw std::runtime_error("Unknown Gmsh node tag.");
     }
@@ -189,27 +198,28 @@ Index local_node_index(const std::unordered_map<std::size_t, Index> &gmsh_to_loc
 [[nodiscard]]
 std::unordered_map<std::size_t, Index> extract_nodes(RawMeshData &raw_mesh)
 {
-    std::vector<std::size_t> node_tags;
+    std::vector<std::size_t> gmsh_node_tags;
     std::vector<double> coordinates;
     std::vector<double> parametric_coordinates;
 
-    gmsh::model::mesh::getNodes(node_tags, coordinates, parametric_coordinates, -1, -1, false, false);
+    gmsh::model::mesh::getNodes(gmsh_node_tags, coordinates, parametric_coordinates, -1, -1, false, false);
 
-    if (coordinates.size() != 3 * node_tags.size())
+    if (coordinates.size() != 3 * gmsh_node_tags.size())
     {
         throw std::runtime_error("Invalid node coordinate data returned by Gmsh.");
     }
 
-    raw_mesh.nodes.reserve(node_tags.size());
+    raw_mesh.nodes.reserve(gmsh_node_tags.size());
 
-    std::unordered_map<std::size_t, Index> gmsh_to_local;
-    gmsh_to_local.reserve(node_tags.size());
+    std::unordered_map<std::size_t, Index> node_id_by_gmsh_tag;
 
-    for (Index node_id = 0; node_id < node_tags.size(); ++node_id)
+    node_id_by_gmsh_tag.reserve(gmsh_node_tags.size());
+
+    for (Index node_id = 0; node_id < gmsh_node_tags.size(); ++node_id)
     {
-        const std::size_t gmsh_tag{node_tags[node_id]};
+        const std::size_t gmsh_node_tag{gmsh_node_tags[node_id]};
 
-        gmsh_to_local.emplace(gmsh_tag, node_id);
+        node_id_by_gmsh_tag.emplace(gmsh_node_tag, node_id);
 
         raw_mesh.nodes.push_back({
             coordinates[3 * node_id],
@@ -217,60 +227,64 @@ std::unordered_map<std::size_t, Index> extract_nodes(RawMeshData &raw_mesh)
         });
     }
 
-    return gmsh_to_local;
+    return node_id_by_gmsh_tag;
 }
 
-void extract_cells(RawMeshData &raw_mesh, const std::unordered_map<std::size_t, Index> &gmsh_to_local,
+void extract_cells(RawMeshData &raw_mesh, const std::unordered_map<std::size_t, Index> &node_id_by_gmsh_tag,
                    const int surface_tag, const CellType requested_cell_type)
 {
-    std::vector<int> element_types;
-    std::vector<std::vector<std::size_t>> element_tags;
-    std::vector<std::vector<std::size_t>> element_node_tags;
+    std::vector<int> gmsh_element_types;
+    std::vector<std::vector<std::size_t>> gmsh_element_tags;
+    std::vector<std::vector<std::size_t>> gmsh_element_node_tags;
 
-    gmsh::model::mesh::getElements(element_types, element_tags, element_node_tags, 2, surface_tag);
+    gmsh::model::mesh::getElements(gmsh_element_types, gmsh_element_tags, gmsh_element_node_tags, 2, surface_tag);
 
-    const CellExtractionInfo extraction{cell_extraction_info(requested_cell_type)};
+    const CellExtractionSpec extraction_spec{cell_extraction_spec(requested_cell_type)};
 
     Index total_cell_count{};
     Index total_connectivity_size{};
 
-    for (std::size_t type_index = 0; type_index < element_types.size(); ++type_index)
+    for (std::size_t element_type_index = 0; element_type_index < gmsh_element_types.size(); ++element_type_index)
     {
-        if (element_types[type_index] != extraction.gmsh_element_type)
+        if (gmsh_element_types[element_type_index] != extraction_spec.gmsh_element_type)
         {
             throw std::runtime_error("Gmsh generated a 2D element type that does not "
                                      "match the requested cell type.");
         }
 
-        const auto &nodes{element_node_tags[type_index]};
+        const auto &gmsh_node_tags{gmsh_element_node_tags[element_type_index]};
 
-        if (nodes.size() % extraction.node_count != 0)
+        if (gmsh_node_tags.size() % extraction_spec.nodes_per_cell != 0)
         {
             throw std::runtime_error("Invalid cell connectivity returned by Gmsh.");
         }
 
-        total_cell_count += nodes.size() / extraction.node_count;
+        total_cell_count += gmsh_node_tags.size() / extraction_spec.nodes_per_cell;
 
-        total_connectivity_size += nodes.size();
+        total_connectivity_size += gmsh_node_tags.size();
     }
 
     raw_mesh.cell_types.reserve(total_cell_count);
+
     raw_mesh.cell_nodes.reserve(total_connectivity_size);
+
     raw_mesh.cell_node_offsets.reserve(total_cell_count + 1);
 
     raw_mesh.cell_node_offsets.push_back(0);
 
-    for (std::size_t type_index = 0; type_index < element_types.size(); ++type_index)
+    for (std::size_t element_type_index = 0; element_type_index < gmsh_element_types.size(); ++element_type_index)
     {
-        const auto &nodes{element_node_tags[type_index]};
+        const auto &gmsh_node_tags{gmsh_element_node_tags[element_type_index]};
 
-        for (std::size_t first_node = 0; first_node < nodes.size(); first_node += extraction.node_count)
+        for (std::size_t connectivity_begin = 0; connectivity_begin < gmsh_node_tags.size();
+             connectivity_begin += extraction_spec.nodes_per_cell)
         {
-            raw_mesh.cell_types.push_back(extraction.cell_type);
+            raw_mesh.cell_types.push_back(extraction_spec.cell_type);
 
-            for (Index local_node = 0; local_node < extraction.node_count; ++local_node)
+            for (Index local_node_index = 0; local_node_index < extraction_spec.nodes_per_cell; ++local_node_index)
             {
-                raw_mesh.cell_nodes.push_back(local_node_index(gmsh_to_local, nodes[first_node + local_node]));
+                raw_mesh.cell_nodes.push_back(
+                    node_id_from_gmsh_tag(node_id_by_gmsh_tag, gmsh_node_tags[connectivity_begin + local_node_index]));
             }
 
             raw_mesh.cell_node_offsets.push_back(raw_mesh.cell_nodes.size());
@@ -278,41 +292,42 @@ void extract_cells(RawMeshData &raw_mesh, const std::unordered_map<std::size_t, 
     }
 }
 
-void extract_boundary_edges(RawMeshData &raw_mesh, const std::unordered_map<std::size_t, Index> &gmsh_to_local,
-                            const int physical_group_tag, const BoundaryId boundary_id)
+void extract_boundary_edges(RawMeshData &raw_mesh, const std::unordered_map<std::size_t, Index> &node_id_by_gmsh_tag,
+                            const int boundary_group_tag, const BoundaryId boundary_id)
 {
     std::vector<int> curve_tags;
 
-    gmsh::model::getEntitiesForPhysicalGroup(1, physical_group_tag, curve_tags);
+    gmsh::model::getEntitiesForPhysicalGroup(1, boundary_group_tag, curve_tags);
 
     for (const int curve_tag : curve_tags)
     {
-        std::vector<int> element_types;
-        std::vector<std::vector<std::size_t>> element_tags;
-        std::vector<std::vector<std::size_t>> element_node_tags;
+        std::vector<int> gmsh_element_types;
+        std::vector<std::vector<std::size_t>> gmsh_element_tags;
+        std::vector<std::vector<std::size_t>> gmsh_element_node_tags;
 
-        gmsh::model::mesh::getElements(element_types, element_tags, element_node_tags, 1, curve_tag);
+        gmsh::model::mesh::getElements(gmsh_element_types, gmsh_element_tags, gmsh_element_node_tags, 1, curve_tag);
 
-        for (std::size_t type_index = 0; type_index < element_types.size(); ++type_index)
+        for (std::size_t element_type_index = 0; element_type_index < gmsh_element_types.size(); ++element_type_index)
         {
-            if (element_types[type_index] != gmsh_line_2_nodes)
+            if (gmsh_element_types[element_type_index] != gmsh_line_2_element_type)
             {
                 throw std::runtime_error("Gmsh generated a non-linear boundary element.");
             }
 
-            const auto &nodes{element_node_tags[type_index]};
+            const auto &gmsh_node_tags{gmsh_element_node_tags[element_type_index]};
 
-            if (nodes.size() % 2 != 0)
+            if (gmsh_node_tags.size() % 2 != 0)
             {
                 throw std::runtime_error("Invalid boundary connectivity returned by Gmsh.");
             }
 
-            for (std::size_t node_index = 0; node_index < nodes.size(); node_index += 2)
+            for (std::size_t connectivity_position = 0; connectivity_position < gmsh_node_tags.size();
+                 connectivity_position += 2)
             {
                 raw_mesh.boundary_edges.push_back({
                     {
-                        local_node_index(gmsh_to_local, nodes[node_index]),
-                        local_node_index(gmsh_to_local, nodes[node_index + 1]),
+                        node_id_from_gmsh_tag(node_id_by_gmsh_tag, gmsh_node_tags[connectivity_position]),
+                        node_id_from_gmsh_tag(node_id_by_gmsh_tag, gmsh_node_tags[connectivity_position + 1]),
                     },
                     boundary_id,
                 });
@@ -325,15 +340,15 @@ void extract_boundary_edges(RawMeshData &raw_mesh, const std::unordered_map<std:
 
 RawMeshData generate_mesh(const RectangleGeometry &geometry, const MeshGenerationOptions &options)
 {
-    validate(geometry, options);
+    validate_mesh_generation_inputs(geometry, options);
 
     GmshSession gmsh_session;
 
     gmsh::model::add("rectangle");
 
-    const RectangleGmshTags tags{create_rectangle(geometry, options.mesh_size)};
+    const RectangleModelTags tags{create_rectangle(geometry, options.mesh_size)};
 
-    configure_surface_mesh(options.cell_type, tags.surface);
+    configure_surface_mesh(options.cell_type, tags.surface_tag);
 
     gmsh::model::mesh::generate(2);
 
@@ -345,15 +360,15 @@ RawMeshData generate_mesh(const RectangleGeometry &geometry, const MeshGeneratio
         {outlet_boundary_id, "outlet"},
     };
 
-    const auto gmsh_to_local{extract_nodes(raw_mesh)};
+    const auto node_id_by_gmsh_tag{extract_nodes(raw_mesh)};
 
-    extract_cells(raw_mesh, gmsh_to_local, tags.surface, options.cell_type);
+    extract_cells(raw_mesh, node_id_by_gmsh_tag, tags.surface_tag, options.cell_type);
 
-    extract_boundary_edges(raw_mesh, gmsh_to_local, tags.inlet_physical_group, inlet_boundary_id);
+    extract_boundary_edges(raw_mesh, node_id_by_gmsh_tag, tags.inlet_group_tag, inlet_boundary_id);
 
-    extract_boundary_edges(raw_mesh, gmsh_to_local, tags.wall_physical_group, wall_boundary_id);
+    extract_boundary_edges(raw_mesh, node_id_by_gmsh_tag, tags.wall_group_tag, wall_boundary_id);
 
-    extract_boundary_edges(raw_mesh, gmsh_to_local, tags.outlet_physical_group, outlet_boundary_id);
+    extract_boundary_edges(raw_mesh, node_id_by_gmsh_tag, tags.outlet_group_tag, outlet_boundary_id);
 
     return raw_mesh;
 }
