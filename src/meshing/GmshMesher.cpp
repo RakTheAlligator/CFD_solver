@@ -1,11 +1,9 @@
 #include "cfd/meshing/GmshMesher.hpp"
 
-#include <gmsh.h>
-
 #include <cmath>
 #include <cstddef>
+#include <gmsh.h>
 #include <stdexcept>
-#include <string>
 #include <unordered_map>
 #include <vector>
 
@@ -15,10 +13,14 @@ namespace cfd
 namespace
 {
 
+// Gmsh element type codes used by the API for the supported first-order
+// one- and two-dimensional elements.
 constexpr int gmsh_line_2_element_type = 1;
 constexpr int gmsh_triangle_3_element_type = 2;
 constexpr int gmsh_quadrilateral_4_element_type = 3;
 
+// Solver boundary IDs are deliberately independent of the physical-group tags
+// assigned by Gmsh.
 constexpr BoundaryId inlet_boundary_id{0};
 constexpr BoundaryId wall_boundary_id{1};
 constexpr BoundaryId outlet_boundary_id{2};
@@ -29,7 +31,6 @@ class GmshSession
     GmshSession()
     {
         gmsh::initialize();
-        gmsh::option::setNumber("General.Terminal", 0);
     }
 
     ~GmshSession()
@@ -99,25 +100,20 @@ void validate_mesh_generation_inputs(const RectangleGeometry &geometry, const Me
         throw std::invalid_argument("Mesh size must be finite and positive.");
     }
 
+    // Validate the enum value through the same mapping used during extraction.
     static_cast<void>(cell_extraction_spec(options.cell_type));
 }
 
 RectangleModelTags create_rectangle(const RectangleGeometry &geometry, const double mesh_size)
 {
     const int bottom_left_point_tag{gmsh::model::geo::addPoint(0.0, 0.0, 0.0, mesh_size)};
-
     const int bottom_right_point_tag{gmsh::model::geo::addPoint(geometry.length, 0.0, 0.0, mesh_size)};
-
     const int top_right_point_tag{gmsh::model::geo::addPoint(geometry.length, geometry.height, 0.0, mesh_size)};
-
     const int top_left_point_tag{gmsh::model::geo::addPoint(0.0, geometry.height, 0.0, mesh_size)};
 
     const int bottom_curve_tag{gmsh::model::geo::addLine(bottom_left_point_tag, bottom_right_point_tag)};
-
     const int right_curve_tag{gmsh::model::geo::addLine(bottom_right_point_tag, top_right_point_tag)};
-
     const int top_curve_tag{gmsh::model::geo::addLine(top_right_point_tag, top_left_point_tag)};
-
     const int left_curve_tag{gmsh::model::geo::addLine(top_left_point_tag, bottom_left_point_tag)};
 
     const int curve_loop_tag{gmsh::model::geo::addCurveLoop({
@@ -129,27 +125,23 @@ RectangleModelTags create_rectangle(const RectangleGeometry &geometry, const dou
 
     const int surface_tag{gmsh::model::geo::addPlaneSurface({curve_loop_tag})};
 
-    // Make the entities created in the geometry kernel
-    // available to the rest of the Gmsh model.
+    // Entities created in the geometry kernel must be synchronized before they
+    // can be referenced by the model API, including physical groups.
     gmsh::model::geo::synchronize();
 
     const int inlet_group_tag{gmsh::model::addPhysicalGroup(1, {left_curve_tag})};
-
     gmsh::model::setPhysicalName(1, inlet_group_tag, "inlet");
 
     const int wall_group_tag{gmsh::model::addPhysicalGroup(1, {
                                                                   bottom_curve_tag,
                                                                   top_curve_tag,
                                                               })};
-
     gmsh::model::setPhysicalName(1, wall_group_tag, "wall");
 
     const int outlet_group_tag{gmsh::model::addPhysicalGroup(1, {right_curve_tag})};
-
     gmsh::model::setPhysicalName(1, outlet_group_tag, "outlet");
 
     const int fluid_group_tag{gmsh::model::addPhysicalGroup(2, {surface_tag})};
-
     gmsh::model::setPhysicalName(2, fluid_group_tag, "fluid");
 
     return {
@@ -168,11 +160,9 @@ void configure_surface_mesh(const CellType cell_type, const int surface_tag)
         return;
 
     case CellType::Quadrilateral:
-        // Blossom recombination:
-        // generate a triangular background mesh, then recombine
-        // pairs of triangles into quadrilateral elements.
+        // Blossom recombination generates a triangular background mesh and
+        // recombines pairs of triangles into quadrilateral elements.
         gmsh::option::setNumber("Mesh.RecombinationAlgorithm", 1);
-
         gmsh::model::mesh::setRecombine(2, surface_tag);
 
         return;
@@ -204,6 +194,7 @@ std::unordered_map<std::size_t, Index> extract_nodes(RawMeshData &raw_mesh)
 
     gmsh::model::mesh::getNodes(gmsh_node_tags, coordinates, parametric_coordinates, -1, -1, false, false);
 
+    // Gmsh returns Cartesian coordinates as x/y/z triples even for a 2D model.
     if (coordinates.size() != 3 * gmsh_node_tags.size())
     {
         throw std::runtime_error("Invalid node coordinate data returned by Gmsh.");
@@ -211,8 +202,10 @@ std::unordered_map<std::size_t, Index> extract_nodes(RawMeshData &raw_mesh)
 
     raw_mesh.nodes.reserve(gmsh_node_tags.size());
 
+    // Gmsh tags are external identifiers and are not assumed to be contiguous
+    // or zero-based. Convert them once to compact IDs suitable for direct
+    // indexing throughout the solver.
     std::unordered_map<std::size_t, Index> node_id_by_gmsh_tag;
-
     node_id_by_gmsh_tag.reserve(gmsh_node_tags.size());
 
     for (Index node_id = 0; node_id < gmsh_node_tags.size(); ++node_id)
@@ -237,10 +230,14 @@ void extract_cells(RawMeshData &raw_mesh, const std::unordered_map<std::size_t, 
     std::vector<std::vector<std::size_t>> gmsh_element_tags;
     std::vector<std::vector<std::size_t>> gmsh_element_node_tags;
 
+    // Gmsh exposes element tags and connectivity together. Element tags are not
+    // retained because the solver assigns its own compact cell IDs.
     gmsh::model::mesh::getElements(gmsh_element_types, gmsh_element_tags, gmsh_element_node_tags, 2, surface_tag);
 
     const CellExtractionSpec extraction_spec{cell_extraction_spec(requested_cell_type)};
 
+    // Validate every returned element block first and determine exact storage
+    // requirements before filling the flattened connectivity arrays.
     Index total_cell_count{};
     Index total_cell_node_count{};
 
@@ -260,14 +257,11 @@ void extract_cells(RawMeshData &raw_mesh, const std::unordered_map<std::size_t, 
         }
 
         total_cell_count += gmsh_node_tags.size() / extraction_spec.node_count;
-
         total_cell_node_count += gmsh_node_tags.size();
     }
 
     raw_mesh.cell_types.reserve(total_cell_count);
-
     raw_mesh.cell_nodes.reserve(total_cell_node_count);
-
     raw_mesh.cell_node_offsets.reserve(total_cell_count + 1);
 
     raw_mesh.cell_node_offsets.push_back(0);
@@ -297,6 +291,9 @@ void extract_boundary_edges(RawMeshData &raw_mesh, const std::unordered_map<std:
 {
     std::vector<int> curve_tags;
 
+    // A physical boundary group contains geometric curves; boundary
+    // connectivity is carried by the one-dimensional mesh elements belonging
+    // to those curves.
     gmsh::model::getEntitiesForPhysicalGroup(1, boundary_group_tag, curve_tags);
 
     for (const int curve_tag : curve_tags)
@@ -342,7 +339,12 @@ RawMeshData generate_mesh(const RectangleGeometry &geometry, const MeshGeneratio
 {
     validate_mesh_generation_inputs(geometry, options);
 
+    // Scope Gmsh's initialization/finalization with this generation operation.
+    // Once construction succeeds, GmshSession guarantees finalization even if a
+    // later Gmsh call or extraction step throws.
     GmshSession gmsh_session;
+
+    gmsh::option::setNumber("General.Terminal", 0);
 
     gmsh::model::add("rectangle");
 
@@ -350,10 +352,14 @@ RawMeshData generate_mesh(const RectangleGeometry &geometry, const MeshGeneratio
 
     configure_surface_mesh(options.cell_type, tags.surface_tag);
 
+    // Generate the two-dimensional mesh. Gmsh also creates the lower-dimensional
+    // boundary mesh needed for subsequent boundary-edge extraction.
     gmsh::model::mesh::generate(2);
 
     RawMeshData raw_mesh;
 
+    // Expose stable solver boundary IDs rather than the physical-group tags
+    // assigned internally by Gmsh.
     raw_mesh.boundary_groups = {
         {inlet_boundary_id, "inlet"},
         {wall_boundary_id, "wall"},
@@ -365,9 +371,7 @@ RawMeshData generate_mesh(const RectangleGeometry &geometry, const MeshGeneratio
     extract_cells(raw_mesh, node_id_by_gmsh_tag, tags.surface_tag, options.cell_type);
 
     extract_boundary_edges(raw_mesh, node_id_by_gmsh_tag, tags.inlet_group_tag, inlet_boundary_id);
-
     extract_boundary_edges(raw_mesh, node_id_by_gmsh_tag, tags.wall_group_tag, wall_boundary_id);
-
     extract_boundary_edges(raw_mesh, node_id_by_gmsh_tag, tags.outlet_group_tag, outlet_boundary_id);
 
     return raw_mesh;

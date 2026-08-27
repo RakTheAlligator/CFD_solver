@@ -11,12 +11,34 @@
 namespace cfd
 {
 
+/// Boundary edge extracted from the external mesh representation.
+///
+/// Node IDs use the internal zero-based numbering stored in `RawMeshData::nodes`.
+/// `boundary_id` refers to an entry in `RawMeshData::boundary_groups`.
 struct BoundaryEdge
 {
     std::array<Index, 2> node_ids{};
     BoundaryId boundary_id{};
 };
 
+/// Mesh data extracted from the mesher before internal topology construction.
+///
+/// RawMeshData contains only the information imported from the external mesh:
+/// nodes, cell-to-node connectivity, cell types, and physical boundary data.
+/// Faces, cell-to-face connectivity, adjacency, and geometric quantities are
+/// constructed later by the preprocessing pipeline.
+///
+/// Cell-to-node connectivity uses a flattened, CSR-like representation. Node
+/// IDs for cell `c` occupy
+/// `[cell_node_offsets[c], cell_node_offsets[c + 1])`.
+///
+/// All node and boundary IDs stored here use the solver's internal zero-based
+/// numbering; external Gmsh tags are converted before this representation is
+/// returned.
+///
+/// @note RawMeshData is not assumed to be valid merely because it has been
+///       constructed. `build_mesh()` validates its contents before building
+///       the final Mesh representation.
 struct RawMeshData
 {
     std::vector<Node> nodes;

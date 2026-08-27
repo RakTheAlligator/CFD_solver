@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstddef>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -32,7 +33,7 @@ void validate_nodes(const RawMeshData &raw_mesh)
 
     for (Index node_id = 0; node_id < raw_mesh.nodes.size(); ++node_id)
     {
-        const Node &node = raw_mesh.nodes[node_id];
+        const Node &node{raw_mesh.nodes[node_id]};
 
         if (!std::isfinite(node.x) || !std::isfinite(node.y))
         {
@@ -47,18 +48,22 @@ void validate_cell_storage(const RawMeshData &raw_mesh)
     {
         throw_raw_mesh_validation_error("cell_types array is empty.");
     }
+
     if (raw_mesh.cell_nodes.empty())
     {
         throw_raw_mesh_validation_error("cell_nodes array is empty.");
     }
+
     if (raw_mesh.cell_node_offsets.empty())
     {
         throw_raw_mesh_validation_error("cell_node_offsets array is empty.");
     }
+
     if (raw_mesh.cell_node_offsets.size() != raw_mesh.cell_types.size() + 1)
     {
         throw_raw_mesh_validation_error("cell_node_offsets size must equal the number of cells + 1.");
     }
+
     if (raw_mesh.cell_node_offsets.front() != 0)
     {
         throw_raw_mesh_validation_error("cell_node_offsets must start at 0.");
@@ -73,6 +78,7 @@ void validate_cell_storage(const RawMeshData &raw_mesh)
         {
             throw_raw_mesh_validation_error("cell_node_offsets must be strictly increasing.");
         }
+
         if (current_offset > raw_mesh.cell_nodes.size())
         {
             throw_raw_mesh_validation_error("cell_node_offsets contains an offset outside cell_nodes.");
@@ -106,7 +112,6 @@ void validate_cells(const RawMeshData &raw_mesh)
     {
         const Index cell_node_begin_offset{raw_mesh.cell_node_offsets[cell_id]};
         const Index cell_node_end_offset{raw_mesh.cell_node_offsets[cell_id + 1]};
-
         const Index node_count{cell_node_end_offset - cell_node_begin_offset};
         const Index required_node_count{expected_cell_node_count(raw_mesh.cell_types[cell_id], cell_id)};
 
@@ -128,9 +133,8 @@ void validate_cells(const RawMeshData &raw_mesh)
                                                 std::to_string(node_id) + ", which is outside the nodes array.");
             }
 
-            // Cells contain only 3 or 4 nodes, so a small
-            // O(n^2) local search is simpler and cheaper than
-            // allocating a set for every cell.
+            // Cells currently contain only three or four nodes. A bounded O(n^2)
+            // local scan avoids allocating a temporary set for every cell.
             for (Index previous_cell_node_position = cell_node_begin_offset;
                  previous_cell_node_position < cell_node_position; ++previous_cell_node_position)
             {
@@ -157,6 +161,9 @@ BoundaryIdSet validate_boundary_groups(const RawMeshData &raw_mesh)
     BoundaryIdSet boundary_ids;
     boundary_ids.reserve(raw_mesh.boundary_groups.size());
 
+    // Non-owning views avoid copying group names. Their lifetime is safe here
+    // because the strings remain owned and unmodified by raw_mesh throughout
+    // this validation.
     std::unordered_set<std::string_view> boundary_names;
     boundary_names.reserve(raw_mesh.boundary_groups.size());
 
@@ -167,6 +174,7 @@ BoundaryIdSet validate_boundary_groups(const RawMeshData &raw_mesh)
             throw_raw_mesh_validation_error("boundary group \"" + group.name +
                                             "\" uses the reserved invalid boundary ID.");
         }
+
         if (group.name.empty())
         {
             throw_raw_mesh_validation_error("a boundary group has an empty name.");
@@ -200,9 +208,8 @@ void validate_boundary_edges(const RawMeshData &raw_mesh, const BoundaryIdSet &v
     std::unordered_set<BoundaryId> used_boundary_ids;
     used_boundary_ids.reserve(valid_boundary_ids.size());
 
-    // Canonical edge representation:
-    //
-    // {3, 8} and {8, 3} represent the same undirected edge.
+    // Boundary edges are undirected. Canonicalizing each node pair before
+    // sorting makes duplicate detection independent of the stored orientation.
     std::vector<std::array<Index, 2>> boundary_edge_keys;
     boundary_edge_keys.reserve(raw_mesh.boundary_edges.size());
 
@@ -210,7 +217,6 @@ void validate_boundary_edges(const RawMeshData &raw_mesh, const BoundaryIdSet &v
          ++boundary_edge_index)
     {
         const BoundaryEdge &boundary_edge{raw_mesh.boundary_edges[boundary_edge_index]};
-
         const Index node_0_id{boundary_edge.node_ids[0]};
         const Index node_1_id{boundary_edge.node_ids[1]};
 
@@ -219,11 +225,13 @@ void validate_boundary_edges(const RawMeshData &raw_mesh, const BoundaryIdSet &v
             throw_raw_mesh_validation_error("boundary edge " + std::to_string(boundary_edge_index) +
                                             " references a node outside the nodes array.");
         }
+
         if (node_0_id == node_1_id)
         {
             throw_raw_mesh_validation_error("boundary edge " + std::to_string(boundary_edge_index) +
                                             " references the same node twice.");
         }
+
         if (!valid_boundary_ids.contains(boundary_edge.boundary_id))
         {
             throw_raw_mesh_validation_error("boundary edge " + std::to_string(boundary_edge_index) +
@@ -260,16 +268,20 @@ void validate_boundary_edges(const RawMeshData &raw_mesh, const BoundaryIdSet &v
         }
     }
 }
+
 } // namespace
 
 void validate_raw_mesh(const RawMeshData &raw_mesh)
 {
+    // Validate storage-level invariants before traversing cell connectivity.
     validate_nodes(raw_mesh);
     validate_cell_storage(raw_mesh);
     validate_cells(raw_mesh);
 
+    // Boundary edges may reference only IDs from validated boundary groups.
     const BoundaryIdSet valid_boundary_ids{validate_boundary_groups(raw_mesh)};
 
     validate_boundary_edges(raw_mesh, valid_boundary_ids);
 }
+
 } // namespace cfd
