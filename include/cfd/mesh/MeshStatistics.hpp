@@ -26,7 +26,7 @@ struct MeshStatistics
     ScalarStatistics face_lengths;
     ScalarStatistics cell_quality;
 
-    Index worst_quality_cell{invalid_index};
+    Index worst_quality_cell_id{invalid_index};
 };
 
 [[nodiscard]]

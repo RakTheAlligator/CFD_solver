@@ -104,10 +104,10 @@ void validate_cells(const RawMeshData &raw_mesh)
 {
     for (Index cell_id = 0; cell_id < raw_mesh.cell_types.size(); ++cell_id)
     {
-        const Index cell_node_begin{raw_mesh.cell_node_offsets[cell_id]};
-        const Index cell_node_end{raw_mesh.cell_node_offsets[cell_id + 1]};
+        const Index cell_node_begin_offset{raw_mesh.cell_node_offsets[cell_id]};
+        const Index cell_node_end_offset{raw_mesh.cell_node_offsets[cell_id + 1]};
 
-        const Index node_count{cell_node_end - cell_node_begin};
+        const Index node_count{cell_node_end_offset - cell_node_begin_offset};
         const Index required_node_count{expected_cell_node_count(raw_mesh.cell_types[cell_id], cell_id)};
 
         if (node_count != required_node_count)
@@ -117,7 +117,8 @@ void validate_cells(const RawMeshData &raw_mesh)
                                             ".");
         }
 
-        for (Index cell_node_position = cell_node_begin; cell_node_position < cell_node_end; ++cell_node_position)
+        for (Index cell_node_position = cell_node_begin_offset; cell_node_position < cell_node_end_offset;
+             ++cell_node_position)
         {
             const Index node_id{raw_mesh.cell_nodes[cell_node_position]};
 
@@ -130,8 +131,8 @@ void validate_cells(const RawMeshData &raw_mesh)
             // Cells contain only 3 or 4 nodes, so a small
             // O(n^2) local search is simpler and cheaper than
             // allocating a set for every cell.
-            for (Index previous_cell_node_position = cell_node_begin; previous_cell_node_position < cell_node_position;
-                 ++previous_cell_node_position)
+            for (Index previous_cell_node_position = cell_node_begin_offset;
+                 previous_cell_node_position < cell_node_position; ++previous_cell_node_position)
             {
                 if (raw_mesh.cell_nodes[previous_cell_node_position] == node_id)
                 {
@@ -171,16 +172,16 @@ BoundaryIdSet validate_boundary_groups(const RawMeshData &raw_mesh)
             throw_raw_mesh_validation_error("a boundary group has an empty name.");
         }
 
-        const bool id_inserted{boundary_ids.insert(group.id).second};
+        const bool is_id_inserted{boundary_ids.insert(group.id).second};
 
-        if (!id_inserted)
+        if (!is_id_inserted)
         {
             throw_raw_mesh_validation_error("boundary group ID " + std::to_string(group.id) + " is duplicated.");
         }
 
-        const bool name_inserted{boundary_names.insert(group.name).second};
+        const bool is_name_inserted{boundary_names.insert(group.name).second};
 
-        if (!name_inserted)
+        if (!is_name_inserted)
         {
             throw_raw_mesh_validation_error("boundary group name \"" + group.name + "\" is duplicated.");
         }

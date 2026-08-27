@@ -355,7 +355,7 @@ void test_single_triangle_statistics()
     require_near(statistics.cell_quality.maximum, expected_quality, test_tolerance,
                  "Single-triangle maximum quality statistic is incorrect.");
 
-    require(statistics.worst_quality_cell == 0, "Single triangle must be its own worst-quality cell.");
+    require(statistics.worst_quality_cell_id == 0, "Single triangle must be its own worst-quality cell.");
 }
 
 void test_small_translated_equilateral_triangle()

@@ -55,7 +55,7 @@ struct RectangleModelTags
 struct CellExtractionSpec
 {
     int gmsh_element_type{};
-    Index nodes_per_cell{};
+    Index node_count{};
     CellType cell_type{};
 };
 
@@ -67,14 +67,14 @@ CellExtractionSpec cell_extraction_spec(const CellType cell_type)
     case CellType::Triangle:
         return {
             .gmsh_element_type = gmsh_triangle_3_element_type,
-            .nodes_per_cell = 3,
+            .node_count = 3,
             .cell_type = CellType::Triangle,
         };
 
     case CellType::Quadrilateral:
         return {
             .gmsh_element_type = gmsh_quadrilateral_4_element_type,
-            .nodes_per_cell = 4,
+            .node_count = 4,
             .cell_type = CellType::Quadrilateral,
         };
     }
@@ -242,7 +242,7 @@ void extract_cells(RawMeshData &raw_mesh, const std::unordered_map<std::size_t, 
     const CellExtractionSpec extraction_spec{cell_extraction_spec(requested_cell_type)};
 
     Index total_cell_count{};
-    Index total_connectivity_size{};
+    Index total_cell_node_count{};
 
     for (std::size_t element_type_index = 0; element_type_index < gmsh_element_types.size(); ++element_type_index)
     {
@@ -254,19 +254,19 @@ void extract_cells(RawMeshData &raw_mesh, const std::unordered_map<std::size_t, 
 
         const auto &gmsh_node_tags{gmsh_element_node_tags[element_type_index]};
 
-        if (gmsh_node_tags.size() % extraction_spec.nodes_per_cell != 0)
+        if (gmsh_node_tags.size() % extraction_spec.node_count != 0)
         {
             throw std::runtime_error("Invalid cell connectivity returned by Gmsh.");
         }
 
-        total_cell_count += gmsh_node_tags.size() / extraction_spec.nodes_per_cell;
+        total_cell_count += gmsh_node_tags.size() / extraction_spec.node_count;
 
-        total_connectivity_size += gmsh_node_tags.size();
+        total_cell_node_count += gmsh_node_tags.size();
     }
 
     raw_mesh.cell_types.reserve(total_cell_count);
 
-    raw_mesh.cell_nodes.reserve(total_connectivity_size);
+    raw_mesh.cell_nodes.reserve(total_cell_node_count);
 
     raw_mesh.cell_node_offsets.reserve(total_cell_count + 1);
 
@@ -276,15 +276,15 @@ void extract_cells(RawMeshData &raw_mesh, const std::unordered_map<std::size_t, 
     {
         const auto &gmsh_node_tags{gmsh_element_node_tags[element_type_index]};
 
-        for (std::size_t connectivity_begin = 0; connectivity_begin < gmsh_node_tags.size();
-             connectivity_begin += extraction_spec.nodes_per_cell)
+        for (std::size_t first_node_position = 0; first_node_position < gmsh_node_tags.size();
+             first_node_position += extraction_spec.node_count)
         {
             raw_mesh.cell_types.push_back(extraction_spec.cell_type);
 
-            for (Index local_node_index = 0; local_node_index < extraction_spec.nodes_per_cell; ++local_node_index)
+            for (Index local_node_index = 0; local_node_index < extraction_spec.node_count; ++local_node_index)
             {
                 raw_mesh.cell_nodes.push_back(
-                    node_id_from_gmsh_tag(node_id_by_gmsh_tag, gmsh_node_tags[connectivity_begin + local_node_index]));
+                    node_id_from_gmsh_tag(node_id_by_gmsh_tag, gmsh_node_tags[first_node_position + local_node_index]));
             }
 
             raw_mesh.cell_node_offsets.push_back(raw_mesh.cell_nodes.size());

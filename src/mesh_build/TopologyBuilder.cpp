@@ -80,25 +80,25 @@ TopologyBuildData build_topology(const RawMeshData &raw_mesh)
 
     for (Index cell_id = 0; cell_id < raw_mesh.cell_types.size(); ++cell_id)
     {
-        const Index cell_node_begin{raw_mesh.cell_node_offsets[cell_id]};
-        const Index cell_node_end{raw_mesh.cell_node_offsets[cell_id + 1]};
-        const Index local_face_count{cell_node_end - cell_node_begin};
+        const Index cell_node_begin_offset{raw_mesh.cell_node_offsets[cell_id]};
+        const Index cell_node_end_offset{raw_mesh.cell_node_offsets[cell_id + 1]};
+        const Index local_face_count{cell_node_end_offset - cell_node_begin_offset};
 
         for (Index local_face_index = 0; local_face_index < local_face_count; ++local_face_index)
         {
             const Index next_local_node_index{(local_face_index + 1) % local_face_count};
-            const Index node_0_id{raw_mesh.cell_nodes[cell_node_begin + local_face_index]};
-            const Index node_1_id{raw_mesh.cell_nodes[cell_node_begin + next_local_node_index]};
+            const Index node_0_id{raw_mesh.cell_nodes[cell_node_begin_offset + local_face_index]};
+            const Index node_1_id{raw_mesh.cell_nodes[cell_node_begin_offset + next_local_node_index]};
 
             const FaceKey face_key{make_face_key(node_0_id, node_1_id)};
 
             const Index candidate_face_id{topology.faces.size()};
 
-            const auto [iterator, inserted]{face_id_by_key.try_emplace(face_key, candidate_face_id)};
+            const auto [iterator, is_inserted]{face_id_by_key.try_emplace(face_key, candidate_face_id)};
 
             const Index face_id{iterator->second};
 
-            if (inserted)
+            if (is_inserted)
             {
                 topology.faces.push_back(Face{{node_0_id, node_1_id}});
 
@@ -124,7 +124,7 @@ TopologyBuildData build_topology(const RawMeshData &raw_mesh)
                 adjacency.neighbor = cell_id;
             }
 
-            const Index cell_face_position{cell_node_begin + local_face_index};
+            const Index cell_face_position{cell_node_begin_offset + local_face_index};
 
             if (topology.cell_faces[cell_face_position] != invalid_index)
             {

@@ -17,7 +17,7 @@ struct ScalarAccumulator
     double minimum{std::numeric_limits<double>::infinity()};
     double maximum{-std::numeric_limits<double>::infinity()};
     double sum{};
-    Index count{};
+    Index value_count{};
 };
 
 void add_value(ScalarAccumulator &accumulator, const double value) noexcept
@@ -25,13 +25,13 @@ void add_value(ScalarAccumulator &accumulator, const double value) noexcept
     accumulator.minimum = std::min(accumulator.minimum, value);
     accumulator.maximum = std::max(accumulator.maximum, value);
     accumulator.sum += value;
-    ++accumulator.count;
+    ++accumulator.value_count;
 }
 
 [[nodiscard]]
 ScalarStatistics finalize_statistics(const ScalarAccumulator &accumulator) noexcept
 {
-    if (accumulator.count == 0)
+    if (accumulator.value_count == 0)
     {
         return {};
     }
@@ -39,7 +39,7 @@ ScalarStatistics finalize_statistics(const ScalarAccumulator &accumulator) noexc
     return {
         .minimum = accumulator.minimum,
         .maximum = accumulator.maximum,
-        .mean = accumulator.sum / static_cast<double>(accumulator.count),
+        .mean = accumulator.sum / static_cast<double>(accumulator.value_count),
     };
 }
 
@@ -90,7 +90,7 @@ MeshStatistics compute_mesh_statistics(const Mesh &mesh)
         if (quality < worst_quality)
         {
             worst_quality = quality;
-            statistics.worst_quality_cell = cell_id;
+            statistics.worst_quality_cell_id = cell_id;
         }
     }
 

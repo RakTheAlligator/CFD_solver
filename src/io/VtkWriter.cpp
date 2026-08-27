@@ -69,20 +69,21 @@ void write_cell_connectivity(std::ofstream &output, const Mesh &mesh)
               "Name=\"connectivity\" format=\"ascii\">\n";
 
     const auto cell_nodes{mesh.cell_nodes()};
-    const auto offsets{mesh.cell_node_offsets()};
+    const auto cell_node_offsets{mesh.cell_node_offsets()};
 
     for (Index cell_id = 0; cell_id < mesh.cell_count(); ++cell_id)
     {
-        const Index begin{offsets[cell_id]};
-        const Index end{offsets[cell_id + 1]};
+        const Index cell_node_begin_offset{cell_node_offsets[cell_id]};
+        const Index cell_node_end_offset{cell_node_offsets[cell_id + 1]};
 
         output << "          ";
 
-        for (Index local_index = begin; local_index < end; ++local_index)
+        for (Index cell_node_position = cell_node_begin_offset; cell_node_position < cell_node_end_offset;
+             ++cell_node_position)
         {
-            output << vtk_index(cell_nodes[local_index]);
+            output << vtk_index(cell_nodes[cell_node_position]);
 
-            if (local_index + 1 < end)
+            if (cell_node_position + 1 < cell_node_end_offset)
             {
                 output << ' ';
             }
@@ -100,18 +101,18 @@ void write_cell_offsets(std::ofstream &output, const Mesh &mesh)
               "Name=\"offsets\" format=\"ascii\">\n";
     output << "          ";
 
-    const auto offsets{mesh.cell_node_offsets()};
+    const auto cell_node_offsets{mesh.cell_node_offsets()};
 
     // Our compressed connectivity begins with offset 0:
     //
     //   {0, 3, 6, 9}
     //
-    // VTK expects the end offset of each cell:
+    // VTK expects the cell_node_end_offset offset of each cell:
     //
     //   {3, 6, 9}
     for (Index cell_id = 0; cell_id < mesh.cell_count(); ++cell_id)
     {
-        output << vtk_index(offsets[cell_id + 1]);
+        output << vtk_index(cell_node_offsets[cell_id + 1]);
 
         if (cell_id + 1 < mesh.cell_count())
         {

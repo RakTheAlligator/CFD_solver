@@ -50,11 +50,11 @@ void write_mesh_report(std::ostream &output, const Mesh &mesh, const MeshStatist
     write_statistics_row(report, "Cell size", "m", statistics.cell_sizes);
     write_statistics_row(report, "Face length", "m", statistics.face_lengths);
 
-    if (statistics.worst_quality_cell != invalid_index)
+    if (statistics.worst_quality_cell_id != invalid_index)
     {
         write_statistics_row(report, "Cell quality", "-", statistics.cell_quality);
 
-        report << "\n  Worst cell        : cell " << statistics.worst_quality_cell << '\n';
+        report << "\n  Worst cell        : cell " << statistics.worst_quality_cell_id << '\n';
     }
 
     output << report.str();
