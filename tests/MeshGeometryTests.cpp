@@ -247,17 +247,16 @@ void require_mesh_geometry_invariants(const cfd::Mesh &mesh)
     }
     for (cfd::Index cell_id = 0; cell_id < mesh.cell_count(); ++cell_id)
     {
-        const cfd::Index begin{mesh.cell_node_offsets()[cell_id]};
-
-        const cfd::Index end{mesh.cell_node_offsets()[cell_id + 1]};
+        const cfd::Index cell_face_begin_offset{mesh.cell_node_offsets()[cell_id]};
+        const cfd::Index cell_face_end_offset{mesh.cell_node_offsets()[cell_id + 1]};
 
         double sum_x{};
         double sum_y{};
         double perimeter{};
-
-        for (cfd::Index position = begin; position < end; ++position)
+        for (cfd::Index cell_face_position = cell_face_begin_offset; cell_face_position < cell_face_end_offset;
+             ++cell_face_position)
         {
-            const cfd::Index face_id{mesh.cell_faces()[position]};
+            const cfd::Index face_id{mesh.cell_faces()[cell_face_position]};
 
             const cfd::FaceAdjacency &adjacency{mesh.face_adjacencies()[face_id]};
 

@@ -61,14 +61,13 @@ double compute_quadrilateral_quality(const RawMeshData &raw_mesh, const Index ce
 
     double minimum_corner_quality{std::numeric_limits<double>::infinity()};
 
-    for (Index cell_node_position = 0; cell_node_position < node_count; ++cell_node_position)
+    for (Index local_node_index = 0; local_node_index < node_count; ++local_node_index)
     {
-        const Index previous_local_node_index{(cell_node_position + node_count - 1) % node_count};
-        const Index next_local_node_index{(cell_node_position + 1) % node_count};
+        const Index previous_local_node_index{(local_node_index + node_count - 1) % node_count};
+        const Index next_local_node_index{(local_node_index + 1) % node_count};
 
         const Node &previous{raw_mesh.nodes[raw_mesh.cell_nodes[cell_node_begin_offset + previous_local_node_index]]};
-
-        const Node &current{raw_mesh.nodes[raw_mesh.cell_nodes[cell_node_begin_offset + cell_node_position]]};
+        const Node &current{raw_mesh.nodes[raw_mesh.cell_nodes[cell_node_begin_offset + local_node_index]]};
 
         const Node &next{raw_mesh.nodes[raw_mesh.cell_nodes[cell_node_begin_offset + next_local_node_index]]};
 
@@ -105,14 +104,13 @@ void ensure_valid_quadrilateral_shape(const RawMeshData &raw_mesh, const Index c
     bool is_orientation_initialized{};
     bool is_reference_orientation_positive{};
 
-    for (Index cell_node_position = 0; cell_node_position < node_count; ++cell_node_position)
+    for (Index local_node_index = 0; local_node_index < node_count; ++local_node_index)
     {
-        const Index previous_local_node_index{(cell_node_position + node_count - 1) % node_count};
-        const Index next_local_node_index{(cell_node_position + 1) % node_count};
+        const Index previous_local_node_index{(local_node_index + node_count - 1) % node_count};
+        const Index next_local_node_index{(local_node_index + 1) % node_count};
 
         const Node &previous{raw_mesh.nodes[raw_mesh.cell_nodes[cell_node_begin_offset + previous_local_node_index]]};
-
-        const Node &current{raw_mesh.nodes[raw_mesh.cell_nodes[cell_node_begin_offset + cell_node_position]]};
+        const Node &current{raw_mesh.nodes[raw_mesh.cell_nodes[cell_node_begin_offset + local_node_index]]};
 
         const Node &next{raw_mesh.nodes[raw_mesh.cell_nodes[cell_node_begin_offset + next_local_node_index]]};
 
@@ -172,12 +170,11 @@ void build_cell_geometry(const RawMeshData &raw_mesh, GeometryBuildData &geometr
         double centroid_x_numerator{};
         double centroid_y_numerator{};
 
-        for (Index cell_node_position = 0; cell_node_position < node_count; ++cell_node_position)
+        for (Index local_node_index = 0; local_node_index < node_count; ++local_node_index)
         {
-            const Index current_node_id{raw_mesh.cell_nodes[cell_node_begin_offset + cell_node_position]};
+            const Index current_node_id{raw_mesh.cell_nodes[cell_node_begin_offset + local_node_index]};
 
-            const Index next_node_id{
-                raw_mesh.cell_nodes[cell_node_begin_offset + (cell_node_position + 1) % node_count]};
+            const Index next_node_id{raw_mesh.cell_nodes[cell_node_begin_offset + (local_node_index + 1) % node_count]};
 
             const Node &current{raw_mesh.nodes[current_node_id]};
             const Node &next{raw_mesh.nodes[next_node_id]};

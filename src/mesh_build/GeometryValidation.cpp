@@ -184,14 +184,15 @@ void validate_cell_face_closure(const RawMeshData &raw_mesh, const TopologyBuild
 
     for (Index cell_id = 0; cell_id < cell_count; ++cell_id)
     {
-        const Index cell_face_begin{raw_mesh.cell_node_offsets[cell_id]};
-        const Index cell_face_end{raw_mesh.cell_node_offsets[cell_id + 1]};
+        const Index cell_face_begin_offset{raw_mesh.cell_node_offsets[cell_id]};
+        const Index cell_face_end_offset{raw_mesh.cell_node_offsets[cell_id + 1]};
 
         double area_vector_sum_x{};
         double area_vector_sum_y{};
         double perimeter{};
 
-        for (Index cell_face_position = cell_face_begin; cell_face_position < cell_face_end; ++cell_face_position)
+        for (Index cell_face_position = cell_face_begin_offset; cell_face_position < cell_face_end_offset;
+             ++cell_face_position)
         {
             const Index face_id{topology.cell_faces[cell_face_position]};
 

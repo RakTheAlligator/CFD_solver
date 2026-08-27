@@ -107,7 +107,7 @@ void write_cell_offsets(std::ofstream &output, const Mesh &mesh)
     //
     //   {0, 3, 6, 9}
     //
-    // VTK expects the cell_node_end_offset offset of each cell:
+    // VTK expects the end offset of each cell:
     //
     //   {3, 6, 9}
     for (Index cell_id = 0; cell_id < mesh.cell_count(); ++cell_id)

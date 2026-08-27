@@ -81,10 +81,11 @@ void validate_topology_storage(const RawMeshData &raw_mesh, const TopologyBuildD
 bool cell_references_face(const RawMeshData &raw_mesh, const TopologyBuildData &topology, const Index cell_id,
                           const Index face_id) noexcept
 {
-    const Index cell_face_begin{raw_mesh.cell_node_offsets[cell_id]};
-    const Index cell_face_end{raw_mesh.cell_node_offsets[cell_id + 1]};
+    const Index cell_face_begin_offset{raw_mesh.cell_node_offsets[cell_id]};
+    const Index cell_face_end_offset{raw_mesh.cell_node_offsets[cell_id + 1]};
 
-    for (Index cell_face_position = cell_face_begin; cell_face_position < cell_face_end; ++cell_face_position)
+    for (Index cell_face_position = cell_face_begin_offset; cell_face_position < cell_face_end_offset;
+         ++cell_face_position)
     {
         if (topology.cell_faces[cell_face_position] == face_id)
         {
@@ -99,13 +100,13 @@ void validate_cell_face_connectivity(const RawMeshData &raw_mesh, const Topology
 {
     for (Index cell_id = 0; cell_id < raw_mesh.cell_types.size(); ++cell_id)
     {
-        const Index cell_face_begin{raw_mesh.cell_node_offsets[cell_id]};
-        const Index cell_face_end{raw_mesh.cell_node_offsets[cell_id + 1]};
-        const Index local_face_count{cell_face_end - cell_face_begin};
+        const Index cell_face_begin_offset{raw_mesh.cell_node_offsets[cell_id]};
+        const Index cell_face_end_offset{raw_mesh.cell_node_offsets[cell_id + 1]};
+        const Index local_face_count{cell_face_end_offset - cell_face_begin_offset};
 
         for (Index local_face_index = 0; local_face_index < local_face_count; ++local_face_index)
         {
-            const Index cell_face_position{cell_face_begin + local_face_index};
+            const Index cell_face_position{cell_face_begin_offset + local_face_index};
             const Index face_id{topology.cell_faces[cell_face_position]};
 
             if (face_id == invalid_index || face_id >= topology.faces.size())
@@ -113,8 +114,8 @@ void validate_cell_face_connectivity(const RawMeshData &raw_mesh, const Topology
                 throw_topology_validation_error("cell " + std::to_string(cell_id) + " references an invalid face.");
             }
 
-            for (Index previous_cell_face_position = cell_face_begin; previous_cell_face_position < cell_face_position;
-                 ++previous_cell_face_position)
+            for (Index previous_cell_face_position = cell_face_begin_offset;
+                 previous_cell_face_position < cell_face_position; ++previous_cell_face_position)
             {
                 if (topology.cell_faces[previous_cell_face_position] == face_id)
                 {
@@ -131,16 +132,16 @@ void validate_cell_face_connectivity(const RawMeshData &raw_mesh, const Topology
             }
 
             const Index next_local_node_index{(local_face_index + 1) % local_face_count};
-            const Index expected_node_0_id{raw_mesh.cell_nodes[cell_face_begin + local_face_index]};
-            const Index expected_node_1_id{raw_mesh.cell_nodes[cell_face_begin + next_local_node_index]};
+            const Index expected_node_0_id{raw_mesh.cell_nodes[cell_face_begin_offset + local_face_index]};
+            const Index expected_node_1_id{raw_mesh.cell_nodes[cell_face_begin_offset + next_local_node_index]};
 
             const Face &face{topology.faces[face_id]};
 
-            const bool face_nodes_match{
+            const bool has_expected_nodes{
                 (face.node_ids[0] == expected_node_0_id && face.node_ids[1] == expected_node_1_id) ||
                 (face.node_ids[0] == expected_node_1_id && face.node_ids[1] == expected_node_0_id)};
 
-            if (!face_nodes_match)
+            if (!has_expected_nodes)
             {
                 throw_topology_validation_error("cell " + std::to_string(cell_id) +
                                                 " references a face with incorrect nodes.");
