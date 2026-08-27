@@ -1,2 +1,4 @@
 BasedOnStyle: Microsoft
 Language: Cpp
+
+SeparateDefinitionBlocks: Always

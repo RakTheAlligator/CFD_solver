@@ -2,3 +2,5 @@ build/
 /results/
 .vscode/
 /build-sanitizers/
+/build-release/
+/build-sanitize/
