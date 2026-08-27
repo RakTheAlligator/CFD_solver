@@ -1,7 +1,7 @@
 #pragma once
 
+#include "cfd/mesh/Boundary.hpp"
 #include "cfd/mesh/Cell.hpp"
-#include "cfd/mesh/Types.hpp"
 #include "cfd/meshing/RawMeshData.hpp"
 
 #include <cmath>
@@ -55,6 +55,7 @@ inline RawMeshData make_equilateral_triangle_raw_mesh(const double origin_x, con
 {
     constexpr BoundaryId boundary_id{0};
 
+    // Height of an equilateral triangle with side length `side`.
     const double height{std::sqrt(3.0) * side / 2.0};
 
     RawMeshData raw_mesh;
@@ -142,6 +143,7 @@ inline RawMeshData make_single_clockwise_quadrilateral_raw_mesh()
 {
     RawMeshData raw_mesh{make_single_quadrilateral_raw_mesh()};
 
+    // Preserve the same square while reversing its cell-node orientation.
     raw_mesh.cell_nodes = {
         0,
         3,
@@ -159,6 +161,7 @@ inline RawMeshData make_two_triangle_raw_mesh()
 
     RawMeshData raw_mesh;
 
+    // Unit square split along the diagonal from node 0 to node 2.
     raw_mesh.nodes = {
         {0.0, 0.0},
         {1.0, 0.0},
@@ -202,6 +205,8 @@ inline RawMeshData make_non_manifold_raw_mesh()
 
     RawMeshData raw_mesh;
 
+    // Intentionally invalid topology: all three triangles share edge {0, 1},
+    // giving that face three adjacent cells instead of at most two.
     raw_mesh.nodes = {
         {0.0, 0.0}, {1.0, 0.0}, {0.5, 1.0}, {0.5, -1.0}, {0.5, 2.0},
     };

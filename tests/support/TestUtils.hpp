@@ -33,6 +33,8 @@ inline void require(const bool condition, const std::string &message)
 
 inline void require_near(const double actual, const double expected, const double tolerance, const std::string &message)
 {
+    // Combine absolute and relative behavior: values below unit scale use the
+    // supplied tolerance directly, while larger values scale it with magnitude.
     const double scale{std::max({1.0, std::abs(actual), std::abs(expected)})};
 
     if (std::abs(actual - expected) > tolerance * scale)

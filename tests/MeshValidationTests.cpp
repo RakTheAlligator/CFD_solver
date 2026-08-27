@@ -1,6 +1,7 @@
 #include "cfd/mesh/Boundary.hpp"
 #include "cfd/mesh/Cell.hpp"
 #include "cfd/mesh/MeshBuilder.hpp"
+#include "cfd/mesh/Node.hpp"
 #include "cfd/meshing/RawMeshData.hpp"
 #include "cfd/meshing/RawMeshValidation.hpp"
 
@@ -142,6 +143,9 @@ void test_rejects_wrong_triangle_node_count()
 void test_rejects_unsupported_cell_type()
 {
     cfd::RawMeshData raw_mesh{make_single_triangle_raw_mesh()};
+
+    // Fabricate a representation that fits the enum's underlying type but does
+    // not correspond to any supported CellType enumerator.
     raw_mesh.cell_types[0] = std::bit_cast<cfd::CellType>(std::uint8_t{255});
 
     require_raw_mesh_rejected(raw_mesh, "cell 0 has an unsupported CellType.",
@@ -180,6 +184,7 @@ void test_rejects_reserved_boundary_group_id()
     cfd::RawMeshData raw_mesh{make_single_triangle_raw_mesh()};
 
     raw_mesh.boundary_groups[0].id = cfd::invalid_boundary_id;
+
     for (cfd::BoundaryEdge &edge : raw_mesh.boundary_edges)
     {
         edge.boundary_id = cfd::invalid_boundary_id;
@@ -201,6 +206,7 @@ void test_rejects_empty_boundary_group_name()
 void test_rejects_duplicate_boundary_group_id()
 {
     cfd::RawMeshData raw_mesh{make_single_triangle_raw_mesh()};
+
     raw_mesh.boundary_groups.push_back({
         raw_mesh.boundary_groups[0].id,
         "duplicate-id",
@@ -213,6 +219,7 @@ void test_rejects_duplicate_boundary_group_id()
 void test_rejects_duplicate_boundary_group_name()
 {
     cfd::RawMeshData raw_mesh{make_single_triangle_raw_mesh()};
+
     raw_mesh.boundary_groups.push_back({
         1,
         raw_mesh.boundary_groups[0].name,
@@ -261,6 +268,9 @@ void test_rejects_unknown_boundary_group_id()
 void test_rejects_duplicate_boundary_edge()
 {
     cfd::RawMeshData raw_mesh{make_single_triangle_raw_mesh()};
+
+    // Reverse the node ordering to ensure duplicate detection is independent
+    // of boundary-edge orientation.
     raw_mesh.boundary_edges.push_back({
         {1, 0},
         raw_mesh.boundary_groups[0].id,
@@ -273,6 +283,7 @@ void test_rejects_duplicate_boundary_edge()
 void test_rejects_unused_boundary_group()
 {
     cfd::RawMeshData raw_mesh{make_single_triangle_raw_mesh()};
+
     raw_mesh.boundary_groups.push_back({
         1,
         "unused",
@@ -287,6 +298,8 @@ void test_rejects_open_boundary()
     cfd::RawMeshData raw_mesh{make_single_triangle_raw_mesh()};
     raw_mesh.boundary_edges.pop_back();
 
+    // The remaining raw arrays are structurally valid, but one constructed
+    // external face cannot receive a physical boundary assignment.
     require_throws_with_message<std::runtime_error>(
         [&raw_mesh]() { static_cast<void>(cfd::build_mesh(std::move(raw_mesh))); },
         "Topology validation failed:", "Mesh construction accepted an incomplete physical boundary.");
@@ -296,6 +309,9 @@ void test_rejects_zero_area_triangle()
 {
     cfd::RawMeshData raw_mesh{make_single_triangle_raw_mesh()};
 
+    // Three distinct node IDs can still be geometrically collinear. Structural
+    // raw-mesh validation therefore passes and geometry construction must reject
+    // the zero-area cell.
     raw_mesh.nodes[0] = {0.0, 0.0};
     raw_mesh.nodes[1] = {1.0, 0.0};
     raw_mesh.nodes[2] = {2.0, 0.0};
@@ -311,6 +327,8 @@ void test_rejects_non_manifold_face()
 {
     cfd::RawMeshData raw_mesh{make_non_manifold_raw_mesh()};
 
+    // Raw connectivity is structurally valid, but three cells share one edge.
+    // Topology construction must reject the third adjacency.
     cfd::validate_raw_mesh(raw_mesh);
 
     require_throws_with_message<std::runtime_error>(
@@ -322,6 +340,8 @@ void test_rejects_concave_quadrilateral()
 {
     cfd::RawMeshData raw_mesh{make_single_quadrilateral_raw_mesh()};
 
+    // Move one square corner inside the cell. The connectivity remains
+    // structurally valid, but the ordered polygon is no longer convex.
     raw_mesh.nodes[2] = {
         0.25,
         0.25,
@@ -343,10 +363,10 @@ int main()
     failure_count += cfd::test::run_test("reject empty nodes", test_rejects_empty_nodes);
     failure_count += cfd::test::run_test("reject non-finite node x", test_rejects_non_finite_node_x);
     failure_count += cfd::test::run_test("reject non-finite node y", test_rejects_non_finite_node_y);
-
     failure_count += cfd::test::run_test("reject empty cell types", test_rejects_empty_cell_types);
     failure_count += cfd::test::run_test("reject empty cell nodes", test_rejects_empty_cell_nodes);
     failure_count += cfd::test::run_test("reject empty cell offsets", test_rejects_empty_cell_node_offsets);
+
     failure_count +=
         cfd::test::run_test("reject incorrect cell-offset count", test_rejects_incorrect_cell_offset_count);
     failure_count += cfd::test::run_test("reject non-zero first cell offset", test_rejects_non_zero_first_cell_offset);
@@ -355,6 +375,7 @@ int main()
     failure_count +=
         cfd::test::run_test("reject cell offset outside connectivity", test_rejects_cell_offset_outside_connectivity);
     failure_count += cfd::test::run_test("reject incorrect last cell offset", test_rejects_incorrect_last_cell_offset);
+
     failure_count += cfd::test::run_test("reject wrong triangle node count", test_rejects_wrong_triangle_node_count);
     failure_count += cfd::test::run_test("reject unsupported cell type", test_rejects_unsupported_cell_type);
     failure_count += cfd::test::run_test("reject duplicate node in cell", test_rejects_duplicate_node_in_cell);
@@ -367,7 +388,6 @@ int main()
         cfd::test::run_test("reject duplicate boundary group ID", test_rejects_duplicate_boundary_group_id);
     failure_count +=
         cfd::test::run_test("reject duplicate boundary group name", test_rejects_duplicate_boundary_group_name);
-
     failure_count += cfd::test::run_test("reject empty boundary edges", test_rejects_empty_boundary_edges);
     failure_count +=
         cfd::test::run_test("reject invalid boundary node index", test_rejects_invalid_boundary_node_index);

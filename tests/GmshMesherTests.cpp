@@ -1,7 +1,13 @@
+#include "cfd/mesh/Boundary.hpp"
+#include "cfd/mesh/Cell.hpp"
+#include "cfd/mesh/Face.hpp"
 #include "cfd/mesh/Mesh.hpp"
 #include "cfd/mesh/MeshBuilder.hpp"
+#include "cfd/mesh/Types.hpp"
 #include "cfd/meshing/GmshMesher.hpp"
+#include "cfd/meshing/RawMeshData.hpp"
 #include "cfd/meshing/RawMeshValidation.hpp"
+#include "cfd/meshing/RectangleGeometry.hpp"
 
 #include "support/TestUtils.hpp"
 
@@ -134,6 +140,14 @@ void test_rejects_non_positive_mesh_size()
                                       .cell_type = cfd::CellType::Triangle,
                                   },
                                   "Mesh size must be finite and positive.", "Gmsh mesher accepted a zero mesh size.");
+
+    require_invalid_meshing_input(geometry,
+                                  {
+                                      .mesh_size = -0.2,
+                                      .cell_type = cfd::CellType::Triangle,
+                                  },
+                                  "Mesh size must be finite and positive.",
+                                  "Gmsh mesher accepted a negative mesh size.");
 }
 
 void test_generates_triangular_rectangle()
@@ -212,15 +226,12 @@ void test_builds_quadrilateral_rectangle_end_to_end()
     };
 
     cfd::RawMeshData raw_mesh{cfd::generate_mesh(geometry, options)};
-
     cfd::MeshBuildResult build_result{cfd::build_mesh(std::move(raw_mesh))};
 
     const cfd::Mesh &mesh{build_result.mesh};
 
     require(mesh.node_count() > 0, "Quadrilateral end-to-end mesh contains no nodes.");
-
     require(mesh.cell_count() > 0, "Quadrilateral end-to-end mesh contains no cells.");
-
     require(mesh.face_count() > 0, "Quadrilateral end-to-end mesh contains no faces.");
 
     require(mesh.cell_faces().size() == 4 * mesh.cell_count(),
@@ -243,7 +254,6 @@ void test_builds_quadrilateral_rectangle_end_to_end()
 
         require(std::isfinite(quality) && quality > 0.0,
                 "Quadrilateral end-to-end mesh contains an invalid cell quality.");
-
         require(quality <= 1.0 + tolerance, "Quadrilateral end-to-end mesh contains a cell quality greater than 1.");
     }
 
@@ -264,27 +274,23 @@ void test_builds_quadrilateral_rectangle_end_to_end()
         }
     }
 
+    // Each quadrilateral contributes four cell-face incidences. Internal faces
+    // are counted by two cells and boundary faces by one.
     require(4 * mesh.cell_count() == 2 * internal_face_count + boundary_face_count,
             "Quadrilateral end-to-end mesh violates the face-incidence identity.");
 
     const cfd::BoundaryId inlet_id{find_boundary_id(mesh, "inlet")};
-
     const cfd::BoundaryId wall_id{find_boundary_id(mesh, "wall")};
-
     const cfd::BoundaryId outlet_id{find_boundary_id(mesh, "outlet")};
 
     require(inlet_id != cfd::invalid_boundary_id, "Quadrilateral mesh does not contain an inlet boundary.");
-
     require(wall_id != cfd::invalid_boundary_id, "Quadrilateral mesh does not contain a wall boundary.");
-
     require(outlet_id != cfd::invalid_boundary_id, "Quadrilateral mesh does not contain an outlet boundary.");
 
     require_near(compute_boundary_length(mesh, inlet_id), height, tolerance,
                  "Quadrilateral inlet boundary length is incorrect.");
-
     require_near(compute_boundary_length(mesh, outlet_id), height, tolerance,
                  "Quadrilateral outlet boundary length is incorrect.");
-
     require_near(compute_boundary_length(mesh, wall_id), 2.0 * length, tolerance,
                  "Quadrilateral wall boundary length is incorrect.");
 }
@@ -307,27 +313,20 @@ void test_rectangle_boundary_groups()
     };
 
     cfd::RawMeshData raw_mesh{cfd::generate_mesh(geometry, options)};
-
     cfd::MeshBuildResult build_result{cfd::build_mesh(std::move(raw_mesh))};
 
     const cfd::Mesh &mesh{build_result.mesh};
 
     const cfd::BoundaryId inlet_id{find_boundary_id(mesh, "inlet")};
-
     const cfd::BoundaryId wall_id{find_boundary_id(mesh, "wall")};
-
     const cfd::BoundaryId outlet_id{find_boundary_id(mesh, "outlet")};
 
     require(inlet_id != cfd::invalid_boundary_id, "Rectangle mesh does not contain an inlet boundary.");
-
     require(wall_id != cfd::invalid_boundary_id, "Rectangle mesh does not contain a wall boundary.");
-
     require(outlet_id != cfd::invalid_boundary_id, "Rectangle mesh does not contain an outlet boundary.");
 
     require_near(compute_boundary_length(mesh, inlet_id), height, tolerance, "Inlet boundary length is incorrect.");
-
     require_near(compute_boundary_length(mesh, outlet_id), height, tolerance, "Outlet boundary length is incorrect.");
-
     require_near(compute_boundary_length(mesh, wall_id), 2.0 * length, tolerance, "Wall boundary length is incorrect.");
 }
 
@@ -339,22 +338,14 @@ int main()
 
     failure_count +=
         cfd::test::run_test("reject non-finite rectangle length", test_rejects_non_finite_rectangle_length);
-
     failure_count += cfd::test::run_test("reject infinite rectangle height", test_rejects_infinite_rectangle_height);
-
     failure_count += cfd::test::run_test("reject non-finite mesh size", test_rejects_non_finite_mesh_size);
-
     failure_count += cfd::test::run_test("reject non-positive dimensions", test_rejects_non_positive_dimensions);
-
     failure_count += cfd::test::run_test("reject non-positive mesh size", test_rejects_non_positive_mesh_size);
-
     failure_count += cfd::test::run_test("generate triangular rectangle", test_generates_triangular_rectangle);
-
     failure_count += cfd::test::run_test("generate quadrilateral rectangle", test_generates_quadrilateral_rectangle);
-
     failure_count +=
         cfd::test::run_test("build quadrilateral rectangle end-to-end", test_builds_quadrilateral_rectangle_end_to_end);
-
     failure_count += cfd::test::run_test("rectangle boundary groups", test_rectangle_boundary_groups);
 
     return cfd::test::finish_tests(failure_count, "Gmsh mesher");

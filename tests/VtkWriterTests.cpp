@@ -1,11 +1,13 @@
 #include "cfd/io/VtkWriter.hpp"
 #include "cfd/mesh/Mesh.hpp"
 #include "cfd/mesh/MeshBuilder.hpp"
+#include "cfd/meshing/RawMeshData.hpp"
 
 #include "support/MeshFixtures.hpp"
 #include "support/TestUtils.hpp"
 
 #include <filesystem>
+#include <fstream>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -27,15 +29,23 @@ std::string export_mesh_and_read(cfd::RawMeshData raw_mesh, const std::string_vi
 
     const std::filesystem::path file_path{std::filesystem::temp_directory_path() / file_name};
 
-    std::filesystem::remove(file_path);
+    // Prepopulate the destination to verify that write_vtu() replaces existing
+    // file content rather than appending to it.
+    {
+        std::ofstream existing_file{file_path};
+        existing_file << "stale test content";
+    }
 
     cfd::write_vtu(mesh, file_path);
 
     require(std::filesystem::exists(file_path), "VTU writer did not create the output file.");
-
     require(std::filesystem::file_size(file_path) > 0, "VTU writer created an empty output file.");
 
     std::string file_content{read_text_file(file_path)};
+
+    require(file_content.find("stale test content") == std::string::npos,
+            "VTU writer did not replace existing file content.");
+
     std::filesystem::remove(file_path);
 
     return file_content;
@@ -47,15 +57,11 @@ void require_common_vtu_content(const std::string &file_content)
                      "VTU output does not declare an UnstructuredGrid.");
 
     require_contains(file_content, "Name=\"connectivity\"", "VTU output does not contain cell connectivity.");
-
     require_contains(file_content, "Name=\"offsets\"", "VTU output does not contain cell offsets.");
-
     require_contains(file_content, "Name=\"types\"", "VTU output does not contain VTK cell types.");
 
     require_contains(file_content, "Name=\"cell_id\"", "VTU output does not contain cell IDs.");
-
     require_contains(file_content, "Name=\"cell_area\"", "VTU output does not contain cell areas.");
-
     require_contains(file_content, "Name=\"cell_quality\"", "VTU output does not contain cell qualities.");
 }
 
@@ -68,6 +74,13 @@ void test_single_triangle_vtu_export()
 
     require_contains(file_content, "<Piece NumberOfPoints=\"3\" NumberOfCells=\"1\">",
                      "Triangle VTU output contains incorrect mesh dimensions.");
+
+    require_contains(file_content, "Name=\"connectivity\" format=\"ascii\">\n          0 1 2\n",
+                     "Triangle VTU output contains incorrect cell connectivity.");
+
+    // Mesh offsets are {0, 3}; VTU stores only the exclusive end offset.
+    require_contains(file_content, "Name=\"offsets\" format=\"ascii\">\n          3\n",
+                     "Triangle VTU output contains an incorrect cell offset.");
 
     require_contains(file_content, "Name=\"types\" format=\"ascii\">\n          5\n",
                      "Triangle VTU output does not contain VTK_TRIANGLE type 5.");
@@ -83,6 +96,13 @@ void test_single_quadrilateral_vtu_export()
     require_contains(file_content, "<Piece NumberOfPoints=\"4\" NumberOfCells=\"1\">",
                      "Quadrilateral VTU output contains incorrect mesh dimensions.");
 
+    require_contains(file_content, "Name=\"connectivity\" format=\"ascii\">\n          0 1 2 3\n",
+                     "Quadrilateral VTU output contains incorrect cell connectivity.");
+
+    // Mesh offsets are {0, 4}; VTU stores only the exclusive end offset.
+    require_contains(file_content, "Name=\"offsets\" format=\"ascii\">\n          4\n",
+                     "Quadrilateral VTU output contains an incorrect cell offset.");
+
     require_contains(file_content, "Name=\"types\" format=\"ascii\">\n          9\n",
                      "Quadrilateral VTU output does not contain VTK_QUAD type 9.");
 }
@@ -94,7 +114,6 @@ int main()
     int failure_count{};
 
     failure_count += cfd::test::run_test("single triangle VTU export", test_single_triangle_vtu_export);
-
     failure_count += cfd::test::run_test("single quadrilateral VTU export", test_single_quadrilateral_vtu_export);
 
     return cfd::test::finish_tests(failure_count, "vtk writer");
