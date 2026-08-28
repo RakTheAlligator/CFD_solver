@@ -15,7 +15,7 @@ struct MeshStatistics;
 /// The output stream remains owned by the caller.
 ///
 /// @param output Destination stream.
-/// @param mesh Mesh whose topology is reported.
+/// @param mesh Mesh whose topology and geometry are reported.
 /// @param statistics Precomputed statistics associated with the mesh.
 /// @param timings Timings recorded during mesh construction.
 void write_mesh_report(std::ostream &output, const Mesh &mesh, const MeshStatistics &statistics,

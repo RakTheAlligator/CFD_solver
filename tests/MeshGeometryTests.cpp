@@ -366,8 +366,10 @@ void test_single_triangle_statistics()
 
 void test_small_translated_equilateral_triangle()
 {
-    constexpr double origin_x{5.0};
-    constexpr double origin_y{1.0};
+    // Use coordinates much larger than the cell itself so a naive Shoelace
+    // evaluation in global coordinates suffers significant cancellation.
+    constexpr double origin_x{1'000'000.0};
+    constexpr double origin_y{1'000'000.0};
     constexpr double side{0.01};
 
     const double height{std::sqrt(3.0) * side / 2.0};
@@ -422,6 +424,32 @@ void test_single_quadrilateral()
     {
         require_near(face_length, 1.0, test_tolerance, "Square face length is incorrect.");
     }
+
+    require_mesh_geometry_invariants(mesh);
+}
+
+void test_rectangular_quadrilateral_quality()
+{
+    cfd::RawMeshData raw_mesh{make_single_quadrilateral_raw_mesh()};
+
+    raw_mesh.nodes[1].x = 2.0;
+    raw_mesh.nodes[2].x = 2.0;
+
+    cfd::MeshBuildResult build_result{cfd::build_mesh(std::move(raw_mesh))};
+
+    const cfd::Mesh &mesh{build_result.mesh};
+
+    require_near(mesh.cell_areas()[0], 2.0, test_tolerance, "Rectangular quadrilateral area is incorrect.");
+
+    require_near(mesh.cell_centers()[0].x, 1.0, test_tolerance,
+                 "Rectangular quadrilateral centroid x-coordinate is incorrect.");
+
+    require_near(mesh.cell_centers()[0].y, 0.5, test_tolerance,
+                 "Rectangular quadrilateral centroid y-coordinate is incorrect.");
+
+    // Every corner has perpendicular edges of lengths 2 and 1:
+    // q = 2 * (2 * 1) / (2^2 + 1^2) = 0.8.
+    require_near(mesh.cell_qualities()[0], 0.8, test_tolerance, "Rectangular quadrilateral quality is incorrect.");
 
     require_mesh_geometry_invariants(mesh);
 }
@@ -516,6 +544,7 @@ int main()
     failure_count += cfd::test::run_test("reference rectangle preprocessing", test_reference_rectangle);
     failure_count += cfd::test::run_test("single triangle statistics", test_single_triangle_statistics);
     failure_count += cfd::test::run_test("single quadrilateral geometry", test_single_quadrilateral);
+    failure_count += cfd::test::run_test("rectangular quadrilateral quality", test_rectangular_quadrilateral_quality);
     failure_count += cfd::test::run_test("clockwise quadrilateral geometry", test_clockwise_quadrilateral);
 
     return cfd::test::finish_tests(failure_count, "mesh geometry");

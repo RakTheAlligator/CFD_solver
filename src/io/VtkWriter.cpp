@@ -271,6 +271,8 @@ void write_vtu(const Mesh &mesh, const std::filesystem::path &file_path)
     output << "  </UnstructuredGrid>\n";
     output << "</VTKFile>\n";
 
+    output.close();
+
     if (!output)
     {
         throw std::runtime_error("Error while writing VTU output file: " + file_path.string());

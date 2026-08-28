@@ -14,7 +14,8 @@ namespace cfd
 /// Boundary edge extracted from the external mesh representation.
 ///
 /// Node IDs use the internal zero-based numbering stored in `RawMeshData::nodes`.
-/// `boundary_id` refers to an entry in `RawMeshData::boundary_groups`.
+/// `boundary_id` is a compact zero-based index into
+/// `RawMeshData::boundary_groups`.
 struct BoundaryEdge
 {
     std::array<Index, 2> node_ids{};
@@ -32,9 +33,10 @@ struct BoundaryEdge
 /// IDs for cell `c` occupy
 /// `[cell_node_offsets[c], cell_node_offsets[c + 1])`.
 ///
-/// All node and boundary IDs stored here use the solver's internal zero-based
-/// numbering; external Gmsh tags are converted before this representation is
-/// returned.
+/// All node and boundary IDs stored here use compact solver-internal
+/// zero-based numbering. Node IDs index `nodes`, and boundary IDs index
+/// `boundary_groups`; external Gmsh tags are converted before this
+/// representation is returned.
 ///
 /// @note RawMeshData is not assumed to be valid merely because it has been
 ///       constructed. `build_mesh()` validates its contents before building

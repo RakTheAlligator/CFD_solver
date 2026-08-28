@@ -7,10 +7,9 @@
 namespace cfd
 {
 
-/// Internal identifier of a logical mesh boundary group.
-///
-/// Boundary IDs belong to the solver mesh representation and are independent
-/// of tags used by external mesh generators.
+/// Boundary IDs are compact zero-based indices into boundary-group storage.
+/// They belong to the solver mesh representation and are independent of tags
+/// used by external mesh generators.
 using BoundaryId = Index;
 
 /// Sentinel indicating that no boundary group is associated with a mesh entity.

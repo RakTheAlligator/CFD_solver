@@ -172,8 +172,9 @@ void validate_face_geometry(const TopologyBuildData &topology, const GeometryBui
 
         const Vector2 &neighbor_center{geometry.cell_centers[adjacency.neighbor]};
 
-        // For an internal face, the owner-oriented Sf must also point toward
-        // the neighboring cell.
+        // For an internal face, the owner-oriented Sf must have a positive
+        // projection along the owner-to-neighbor direction. It is not generally
+        // parallel to that direction on a non-orthogonal mesh.
         const double owner_to_neighbor_dot{face_area_vector.x * (neighbor_center.x - owner_center.x) +
                                            face_area_vector.y * (neighbor_center.y - owner_center.y)};
 

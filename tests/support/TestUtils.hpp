@@ -33,6 +33,16 @@ inline void require(const bool condition, const std::string &message)
 
 inline void require_near(const double actual, const double expected, const double tolerance, const std::string &message)
 {
+    if (!std::isfinite(actual) || !std::isfinite(expected))
+    {
+        fail(message + " (comparison requires finite values).");
+    }
+
+    if (!std::isfinite(tolerance) || tolerance < 0.0)
+    {
+        fail(message + " (tolerance must be finite and non-negative).");
+    }
+
     // Combine absolute and relative behavior: values below unit scale use the
     // supplied tolerance directly, while larger values scale it with magnitude.
     const double scale{std::max({1.0, std::abs(actual), std::abs(expected)})};

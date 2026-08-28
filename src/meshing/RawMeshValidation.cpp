@@ -167,8 +167,9 @@ BoundaryIdSet validate_boundary_groups(const RawMeshData &raw_mesh)
     std::unordered_set<std::string_view> boundary_names;
     boundary_names.reserve(raw_mesh.boundary_groups.size());
 
-    for (const BoundaryGroup &group : raw_mesh.boundary_groups)
+    for (Index boundary_group_index = 0; boundary_group_index < raw_mesh.boundary_groups.size(); ++boundary_group_index)
     {
+        const BoundaryGroup &group{raw_mesh.boundary_groups[boundary_group_index]};
         if (group.id == invalid_boundary_id)
         {
             throw_raw_mesh_validation_error("boundary group \"" + group.name +
@@ -185,6 +186,12 @@ BoundaryIdSet validate_boundary_groups(const RawMeshData &raw_mesh)
         if (!is_id_inserted)
         {
             throw_raw_mesh_validation_error("boundary group ID " + std::to_string(group.id) + " is duplicated.");
+        }
+        if (group.id != boundary_group_index)
+        {
+            throw_raw_mesh_validation_error("boundary group ID " + std::to_string(group.id) +
+                                            " does not match its zero-based position " +
+                                            std::to_string(boundary_group_index) + ".");
         }
 
         const bool is_name_inserted{boundary_names.insert(group.name).second};

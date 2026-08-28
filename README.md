@@ -79,13 +79,17 @@ Concave or self-intersecting quadrilateral cells are currently rejected.
 
 ## Geometry conventions
 
-For a face shared by an owner cell `P` and a neighbor cell `N`, the stored face-area vector is oriented outward from the owner:
+For a face shared by an owner cell `P` and a neighbor cell `N`, the stored face-area vector is normal to the face, has magnitude equal to the face length, and is oriented outward from the owner:
 
 ```text
-Sf : owner → neighbor
+|Sf| = Lf
+
+Sf · (x_N - x_P) > 0
 ```
 
-For the neighbor cell, the corresponding outward vector is therefore:
+On a non-orthogonal mesh, `Sf` is not generally parallel to the owner-neighbor vector `x_N - x_P`.
+
+For the neighbor cell, the corresponding outward face-area vector is therefore:
 
 ```text
 -Sf
@@ -149,6 +153,10 @@ inlet
 wall
 outlet
 ```
+
+`BoundaryId` values are compact zero-based indices into boundary-group storage.
+
+External Gmsh physical-group tags are converted to these solver-internal IDs during mesh import.
 
 Automated tests verify that the groups survive the complete pipeline:
 
@@ -381,8 +389,9 @@ Tests cover:
 Tests cover:
 
 * analytical triangle area and centroid
-* translated small-cell numerical robustness
+* small-cell numerical robustness under large coordinate translations
 * analytical quadrilateral geometry
+* analytical non-square quadrilateral quality (`q = 0.8` for a `2 x 1` rectangle)
 * clockwise quadrilateral connectivity
 * face orientation
 * face-area-vector norms
@@ -402,6 +411,7 @@ Tests cover:
 * invalid node IDs
 * duplicated node IDs inside cells
 * malformed boundary groups
+* non-compact boundary-group IDs
 * malformed boundary edges
 * unused boundary groups
 * open physical boundaries
@@ -417,6 +427,8 @@ Tests cover:
 * stream-state preservation
 * VTU triangle export
 * VTU quadrilateral export
+* VTU connectivity and offset values
+* replacement of existing VTU output files
 
 ## Code quality
 

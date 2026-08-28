@@ -1,5 +1,7 @@
-#include "mesh_build/MeshBuildData.hpp"
+#include "mesh_build/TopologyBuilder.hpp"
 
+#include "cfd/mesh/Boundary.hpp"
+#include "cfd/mesh/Face.hpp"
 #include "cfd/mesh/Types.hpp"
 #include "cfd/meshing/RawMeshData.hpp"
 

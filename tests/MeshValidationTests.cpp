@@ -194,6 +194,21 @@ void test_rejects_reserved_boundary_group_id()
                               "Raw mesh validation accepted invalid_boundary_id as a physical boundary ID.");
 }
 
+void test_rejects_non_compact_boundary_group_id()
+{
+    cfd::RawMeshData raw_mesh{make_single_triangle_raw_mesh()};
+
+    raw_mesh.boundary_groups[0].id = 42;
+
+    for (cfd::BoundaryEdge &edge : raw_mesh.boundary_edges)
+    {
+        edge.boundary_id = 42;
+    }
+
+    require_raw_mesh_rejected(raw_mesh, "boundary group ID 42 does not match its zero-based position 0.",
+                              "Raw mesh validation accepted a self-consistent but non-compact boundary-group ID.");
+}
+
 void test_rejects_empty_boundary_group_name()
 {
     cfd::RawMeshData raw_mesh{make_single_triangle_raw_mesh()};
@@ -383,6 +398,8 @@ int main()
 
     failure_count += cfd::test::run_test("reject empty boundary groups", test_rejects_empty_boundary_groups);
     failure_count += cfd::test::run_test("reject reserved boundary group ID", test_rejects_reserved_boundary_group_id);
+    failure_count +=
+        cfd::test::run_test("reject non-compact boundary group ID", test_rejects_non_compact_boundary_group_id);
     failure_count += cfd::test::run_test("reject empty boundary group name", test_rejects_empty_boundary_group_name);
     failure_count +=
         cfd::test::run_test("reject duplicate boundary group ID", test_rejects_duplicate_boundary_group_id);

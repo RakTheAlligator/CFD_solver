@@ -29,6 +29,7 @@ struct MeshBuildResult;
 ///
 /// @invariant `cell_node_offsets().size() == cell_count() + 1`.
 /// @invariant `cell_faces().size() == cell_nodes().size()`.
+/// @invariant `boundary_groups()[i].id == i` for every boundary-group index `i`.
 /// @invariant Per-cell geometry arrays contain `cell_count()` entries.
 /// @invariant Per-face topology and geometry arrays contain `face_count()` entries.
 ///
@@ -103,7 +104,7 @@ class Mesh
     /// Returns the boundary-group ID associated with each face.
     ///
     /// Internal faces contain `invalid_boundary_id`; validated boundary faces
-    /// contain a valid ID referring to `boundary_groups()`.
+    /// contain a valid zero-based index into `boundary_groups()`.
     [[nodiscard]]
     std::span<const BoundaryId> face_boundary_ids() const noexcept
     {
@@ -165,8 +166,11 @@ class Mesh
     /// Returns oriented face-area vectors.
     ///
     /// In two dimensions, each vector has magnitude equal to the corresponding
-    /// face length and is oriented outward from the owner cell. For an internal
-    /// face, it therefore points from owner to neighbor.
+    /// face length and is oriented outward from the owner cell.
+    ///
+    /// For an internal face with owner `P` and neighbor `N`,
+    /// `Sf . (x_N - x_P) > 0`. On a non-orthogonal mesh, `Sf` is not generally
+    /// parallel to the owner-neighbor vector.
     [[nodiscard]]
     std::span<const Vector2> face_area_vectors() const noexcept
     {
