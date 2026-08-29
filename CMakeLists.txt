@@ -145,6 +145,12 @@ if(BUILD_TESTING)
     endfunction()
 
     cfd_add_test(
+        cfd_cell_scalar_field_tests
+        cell_scalar_field
+        tests/CellScalarFieldTests.cpp
+    )
+
+    cfd_add_test(
         cfd_gmsh_mesher_tests
         gmsh_mesher
         tests/GmshMesherTests.cpp
