@@ -1,6 +1,6 @@
 build/
 /results/
 .vscode/
-/build-sanitizers/
+/build-debug
 /build-release/
-/build-sanitize/
+/build-sanitizers/

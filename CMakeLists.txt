@@ -151,6 +151,12 @@ if(BUILD_TESTING)
     )
 
     cfd_add_test(
+        cfd_scalar_boundary_conditions_tests
+        scalar_boundary_conditions
+        tests/ScalarBoundaryConditionsTests.cpp
+    )
+
+    cfd_add_test(
         cfd_gmsh_mesher_tests
         gmsh_mesher
         tests/GmshMesherTests.cpp
