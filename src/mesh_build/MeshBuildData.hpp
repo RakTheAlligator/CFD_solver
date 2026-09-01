@@ -1,9 +1,10 @@
 #pragma once
 
+#include "cfd/math/Point2.hpp"
+#include "cfd/math/Vector2.hpp"
 #include "cfd/mesh/Boundary.hpp"
 #include "cfd/mesh/Face.hpp"
 #include "cfd/mesh/Types.hpp"
-#include "cfd/mesh/Vector2.hpp"
 
 #include <vector>
 
@@ -27,10 +28,10 @@ struct TopologyBuildData
 struct GeometryBuildData
 {
     std::vector<double> cell_areas;
-    std::vector<Vector2> cell_centers;
+    std::vector<Point2> cell_centers;
     std::vector<double> cell_qualities;
 
-    std::vector<Vector2> face_centers;
+    std::vector<Point2> face_centers;
     std::vector<double> face_lengths;
     std::vector<Vector2> face_area_vectors;
 };

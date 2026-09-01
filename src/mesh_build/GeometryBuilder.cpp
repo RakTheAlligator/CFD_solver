@@ -1,10 +1,11 @@
 #include "mesh_build/GeometryBuilder.hpp"
 
+#include "cfd/math/Point2.hpp"
+#include "cfd/math/Vector2.hpp"
 #include "cfd/mesh/Cell.hpp"
 #include "cfd/mesh/Face.hpp"
 #include "cfd/mesh/Node.hpp"
 #include "cfd/mesh/Types.hpp"
-#include "cfd/mesh/Vector2.hpp"
 #include "cfd/meshing/RawMeshData.hpp"
 
 #include <algorithm>
@@ -263,7 +264,7 @@ void build_face_geometry(const RawMeshData &raw_mesh, const TopologyBuildData &t
             throw_geometry_build_error("face " + std::to_string(face_id) + " has zero length.");
         }
 
-        const Vector2 face_center{0.5 * (node_0.x + node_1.x), 0.5 * (node_0.y + node_1.y)};
+        const Point2 face_center{0.5 * (node_0.x + node_1.x), 0.5 * (node_0.y + node_1.y)};
 
         // Rotating the edge vector (dx, dy) clockwise gives (dy, -dx), a
         // perpendicular vector whose magnitude is exactly the edge length.
@@ -272,7 +273,7 @@ void build_face_geometry(const RawMeshData &raw_mesh, const TopologyBuildData &t
         Vector2 face_area_vector{dy, -dx};
 
         const FaceAdjacency &adjacency{topology.face_adjacencies[face_id]};
-        const Vector2 &owner_center{geometry.cell_centers[adjacency.owner]};
+        const Point2 &owner_center{geometry.cell_centers[adjacency.owner]};
 
         const double owner_to_face_x{face_center.x - owner_center.x};
         const double owner_to_face_y{face_center.y - owner_center.y};

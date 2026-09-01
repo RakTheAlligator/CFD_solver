@@ -1,15 +1,14 @@
 #pragma once
 
+#include "cfd/math/Point2.hpp"
+
 namespace cfd
 {
 
-/// Position of a mesh node in two-dimensional Cartesian space.
+/// Mesh node represented by its position in two-dimensional Cartesian space.
 ///
-/// Coordinates are expressed in metres.
-struct Node
-{
-    double x{};
-    double y{};
-};
+/// Coordinates are expressed in metres. A node's identity is its zero-based
+/// index in mesh node storage.
+using Node = Point2;
 
 } // namespace cfd

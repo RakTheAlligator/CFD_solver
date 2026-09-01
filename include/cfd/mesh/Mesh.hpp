@@ -1,11 +1,12 @@
 #pragma once
 
+#include "cfd/math/Point2.hpp"
+#include "cfd/math/Vector2.hpp"
 #include "cfd/mesh/Boundary.hpp"
 #include "cfd/mesh/Cell.hpp"
 #include "cfd/mesh/Face.hpp"
 #include "cfd/mesh/Node.hpp"
 #include "cfd/mesh/Types.hpp"
-#include "cfd/mesh/Vector2.hpp"
 
 #include <span>
 #include <vector>
@@ -144,14 +145,14 @@ class Mesh
 
     /// Returns cell-centroid coordinates in metres.
     [[nodiscard]]
-    std::span<const Vector2> cell_centers() const noexcept
+    std::span<const Point2> cell_centers() const noexcept
     {
         return cell_centers_;
     }
 
     /// Returns face-center coordinates in metres.
     [[nodiscard]]
-    std::span<const Vector2> face_centers() const noexcept
+    std::span<const Point2> face_centers() const noexcept
     {
         return face_centers_;
     }
@@ -207,10 +208,10 @@ class Mesh
 
     // Constructed geometry.
     std::vector<double> cell_areas_;
-    std::vector<Vector2> cell_centers_;
+    std::vector<Point2> cell_centers_;
     std::vector<double> cell_qualities_;
 
-    std::vector<Vector2> face_centers_;
+    std::vector<Point2> face_centers_;
     std::vector<double> face_lengths_;
     std::vector<Vector2> face_area_vectors_;
 

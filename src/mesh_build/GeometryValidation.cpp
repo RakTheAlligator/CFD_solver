@@ -1,8 +1,9 @@
 #include "mesh_build/GeometryValidation.hpp"
 
+#include "cfd/math/Point2.hpp"
+#include "cfd/math/Vector2.hpp"
 #include "cfd/mesh/Face.hpp"
 #include "cfd/mesh/Types.hpp"
-#include "cfd/mesh/Vector2.hpp"
 #include "cfd/meshing/RawMeshData.hpp"
 
 #include <algorithm>
@@ -76,7 +77,7 @@ void validate_cell_geometry(const RawMeshData &raw_mesh, const GeometryBuildData
     for (Index cell_id = 0; cell_id < cell_count; ++cell_id)
     {
         const double area{geometry.cell_areas[cell_id]};
-        const Vector2 &cell_center{geometry.cell_centers[cell_id]};
+        const Point2 &cell_center{geometry.cell_centers[cell_id]};
 
         if (!std::isfinite(area))
         {
@@ -116,7 +117,7 @@ void validate_face_geometry(const TopologyBuildData &topology, const GeometryBui
     for (Index face_id = 0; face_id < face_count; ++face_id)
     {
         const double length{geometry.face_lengths[face_id]};
-        const Vector2 &face_center{geometry.face_centers[face_id]};
+        const Point2 &face_center{geometry.face_centers[face_id]};
         const Vector2 &face_area_vector{geometry.face_area_vectors[face_id]};
 
         if (!std::isfinite(length))
@@ -151,7 +152,7 @@ void validate_face_geometry(const TopologyBuildData &topology, const GeometryBui
         }
 
         const FaceAdjacency &adjacency{topology.face_adjacencies[face_id]};
-        const Vector2 &owner_center{geometry.cell_centers[adjacency.owner]};
+        const Point2 &owner_center{geometry.cell_centers[adjacency.owner]};
 
         // Sf must point outward from the owner. The owner-to-face vector
         // provides an orientation test independent of the stored face-node
@@ -170,7 +171,7 @@ void validate_face_geometry(const TopologyBuildData &topology, const GeometryBui
             continue;
         }
 
-        const Vector2 &neighbor_center{geometry.cell_centers[adjacency.neighbor]};
+        const Point2 &neighbor_center{geometry.cell_centers[adjacency.neighbor]};
 
         // For an internal face, the owner-oriented Sf must have a positive
         // projection along the owner-to-neighbor direction. It is not generally

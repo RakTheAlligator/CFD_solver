@@ -1,3 +1,5 @@
+#include "cfd/math/Point2.hpp"
+#include "cfd/math/Vector2.hpp"
 #include "cfd/mesh/Cell.hpp"
 #include "cfd/mesh/Face.hpp"
 #include "cfd/mesh/Mesh.hpp"
@@ -5,7 +7,6 @@
 #include "cfd/mesh/MeshStatistics.hpp"
 #include "cfd/mesh/Node.hpp"
 #include "cfd/mesh/Types.hpp"
-#include "cfd/mesh/Vector2.hpp"
 #include "cfd/meshing/GmshMesher.hpp"
 #include "cfd/meshing/RawMeshData.hpp"
 #include "cfd/meshing/RectangleGeometry.hpp"
@@ -37,6 +38,8 @@ static_assert(!std::is_copy_assignable_v<cfd::Mesh>);
 
 static_assert(std::is_nothrow_move_constructible_v<cfd::Mesh>);
 static_assert(std::is_nothrow_move_assignable_v<cfd::Mesh>);
+
+static_assert(std::is_same_v<cfd::Node, cfd::Point2>);
 
 [[nodiscard]]
 double compute_single_closed_boundary_area(const cfd::RawMeshData &raw_mesh)
@@ -227,8 +230,8 @@ void require_mesh_geometry_invariants(const cfd::Mesh &mesh)
         require_near(area_vector_norm, length, test_tolerance, "Face area-vector norm does not match face length.");
 
         const cfd::FaceAdjacency &adjacency{mesh.face_adjacencies()[face_id]};
-        const cfd::Vector2 &face_center{mesh.face_centers()[face_id]};
-        const cfd::Vector2 &owner_center{mesh.cell_centers()[adjacency.owner]};
+        const cfd::Point2 &face_center{mesh.face_centers()[face_id]};
+        const cfd::Point2 &owner_center{mesh.cell_centers()[adjacency.owner]};
 
         const double owner_orientation{area_vector.x * (face_center.x - owner_center.x) +
                                        area_vector.y * (face_center.y - owner_center.y)};
@@ -237,7 +240,7 @@ void require_mesh_geometry_invariants(const cfd::Mesh &mesh)
 
         if (!adjacency.is_boundary())
         {
-            const cfd::Vector2 &neighbor_center{mesh.cell_centers()[adjacency.neighbor]};
+            const cfd::Point2 &neighbor_center{mesh.cell_centers()[adjacency.neighbor]};
 
             const double owner_to_neighbor_orientation{area_vector.x * (neighbor_center.x - owner_center.x) +
                                                        area_vector.y * (neighbor_center.y - owner_center.y)};

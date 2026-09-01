@@ -3,7 +3,7 @@
 namespace cfd
 {
 
-/// Two-dimensional Cartesian vector.
+/// Two-dimensional mathematical vector.
 ///
 /// The physical meaning and units of the components depend on the quantity
 /// represented by the vector.
