@@ -151,6 +151,12 @@ if(BUILD_TESTING)
     )
 
     cfd_add_test(
+        cfd_cell_vector_field_tests
+        cell_vector_field
+        tests/CellVectorFieldTests.cpp
+    )
+
+    cfd_add_test(
         cfd_scalar_boundary_conditions_tests
         scalar_boundary_conditions
         tests/ScalarBoundaryConditionsTests.cpp
