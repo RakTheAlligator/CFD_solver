@@ -74,6 +74,8 @@ add_library(
     src/mesh_build/GeometryValidation.cpp
     src/mesh_build/TopologyBuilder.cpp
     src/mesh_build/TopologyValidation.cpp
+
+    src/numerics/LeastSquaresGradient.cpp
 )
 
 target_include_directories(
@@ -160,6 +162,12 @@ if(BUILD_TESTING)
         cfd_scalar_boundary_conditions_tests
         scalar_boundary_conditions
         tests/ScalarBoundaryConditionsTests.cpp
+    )
+
+    cfd_add_test(
+        cfd_least_squares_gradient_tests
+        least_squares_gradient
+        tests/LeastSquaresGradientTests.cpp
     )
 
     cfd_add_test(
