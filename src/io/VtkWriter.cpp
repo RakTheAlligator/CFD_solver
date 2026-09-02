@@ -10,12 +10,115 @@
 #include <iomanip>
 #include <limits>
 #include <stdexcept>
+#include <string>
+#include <string_view>
+#include <unordered_set>
 
 namespace cfd
 {
 
 namespace
 {
+
+constexpr std::string_view cell_id_name{"cell_id"};
+constexpr std::string_view cell_area_name{"cell_area"};
+constexpr std::string_view cell_quality_name{"cell_quality"};
+
+void validate_field_name(const std::string_view name, std::unordered_set<std::string_view> &field_names)
+{
+    if (name.empty())
+    {
+        throw std::invalid_argument("VTU CellData field names must not be empty.");
+    }
+
+    if (!field_names.insert(name).second)
+    {
+        throw std::invalid_argument("VTU CellData field name must be unique: " + std::string{name});
+    }
+}
+
+void validate_cell_data(const Mesh &mesh, const VtkCellData &cell_data)
+{
+    std::unordered_set<std::string_view> field_names{
+        cell_id_name,
+        cell_area_name,
+        cell_quality_name,
+    };
+
+    const Index cell_count{mesh.cell_count()};
+
+    for (const VtkCellScalarData &field : cell_data.scalars)
+    {
+        validate_field_name(field.name, field_names);
+
+        if (field.values.size() != cell_count)
+        {
+            throw std::invalid_argument("VTU scalar CellData field has incorrect cardinality: " +
+                                        std::string{field.name});
+        }
+    }
+
+    for (const VtkCellVectorData &field : cell_data.vectors)
+    {
+        validate_field_name(field.name, field_names);
+
+        if (field.values.size() != cell_count)
+        {
+            throw std::invalid_argument("VTU vector CellData field has incorrect cardinality: " +
+                                        std::string{field.name});
+        }
+    }
+
+    for (const VtkCellVectorComponentData &field : cell_data.component_vectors)
+    {
+        validate_field_name(field.name, field_names);
+
+        if (field.x_values.size() != cell_count)
+        {
+            throw std::invalid_argument("VTU component-vector x field has incorrect cardinality: " +
+                                        std::string{field.name});
+        }
+
+        if (field.y_values.size() != cell_count)
+        {
+            throw std::invalid_argument("VTU component-vector y field has incorrect cardinality: " +
+                                        std::string{field.name});
+        }
+    }
+}
+
+void write_xml_attribute_value(std::ofstream &output, const std::string_view value)
+{
+    for (const char character : value)
+    {
+        switch (character)
+        {
+        case '&':
+            output << "&amp;";
+            break;
+
+        case '<':
+            output << "&lt;";
+            break;
+
+        case '>':
+            output << "&gt;";
+            break;
+
+        case '"':
+            output << "&quot;";
+            break;
+
+        case '\'':
+            output << "&apos;";
+            break;
+
+        default:
+            output << character;
+            break;
+        }
+    }
+}
 
 [[nodiscard]]
 std::uint8_t vtk_cell_type(const CellType cell_type)
@@ -227,13 +330,77 @@ void write_cell_qualities(std::ofstream &output, const Mesh &mesh)
     output << "        </DataArray>\n";
 }
 
-void write_cell_data(std::ofstream &output, const Mesh &mesh)
+void write_cell_scalar_data(std::ofstream &output, const VtkCellScalarData &field)
+{
+    output << "        <DataArray type=\"Float64\" Name=\"";
+    write_xml_attribute_value(output, field.name);
+    output << "\" format=\"ascii\">\n";
+    output << "          ";
+
+    for (Index cell_id = 0; cell_id < field.values.size(); ++cell_id)
+    {
+        output << field.values[cell_id];
+
+        if (cell_id + 1 < field.values.size())
+        {
+            output << ' ';
+        }
+    }
+
+    output << '\n';
+    output << "        </DataArray>\n";
+}
+
+void write_cell_vector_data(std::ofstream &output, const VtkCellVectorData &field)
+{
+    output << "        <DataArray type=\"Float64\" Name=\"";
+    write_xml_attribute_value(output, field.name);
+    output << "\" NumberOfComponents=\"3\" format=\"ascii\">\n";
+
+    for (const Vector2 &value : field.values)
+    {
+        output << "          " << value.x << ' ' << value.y << " 0\n";
+    }
+
+    output << "        </DataArray>\n";
+}
+
+void write_cell_vector_component_data(std::ofstream &output, const VtkCellVectorComponentData &field)
+{
+    output << "        <DataArray type=\"Float64\" Name=\"";
+    write_xml_attribute_value(output, field.name);
+    output << "\" NumberOfComponents=\"3\" format=\"ascii\">\n";
+
+    for (Index cell_id = 0; cell_id < field.x_values.size(); ++cell_id)
+    {
+        output << "          " << field.x_values[cell_id] << ' ' << field.y_values[cell_id] << " 0\n";
+    }
+
+    output << "        </DataArray>\n";
+}
+
+void write_cell_data(std::ofstream &output, const Mesh &mesh, const VtkCellData &cell_data)
 {
     output << "      <CellData>\n";
 
     write_cell_ids(output, mesh);
     write_cell_areas(output, mesh);
     write_cell_qualities(output, mesh);
+
+    for (const VtkCellScalarData &field : cell_data.scalars)
+    {
+        write_cell_scalar_data(output, field);
+    }
+
+    for (const VtkCellVectorData &field : cell_data.vectors)
+    {
+        write_cell_vector_data(output, field);
+    }
+
+    for (const VtkCellVectorComponentData &field : cell_data.component_vectors)
+    {
+        write_cell_vector_component_data(output, field);
+    }
 
     output << "      </CellData>\n";
 }
@@ -242,6 +409,13 @@ void write_cell_data(std::ofstream &output, const Mesh &mesh)
 
 void write_vtu(const Mesh &mesh, const std::filesystem::path &file_path)
 {
+    write_vtu(mesh, file_path, VtkCellData{});
+}
+
+void write_vtu(const Mesh &mesh, const std::filesystem::path &file_path, const VtkCellData &cell_data)
+{
+    validate_cell_data(mesh, cell_data);
+
     std::ofstream output{file_path};
 
     if (!output)
@@ -265,7 +439,7 @@ void write_vtu(const Mesh &mesh, const std::filesystem::path &file_path)
 
     write_points(output, mesh);
     write_cells(output, mesh);
-    write_cell_data(output, mesh);
+    write_cell_data(output, mesh, cell_data);
 
     output << "    </Piece>\n";
     output << "  </UnstructuredGrid>\n";
