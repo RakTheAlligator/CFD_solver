@@ -136,6 +136,19 @@ if(BUILD_VERIFICATION)
     )
 
     cfd_enable_warnings(cfd_least_squares_gradient_convergence)
+
+    add_executable(
+        cfd_structured_least_squares_gradient_convergence
+        verification/StructuredLeastSquaresGradientConvergence.cpp
+    )
+
+    target_link_libraries(
+        cfd_structured_least_squares_gradient_convergence
+        PRIVATE
+            cfd_core
+    )
+
+    cfd_enable_warnings(cfd_structured_least_squares_gradient_convergence)
 endif()
 
 # -----------------------------------------------------------------------------
