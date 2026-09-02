@@ -114,6 +114,31 @@ target_link_libraries(
 cfd_enable_warnings(CFD_solver)
 
 # -----------------------------------------------------------------------------
+# Numerical verification
+# -----------------------------------------------------------------------------
+
+option(
+    BUILD_VERIFICATION
+    "Build numerical verification studies"
+    OFF
+)
+
+if(BUILD_VERIFICATION)
+    add_executable(
+        cfd_least_squares_gradient_convergence
+        verification/LeastSquaresGradientConvergence.cpp
+    )
+
+    target_link_libraries(
+        cfd_least_squares_gradient_convergence
+        PRIVATE
+            cfd_core
+    )
+
+    cfd_enable_warnings(cfd_least_squares_gradient_convergence)
+endif()
+
+# -----------------------------------------------------------------------------
 # Tests
 # -----------------------------------------------------------------------------
 
