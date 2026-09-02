@@ -149,6 +149,19 @@ if(BUILD_VERIFICATION)
     )
 
     cfd_enable_warnings(cfd_structured_least_squares_gradient_convergence)
+
+    add_executable(
+        cfd_controlled_quad_transition_convergence
+        verification/ControlledQuadTransitionConvergence.cpp
+    )
+
+    target_link_libraries(
+        cfd_controlled_quad_transition_convergence
+        PRIVATE
+            cfd_core
+    )
+
+    cfd_enable_warnings(cfd_controlled_quad_transition_convergence)
 endif()
 
 # -----------------------------------------------------------------------------
