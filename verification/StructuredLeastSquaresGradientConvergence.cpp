@@ -10,6 +10,8 @@
 #include "cfd/meshing/RawMeshData.hpp"
 #include "cfd/numerics/LeastSquaresGradient.hpp"
 
+#include "support/GradientVerification.hpp"
+
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -28,13 +30,25 @@
 namespace
 {
 
-constexpr double domain_length{2.0};
-constexpr double domain_height{1.0};
-
-constexpr cfd::BoundaryId left_boundary_id{0};
-constexpr cfd::BoundaryId right_boundary_id{1};
-constexpr cfd::BoundaryId bottom_boundary_id{2};
-constexpr cfd::BoundaryId top_boundary_id{3};
+using cfd::verification::analytical_gradient;
+using cfd::verification::analytical_hessian;
+using cfd::verification::analytical_phi;
+using cfd::verification::apply;
+using cfd::verification::bottom_boundary_id;
+using cfd::verification::compute_opposite_pair_metrics;
+using cfd::verification::domain_height;
+using cfd::verification::domain_length;
+using cfd::verification::dot;
+using cfd::verification::ErrorAccumulator;
+using cfd::verification::ErrorStatistics;
+using cfd::verification::Hessian2;
+using cfd::verification::left_boundary_id;
+using cfd::verification::magnitude;
+using cfd::verification::make_manufactured_neumann_boundary_conditions;
+using cfd::verification::observed_order;
+using cfd::verification::OppositePairMetrics;
+using cfd::verification::right_boundary_id;
+using cfd::verification::top_boundary_id;
 
 struct GridLevel
 {
@@ -60,46 +74,6 @@ struct MeshFamily
 constexpr std::array mesh_families{
     MeshFamily{cfd::CellType::Quadrilateral, "quadrilaterals", "quad"},
     MeshFamily{cfd::CellType::Triangle, "triangles", "triangle"},
-};
-
-struct ErrorStatistics
-{
-    cfd::Index cell_count{};
-    double area_weighted_rms_error{};
-    double linf_error{};
-};
-
-struct ErrorAccumulator
-{
-    cfd::Index cell_count{};
-    double total_area{};
-    double area_weighted_squared_error{};
-    double linf_error{};
-
-    void add(const double cell_area, const double error_magnitude) noexcept
-    {
-        ++cell_count;
-        total_area += cell_area;
-        area_weighted_squared_error += cell_area * error_magnitude * error_magnitude;
-        linf_error = std::max(linf_error, error_magnitude);
-    }
-
-    [[nodiscard]]
-    ErrorStatistics finish() const
-    {
-        if (cell_count == 0 || !std::isfinite(total_area) || !(total_area > 0.0) ||
-            !std::isfinite(area_weighted_squared_error) || area_weighted_squared_error < 0.0 ||
-            !std::isfinite(linf_error))
-        {
-            throw std::runtime_error("Structured verification produced invalid error statistics.");
-        }
-
-        return {
-            .cell_count = cell_count,
-            .area_weighted_rms_error = std::sqrt(area_weighted_squared_error / total_area),
-            .linf_error = linf_error,
-        };
-    }
 };
 
 struct CategoryResult
@@ -133,26 +107,12 @@ struct LevelResult
     double maximum_cell_quality{};
 };
 
-struct Hessian2
-{
-    double m00{};
-    double m01{};
-    double m11{};
-};
-
 struct SymmetricSystem2
 {
     double m00{};
     double m01{};
     double m11{};
     cfd::Vector2 right_hand_side{};
-};
-
-struct OppositePairMetrics
-{
-    bool valid{};
-    double angular_defect{};
-    double distance_imbalance{};
 };
 
 struct CellStencilDiagnostic
@@ -177,6 +137,17 @@ struct DiagnosticFields
     cfd::CellScalarField is_boundary_cell;
     cfd::CellScalarField leading_metric_valid;
 };
+
+[[nodiscard]]
+ErrorStatistics finish_required(const ErrorAccumulator &accumulator)
+{
+    const ErrorStatistics statistics{accumulator.finish()};
+    if (statistics.cell_count == 0)
+    {
+        throw std::runtime_error("Structured verification produced an empty error category.");
+    }
+    return statistics;
+}
 
 [[nodiscard]]
 cfd::Index node_id(const cfd::Index i, const cfd::Index j, const cfd::Index nx) noexcept
@@ -281,49 +252,6 @@ cfd::RawMeshData make_structured_raw_mesh(const GridLevel &level, const cfd::Cel
     return raw_mesh;
 }
 
-[[nodiscard]]
-double analytical_phi(const cfd::Point2 &point) noexcept
-{
-    return std::sin(point.x) + point.y * point.y;
-}
-
-[[nodiscard]]
-cfd::Vector2 analytical_gradient(const cfd::Point2 &point) noexcept
-{
-    return {std::cos(point.x), 2.0 * point.y};
-}
-
-[[nodiscard]]
-Hessian2 analytical_hessian(const cfd::Point2 &point) noexcept
-{
-    return {
-        .m00 = -std::sin(point.x),
-        .m01 = 0.0,
-        .m11 = 2.0,
-    };
-}
-
-[[nodiscard]]
-double dot(const cfd::Vector2 &first, const cfd::Vector2 &second) noexcept
-{
-    return first.x * second.x + first.y * second.y;
-}
-
-[[nodiscard]]
-double magnitude(const cfd::Vector2 &vector) noexcept
-{
-    return std::hypot(vector.x, vector.y);
-}
-
-[[nodiscard]]
-cfd::Vector2 apply(const Hessian2 &matrix, const cfd::Vector2 &vector) noexcept
-{
-    return {
-        matrix.m00 * vector.x + matrix.m01 * vector.y,
-        matrix.m01 * vector.x + matrix.m11 * vector.y,
-    };
-}
-
 void add_leading_observation(SymmetricSystem2 &system, const cfd::Vector2 &direction,
                              const double leading_defect) noexcept
 {
@@ -349,63 +277,6 @@ cfd::Vector2 solve(const SymmetricSystem2 &system)
     return {
         (system.right_hand_side.x * system.m11 - system.right_hand_side.y * system.m01) / determinant,
         (system.m00 * system.right_hand_side.y - system.m01 * system.right_hand_side.x) / determinant,
-    };
-}
-
-struct PairMetrics
-{
-    double angular_defect{};
-    double distance_imbalance{};
-};
-
-[[nodiscard]]
-PairMetrics compute_pair_metrics(const cfd::Vector2 &first, const cfd::Vector2 &second)
-{
-    const double first_length{magnitude(first)};
-    const double second_length{magnitude(second)};
-    if (!(first_length > 0.0) || !(second_length > 0.0))
-    {
-        throw std::runtime_error("Structured symmetry diagnostic encountered a zero displacement.");
-    }
-
-    const double cosine{std::clamp(dot(first, second) / (first_length * second_length), -1.0, 1.0)};
-    return {
-        .angular_defect = 0.5 * (1.0 + cosine),
-        .distance_imbalance = std::abs(first_length - second_length) / (first_length + second_length),
-    };
-}
-
-[[nodiscard]]
-OppositePairMetrics compute_opposite_pair_metrics(const std::array<cfd::Vector2, 4> &displacements)
-{
-    constexpr std::array<std::array<std::size_t, 4>, 3> partitions{
-        std::array<std::size_t, 4>{0, 1, 2, 3},
-        std::array<std::size_t, 4>{0, 2, 1, 3},
-        std::array<std::size_t, 4>{0, 3, 1, 2},
-    };
-
-    double best_angular_defect{std::numeric_limits<double>::infinity()};
-    double selected_distance_imbalance{};
-
-    for (const std::array<std::size_t, 4> &partition : partitions)
-    {
-        const PairMetrics first_pair{
-            compute_pair_metrics(displacements.at(partition.at(0)), displacements.at(partition.at(1)))};
-        const PairMetrics second_pair{
-            compute_pair_metrics(displacements.at(partition.at(2)), displacements.at(partition.at(3)))};
-        const double angular_defect{std::max(first_pair.angular_defect, second_pair.angular_defect)};
-
-        if (angular_defect < best_angular_defect)
-        {
-            best_angular_defect = angular_defect;
-            selected_distance_imbalance = std::max(first_pair.distance_imbalance, second_pair.distance_imbalance);
-        }
-    }
-
-    return {
-        .valid = true,
-        .angular_defect = best_angular_defect,
-        .distance_imbalance = selected_distance_imbalance,
     };
 }
 
@@ -491,49 +362,6 @@ CellStencilDiagnostic compute_cell_stencil_diagnostic(const cfd::Mesh &mesh, con
     };
 }
 
-[[nodiscard]]
-double outward_normal_derivative(const std::string_view boundary_name)
-{
-    if (boundary_name == "left")
-    {
-        return -1.0;
-    }
-    if (boundary_name == "right")
-    {
-        return std::cos(domain_length);
-    }
-    if (boundary_name == "bottom")
-    {
-        return 0.0;
-    }
-    if (boundary_name == "top")
-    {
-        return 2.0;
-    }
-
-    throw std::runtime_error("Unsupported structured verification boundary: " + std::string{boundary_name});
-}
-
-[[nodiscard]]
-cfd::ScalarBoundaryConditions make_boundary_conditions(const cfd::Mesh &mesh)
-{
-    std::vector<cfd::ScalarBoundaryCondition> conditions;
-    conditions.reserve(mesh.boundary_groups().size());
-
-    // Phi is supplied analytically; this reconstructs its gradient and does
-    // not solve a PDE, so pure Neumann data introduce no nullspace here.
-    for (const cfd::BoundaryGroup &group : mesh.boundary_groups())
-    {
-        if (group.id != conditions.size())
-        {
-            throw std::runtime_error("Structured mesh boundary groups are not indexed contiguously.");
-        }
-        conditions.emplace_back(cfd::ScalarBoundaryConditionType::Neumann, outward_normal_derivative(group.name));
-    }
-
-    return {mesh.boundary_groups().size(), std::move(conditions)};
-}
-
 void write_verification_vtu(const cfd::Mesh &mesh, const cfd::CellScalarField &phi,
                             const cfd::CellVectorField &numerical_gradient, const cfd::CellVectorField &exact_gradient,
                             const cfd::CellVectorField &gradient_error, const cfd::CellScalarField &error_magnitude,
@@ -585,7 +413,7 @@ LevelResult run_level(const MeshFamily &family, const GridLevel &level, const st
         exact_gradient[cell_id] = analytical_gradient(mesh.cell_centers()[cell_id]);
     }
 
-    const cfd::ScalarBoundaryConditions boundary_conditions{make_boundary_conditions(mesh)};
+    const cfd::ScalarBoundaryConditions boundary_conditions{make_manufactured_neumann_boundary_conditions(mesh)};
     cfd::CellVectorField numerical_gradient{mesh.cell_count()};
     cfd::compute_least_squares_gradient(mesh, phi, boundary_conditions, numerical_gradient);
 
@@ -645,11 +473,11 @@ LevelResult run_level(const MeshFamily &family, const GridLevel &level, const st
         }
     }
 
-    const ErrorStatistics all_statistics{all_errors.finish()};
-    const ErrorStatistics boundary_statistics{boundary_errors.finish()};
-    const ErrorStatistics interior_statistics{interior_errors.finish()};
-    const ErrorStatistics leading_statistics{leading_errors.finish()};
-    const ErrorStatistics remainder_statistics{leading_remainders.finish()};
+    const ErrorStatistics all_statistics{finish_required(all_errors)};
+    const ErrorStatistics boundary_statistics{finish_required(boundary_errors)};
+    const ErrorStatistics interior_statistics{finish_required(interior_errors)};
+    const ErrorStatistics leading_statistics{finish_required(leading_errors)};
+    const ErrorStatistics remainder_statistics{finish_required(leading_remainders)};
     const double characteristic_mesh_length{std::sqrt(all_errors.total_area / static_cast<double>(mesh.cell_count()))};
 
     const auto [minimum_quality,
@@ -689,28 +517,6 @@ LevelResult run_level(const MeshFamily &family, const GridLevel &level, const st
         .minimum_cell_quality = *minimum_quality,
         .maximum_cell_quality = *maximum_quality,
     };
-}
-
-[[nodiscard]]
-std::optional<double> observed_order(const double coarse_error, const double fine_error, const double coarse_delta,
-                                     const double fine_delta)
-{
-    if (!std::isfinite(coarse_error) || !std::isfinite(fine_error) || coarse_error < 0.0 || fine_error < 0.0 ||
-        !std::isfinite(coarse_delta) || !std::isfinite(fine_delta) || !(coarse_delta > 0.0) || !(fine_delta > 0.0))
-    {
-        throw std::runtime_error("Cannot form a structured convergence order from invalid inputs.");
-    }
-    if (coarse_error == 0.0 || fine_error == 0.0)
-    {
-        return std::nullopt;
-    }
-
-    const double order{std::log(coarse_error / fine_error) / std::log(coarse_delta / fine_delta)};
-    if (!std::isfinite(order))
-    {
-        throw std::runtime_error("Structured convergence order is non-finite.");
-    }
-    return order;
 }
 
 void compute_orders(std::vector<LevelResult> &results)

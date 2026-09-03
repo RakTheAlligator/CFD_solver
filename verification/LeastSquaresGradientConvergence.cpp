@@ -12,6 +12,8 @@
 #include "cfd/meshing/RectangleGeometry.hpp"
 #include "cfd/numerics/LeastSquaresGradient.hpp"
 
+#include "support/GradientVerification.hpp"
+
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -31,14 +33,27 @@
 namespace
 {
 
-constexpr double domain_length{2.0};
-constexpr double domain_height{1.0};
 constexpr double boundary_coordinate_tolerance{1.0e-12};
 
-constexpr cfd::BoundaryId left_boundary_id{0};
-constexpr cfd::BoundaryId right_boundary_id{1};
-constexpr cfd::BoundaryId bottom_boundary_id{2};
-constexpr cfd::BoundaryId top_boundary_id{3};
+using cfd::verification::ErrorStatistics;
+using ErrorStatisticsAccumulator = cfd::verification::ErrorAccumulator;
+using cfd::verification::analytical_gradient;
+using cfd::verification::analytical_hessian;
+using cfd::verification::analytical_phi;
+using cfd::verification::apply;
+using cfd::verification::bottom_boundary_id;
+using cfd::verification::compute_opposite_pair_metrics;
+using cfd::verification::domain_height;
+using cfd::verification::domain_length;
+using cfd::verification::dot;
+using cfd::verification::Hessian2;
+using cfd::verification::left_boundary_id;
+using cfd::verification::magnitude;
+using cfd::verification::make_manufactured_neumann_boundary_conditions;
+using cfd::verification::observed_order;
+using cfd::verification::OppositePairMetrics;
+using cfd::verification::right_boundary_id;
+using cfd::verification::top_boundary_id;
 
 constexpr std::array target_mesh_sizes{0.20, 0.10, 0.05, 0.025};
 
@@ -52,50 +67,6 @@ struct MeshFamily
 constexpr std::array mesh_families{
     MeshFamily{cfd::CellType::Triangle, "triangles", "triangle"},
     MeshFamily{cfd::CellType::Quadrilateral, "quadrilaterals", "quad"},
-};
-
-struct ErrorStatistics
-{
-    cfd::Index cell_count{};
-    double area_weighted_rms_error{};
-    double linf_error{};
-};
-
-struct ErrorStatisticsAccumulator
-{
-    cfd::Index cell_count{};
-    double total_area{};
-    double area_weighted_squared_error{};
-    double linf_error{};
-
-    void add(const double cell_area, const double error_magnitude) noexcept
-    {
-        ++cell_count;
-        total_area += cell_area;
-        area_weighted_squared_error += cell_area * error_magnitude * error_magnitude;
-        linf_error = std::max(linf_error, error_magnitude);
-    }
-
-    [[nodiscard]]
-    ErrorStatistics finish() const
-    {
-        if (cell_count == 0)
-        {
-            return {};
-        }
-
-        if (!std::isfinite(total_area) || !(total_area > 0.0) || !std::isfinite(area_weighted_squared_error) ||
-            area_weighted_squared_error < 0.0 || !std::isfinite(linf_error))
-        {
-            throw std::runtime_error("Invalid error statistics in gradient verification.");
-        }
-
-        return {
-            .cell_count = cell_count,
-            .area_weighted_rms_error = std::sqrt(area_weighted_squared_error / total_area),
-            .linf_error = linf_error,
-        };
-    }
 };
 
 struct PearsonAccumulator
@@ -180,13 +151,6 @@ struct LevelResult
     std::optional<QuadLevelDiagnostics> quad_diagnostics;
 };
 
-struct Hessian2
-{
-    double m00{};
-    double m01{};
-    double m11{};
-};
-
 struct LocalWlsAssembly
 {
     double m00{};
@@ -194,13 +158,6 @@ struct LocalWlsAssembly
     double m11{};
     cfd::Vector2 exact_defect_forcing{};
     cfd::Vector2 leading_defect_forcing{};
-};
-
-struct OppositePairMetrics
-{
-    bool valid{};
-    double angular_defect{};
-    double distance_imbalance{};
 };
 
 struct LocalWlsDiagnostics
@@ -299,52 +256,6 @@ void split_rectangle_boundary_groups(cfd::RawMeshData &raw_mesh)
     }
 }
 
-// This is code verification against a smooth analytical field, not validation
-// against a physical experiment. Here phi = sin(x) + y^2 and
-// grad(phi) = (cos(x), 2y).
-[[nodiscard]]
-double analytical_phi(const cfd::Point2 &point) noexcept
-{
-    return std::sin(point.x) + point.y * point.y;
-}
-
-[[nodiscard]]
-cfd::Vector2 analytical_gradient(const cfd::Point2 &point) noexcept
-{
-    return {std::cos(point.x), 2.0 * point.y};
-}
-
-[[nodiscard]]
-Hessian2 analytical_hessian(const cfd::Point2 &point) noexcept
-{
-    return {
-        .m00 = -std::sin(point.x),
-        .m01 = 0.0,
-        .m11 = 2.0,
-    };
-}
-
-[[nodiscard]]
-double dot(const cfd::Vector2 &first, const cfd::Vector2 &second) noexcept
-{
-    return first.x * second.x + first.y * second.y;
-}
-
-[[nodiscard]]
-double magnitude(const cfd::Vector2 &vector) noexcept
-{
-    return std::hypot(vector.x, vector.y);
-}
-
-[[nodiscard]]
-cfd::Vector2 apply(const Hessian2 &matrix, const cfd::Vector2 &vector) noexcept
-{
-    return {
-        matrix.m00 * vector.x + matrix.m01 * vector.y,
-        matrix.m01 * vector.x + matrix.m11 * vector.y,
-    };
-}
-
 void add_observation(LocalWlsAssembly &assembly, const cfd::Vector2 &direction, const double exact_defect,
                      const double leading_defect) noexcept
 {
@@ -375,113 +286,6 @@ cfd::Vector2 solve(const LocalWlsAssembly &assembly, const cfd::Vector2 &right_h
         (right_hand_side.x * assembly.m11 - right_hand_side.y * assembly.m01) / determinant,
         (assembly.m00 * right_hand_side.y - assembly.m01 * right_hand_side.x) / determinant,
     };
-}
-
-struct PairMetrics
-{
-    double angular_defect{};
-    double distance_imbalance{};
-};
-
-[[nodiscard]]
-PairMetrics compute_pair_metrics(const cfd::Vector2 &first, const cfd::Vector2 &second)
-{
-    const double first_length{magnitude(first)};
-    const double second_length{magnitude(second)};
-    if (!std::isfinite(first_length) || !std::isfinite(second_length) || !(first_length > 0.0) ||
-        !(second_length > 0.0))
-    {
-        throw std::runtime_error("Opposite-pair diagnostics encountered an invalid neighbor displacement.");
-    }
-
-    const double cosine{std::clamp(dot(first, second) / (first_length * second_length), -1.0, 1.0)};
-    return {
-        .angular_defect = 0.5 * (1.0 + cosine),
-        .distance_imbalance = std::abs(first_length - second_length) / (first_length + second_length),
-    };
-}
-
-[[nodiscard]]
-OppositePairMetrics compute_opposite_pair_metrics(const std::array<cfd::Vector2, 4> &displacements)
-{
-    // The selected partition minimizes the worse angular defect of its two
-    // pairs. Both reported cell metrics are the maximum over that partition.
-    constexpr std::array<std::array<std::size_t, 4>, 3> partitions{
-        std::array<std::size_t, 4>{0, 1, 2, 3},
-        std::array<std::size_t, 4>{0, 2, 1, 3},
-        std::array<std::size_t, 4>{0, 3, 1, 2},
-    };
-
-    double best_angular_defect{std::numeric_limits<double>::infinity()};
-    double selected_distance_imbalance{};
-
-    for (const std::array<std::size_t, 4> &partition : partitions)
-    {
-        const PairMetrics first_pair{
-            compute_pair_metrics(displacements.at(partition.at(0)), displacements.at(partition.at(1)))};
-        const PairMetrics second_pair{
-            compute_pair_metrics(displacements.at(partition.at(2)), displacements.at(partition.at(3)))};
-        const double angular_defect{std::max(first_pair.angular_defect, second_pair.angular_defect)};
-
-        if (angular_defect < best_angular_defect)
-        {
-            best_angular_defect = angular_defect;
-            selected_distance_imbalance = std::max(first_pair.distance_imbalance, second_pair.distance_imbalance);
-        }
-    }
-
-    return {
-        .valid = true,
-        .angular_defect = best_angular_defect,
-        .distance_imbalance = selected_distance_imbalance,
-    };
-}
-
-[[nodiscard]]
-double outward_normal_derivative(const std::string_view boundary_name)
-{
-    if (boundary_name == "left")
-    {
-        return -1.0;
-    }
-
-    if (boundary_name == "right")
-    {
-        return std::cos(domain_length);
-    }
-
-    if (boundary_name == "bottom")
-    {
-        return 0.0;
-    }
-
-    if (boundary_name == "top")
-    {
-        return 2.0;
-    }
-
-    throw std::runtime_error("Unsupported boundary group in gradient verification: " + std::string{boundary_name});
-}
-
-[[nodiscard]]
-cfd::ScalarBoundaryConditions make_boundary_conditions(const cfd::Mesh &mesh)
-{
-    std::vector<cfd::ScalarBoundaryCondition> conditions;
-    conditions.reserve(mesh.boundary_groups().size());
-
-    // Pure Neumann data are valid here because phi is supplied analytically at
-    // cell centers; this study reconstructs its gradient and does not solve a PDE.
-    for (const cfd::BoundaryGroup &group : mesh.boundary_groups())
-    {
-        if (group.id != conditions.size())
-        {
-            throw std::runtime_error("Mesh boundary groups are not indexed contiguously.");
-        }
-
-        conditions.emplace_back(cfd::ScalarBoundaryConditionType::Neumann, outward_normal_derivative(group.name));
-    }
-
-    return {mesh.boundary_groups().size(), std::move(conditions)};
 }
 
 [[nodiscard]]
@@ -691,7 +495,7 @@ LevelResult run_level(const MeshFamily &family, const double target_mesh_size, c
         exact_gradient[cell_id] = analytical_gradient(mesh.cell_centers()[cell_id]);
     }
 
-    const cfd::ScalarBoundaryConditions boundary_conditions{make_boundary_conditions(mesh)};
+    const cfd::ScalarBoundaryConditions boundary_conditions{make_manufactured_neumann_boundary_conditions(mesh)};
     cfd::CellVectorField numerical_gradient{mesh.cell_count()};
     cfd::compute_least_squares_gradient(mesh, phi, boundary_conditions, numerical_gradient);
 
@@ -885,43 +689,6 @@ LevelResult run_level(const MeshFamily &family, const double target_mesh_size, c
     };
 }
 
-[[nodiscard]]
-std::optional<double> observed_order(const double coarse_error, const double fine_error, const double coarse_h,
-                                     const double fine_h, const std::string_view norm_name)
-{
-    if (!std::isfinite(coarse_error) || !std::isfinite(fine_error) || coarse_error < 0.0 || fine_error < 0.0)
-    {
-        throw std::runtime_error("Cannot compute " + std::string{norm_name} + " order from invalid error values.");
-    }
-
-    if (!std::isfinite(coarse_h) || !std::isfinite(fine_h) || !(coarse_h > 0.0) || !(fine_h > 0.0))
-    {
-        throw std::runtime_error("Cannot compute " + std::string{norm_name} + " order from invalid mesh lengths.");
-    }
-
-    // An exact zero makes the logarithmic error ratio undefined and is
-    // reported explicitly as `n/a` in the convergence table.
-    if (coarse_error == 0.0 || fine_error == 0.0)
-    {
-        return std::nullopt;
-    }
-
-    const double logarithmic_mesh_ratio{std::log(coarse_h / fine_h)};
-    if (!std::isfinite(logarithmic_mesh_ratio) || logarithmic_mesh_ratio == 0.0)
-    {
-        throw std::runtime_error("Cannot compute " + std::string{norm_name} +
-                                 " order because the mesh-length ratio is invalid.");
-    }
-
-    const double order{std::log(coarse_error / fine_error) / logarithmic_mesh_ratio};
-    if (!std::isfinite(order))
-    {
-        throw std::runtime_error("Computed " + std::string{norm_name} + " order is non-finite.");
-    }
-
-    return order;
-}
-
 void compute_observed_orders(std::vector<LevelResult> &results)
 {
     for (std::size_t level_index = 1; level_index < results.size(); ++level_index)
@@ -930,9 +697,9 @@ void compute_observed_orders(std::vector<LevelResult> &results)
         LevelResult &fine{results[level_index]};
 
         fine.l2_order = observed_order(coarse.l2_error, fine.l2_error, coarse.characteristic_mesh_length,
-                                       fine.characteristic_mesh_length, "L2");
+                                       fine.characteristic_mesh_length);
         fine.linf_order = observed_order(coarse.linf_error, fine.linf_error, coarse.characteristic_mesh_length,
-                                         fine.characteristic_mesh_length, "Linf");
+                                         fine.characteristic_mesh_length);
     }
 }
 
@@ -997,7 +764,9 @@ void print_quadrilateral_diagnostics(const std::vector<LevelResult> &results)
 
         const QuadLevelDiagnostics &diagnostics{*result.quad_diagnostics};
         const std::array categories{
-            std::pair{"all", ErrorStatistics{result.cell_count, result.l2_error, result.linf_error}},
+            std::pair{"all", ErrorStatistics{.cell_count = result.cell_count,
+                                             .area_weighted_rms_error = result.l2_error,
+                                             .linf_error = result.linf_error}},
             std::pair{"boundary", diagnostics.boundary_cells},
             std::pair{"interior", diagnostics.interior_cells},
             std::pair{"eligible", diagnostics.eligible_cells},

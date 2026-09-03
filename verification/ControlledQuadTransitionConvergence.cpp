@@ -10,6 +10,8 @@
 #include "cfd/meshing/RawMeshData.hpp"
 #include "cfd/numerics/LeastSquaresGradient.hpp"
 
+#include "support/GradientVerification.hpp"
+
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -29,8 +31,24 @@
 namespace
 {
 
-constexpr double domain_length{2.0};
-constexpr double domain_height{1.0};
+using cfd::verification::analytical_gradient;
+using cfd::verification::analytical_hessian;
+using cfd::verification::analytical_phi;
+using cfd::verification::apply;
+using cfd::verification::bottom_boundary_id;
+using cfd::verification::compute_opposite_pair_metrics;
+using cfd::verification::domain_height;
+using cfd::verification::domain_length;
+using cfd::verification::dot;
+using cfd::verification::ErrorAccumulator;
+using cfd::verification::ErrorStatistics;
+using cfd::verification::Hessian2;
+using cfd::verification::left_boundary_id;
+using cfd::verification::magnitude;
+using cfd::verification::make_manufactured_neumann_boundary_conditions;
+using cfd::verification::OppositePairMetrics;
+using cfd::verification::right_boundary_id;
+using cfd::verification::top_boundary_id;
 
 // Holding this dimensionless distortion fixed isolates refinement from a
 // changing mesh-shape perturbation.
@@ -42,11 +60,6 @@ constexpr double stencil_transition_tolerance{1.0e-12};
 
 constexpr double geometry_classification_tolerance{4096.0 * std::numeric_limits<double>::epsilon() * domain_length};
 constexpr double cell_quality_tolerance{4096.0 * std::numeric_limits<double>::epsilon()};
-
-constexpr cfd::BoundaryId left_boundary_id{0};
-constexpr cfd::BoundaryId right_boundary_id{1};
-constexpr cfd::BoundaryId bottom_boundary_id{2};
-constexpr cfd::BoundaryId top_boundary_id{3};
 
 struct GridLevel
 {
@@ -72,65 +85,10 @@ constexpr std::array mesh_variants{
     MeshVariant{"controlled_transition", "transition", true},
 };
 
-struct ErrorStatistics
-{
-    cfd::Index cell_count{};
-    double total_area{};
-    double area_fraction{};
-    double area_weighted_squared_error{};
-    double area_weighted_rms_error{};
-    double linf_error{};
-};
-
-struct ErrorAccumulator
-{
-    cfd::Index cell_count{};
-    double total_area{};
-    double area_weighted_squared_error{};
-    double linf_error{};
-
-    void add(const double cell_area, const double error_magnitude) noexcept
-    {
-        ++cell_count;
-        total_area += cell_area;
-        area_weighted_squared_error += cell_area * error_magnitude * error_magnitude;
-        linf_error = std::max(linf_error, error_magnitude);
-    }
-
-    [[nodiscard]]
-    ErrorStatistics finish(const double domain_area) const
-    {
-        if (!std::isfinite(total_area) || total_area < 0.0 || !std::isfinite(area_weighted_squared_error) ||
-            area_weighted_squared_error < 0.0 || !std::isfinite(linf_error) || !std::isfinite(domain_area) ||
-            !(domain_area > 0.0))
-        {
-            throw std::runtime_error("Controlled-transition verification produced invalid error statistics.");
-        }
-
-        if (cell_count == 0)
-        {
-            return {};
-        }
-
-        if (!(total_area > 0.0))
-        {
-            throw std::runtime_error("A non-empty controlled-transition category has zero area.");
-        }
-
-        return {
-            .cell_count = cell_count,
-            .total_area = total_area,
-            .area_fraction = total_area / domain_area,
-            .area_weighted_squared_error = area_weighted_squared_error,
-            .area_weighted_rms_error = std::sqrt(area_weighted_squared_error / total_area),
-            .linf_error = linf_error,
-        };
-    }
-};
-
 struct CategoryResult
 {
     ErrorStatistics errors;
+    double area_fraction{};
     std::optional<double> rms_order;
     std::optional<double> linf_order;
 };
@@ -208,16 +166,10 @@ struct LevelResult
     double boundary_squared_error_fraction{};
     double regular_interior_squared_error_fraction{};
     double transition_interior_squared_error_fraction{};
+    double transition_area_fraction{};
     double transition_area_over_delta{};
     double minimum_cell_quality{};
     double maximum_cell_quality{};
-};
-
-struct Hessian2
-{
-    double m00{};
-    double m01{};
-    double m11{};
 };
 
 struct SymmetricSystem2
@@ -226,13 +178,6 @@ struct SymmetricSystem2
     double m01{};
     double m11{};
     cfd::Vector2 right_hand_side{};
-};
-
-struct OppositePairMetrics
-{
-    bool valid{};
-    double angular_defect{};
-    double distance_imbalance{};
 };
 
 struct CellStencilDiagnostic
@@ -353,49 +298,6 @@ cfd::RawMeshData make_raw_mesh(const GridLevel &level, const bool shift_internal
     return raw_mesh;
 }
 
-[[nodiscard]]
-double analytical_phi(const cfd::Point2 &point) noexcept
-{
-    return std::sin(point.x) + point.y * point.y;
-}
-
-[[nodiscard]]
-cfd::Vector2 analytical_gradient(const cfd::Point2 &point) noexcept
-{
-    return {std::cos(point.x), 2.0 * point.y};
-}
-
-[[nodiscard]]
-Hessian2 analytical_hessian(const cfd::Point2 &point) noexcept
-{
-    return {
-        .m00 = -std::sin(point.x),
-        .m01 = 0.0,
-        .m11 = 2.0,
-    };
-}
-
-[[nodiscard]]
-double dot(const cfd::Vector2 &first, const cfd::Vector2 &second) noexcept
-{
-    return first.x * second.x + first.y * second.y;
-}
-
-[[nodiscard]]
-double magnitude(const cfd::Vector2 &vector) noexcept
-{
-    return std::hypot(vector.x, vector.y);
-}
-
-[[nodiscard]]
-cfd::Vector2 apply(const Hessian2 &matrix, const cfd::Vector2 &vector) noexcept
-{
-    return {
-        matrix.m00 * vector.x + matrix.m01 * vector.y,
-        matrix.m01 * vector.x + matrix.m11 * vector.y,
-    };
-}
-
 void add_leading_observation(SymmetricSystem2 &system, const cfd::Vector2 &direction,
                              const double leading_defect) noexcept
 {
@@ -420,63 +322,6 @@ cfd::Vector2 solve(const SymmetricSystem2 &system)
     return {
         (system.right_hand_side.x * system.m11 - system.right_hand_side.y * system.m01) / determinant,
         (system.m00 * system.right_hand_side.y - system.m01 * system.right_hand_side.x) / determinant,
-    };
-}
-
-struct PairMetrics
-{
-    double angular_defect{};
-    double distance_imbalance{};
-};
-
-[[nodiscard]]
-PairMetrics compute_pair_metrics(const cfd::Vector2 &first, const cfd::Vector2 &second)
-{
-    const double first_length{magnitude(first)};
-    const double second_length{magnitude(second)};
-    if (!std::isfinite(first_length) || !std::isfinite(second_length) || !(first_length > 0.0) ||
-        !(second_length > 0.0))
-    {
-        throw std::runtime_error("Controlled-transition diagnostic encountered an invalid displacement.");
-    }
-
-    const double cosine{std::clamp(dot(first, second) / (first_length * second_length), -1.0, 1.0)};
-    return {
-        .angular_defect = 0.5 * (1.0 + cosine),
-        .distance_imbalance = std::abs(first_length - second_length) / (first_length + second_length),
-    };
-}
-
-[[nodiscard]]
-OppositePairMetrics compute_opposite_pair_metrics(const std::array<cfd::Vector2, 4> &displacements)
-{
-    constexpr std::array<std::array<std::size_t, 4>, 3> partitions{
-        std::array<std::size_t, 4>{0, 1, 2, 3},
-        std::array<std::size_t, 4>{0, 2, 1, 3},
-        std::array<std::size_t, 4>{0, 3, 1, 2},
-    };
-
-    double best_angular_defect{std::numeric_limits<double>::infinity()};
-    double selected_distance_imbalance{};
-    for (const std::array<std::size_t, 4> &partition : partitions)
-    {
-        const PairMetrics first_pair{
-            compute_pair_metrics(displacements.at(partition.at(0)), displacements.at(partition.at(1)))};
-        const PairMetrics second_pair{
-            compute_pair_metrics(displacements.at(partition.at(2)), displacements.at(partition.at(3)))};
-        const double angular_defect{std::max(first_pair.angular_defect, second_pair.angular_defect)};
-
-        if (angular_defect < best_angular_defect)
-        {
-            best_angular_defect = angular_defect;
-            selected_distance_imbalance = std::max(first_pair.distance_imbalance, second_pair.distance_imbalance);
-        }
-    }
-
-    return {
-        .valid = true,
-        .angular_defect = best_angular_defect,
-        .distance_imbalance = selected_distance_imbalance,
     };
 }
 
@@ -648,47 +493,6 @@ CellStencilDiagnostic compute_cell_stencil_diagnostic(const cfd::Mesh &mesh, con
     };
 }
 
-[[nodiscard]]
-double outward_normal_derivative(const std::string_view boundary_name)
-{
-    if (boundary_name == "left")
-    {
-        return -1.0;
-    }
-    if (boundary_name == "right")
-    {
-        return std::cos(domain_length);
-    }
-    if (boundary_name == "bottom")
-    {
-        return 0.0;
-    }
-    if (boundary_name == "top")
-    {
-        return 2.0;
-    }
-    throw std::runtime_error("Unsupported controlled-transition boundary: " + std::string{boundary_name});
-}
-
-[[nodiscard]]
-cfd::ScalarBoundaryConditions make_boundary_conditions(const cfd::Mesh &mesh)
-{
-    std::vector<cfd::ScalarBoundaryCondition> conditions;
-    conditions.reserve(mesh.boundary_groups().size());
-
-    // Phi is supplied analytically, so pure Neumann data do not introduce a
-    // nullspace in this gradient-reconstruction experiment.
-    for (const cfd::BoundaryGroup &group : mesh.boundary_groups())
-    {
-        if (group.id != conditions.size())
-        {
-            throw std::runtime_error("Controlled mesh boundary groups are not indexed contiguously.");
-        }
-        conditions.emplace_back(cfd::ScalarBoundaryConditionType::Neumann, outward_normal_derivative(group.name));
-    }
-    return {mesh.boundary_groups().size(), std::move(conditions)};
-}
-
 void write_verification_vtu(const cfd::Mesh &mesh, const cfd::CellScalarField &phi,
                             const cfd::CellVectorField &numerical_gradient, const cfd::CellVectorField &exact_gradient,
                             const cfd::CellVectorField &gradient_error, const cfd::CellScalarField &error_magnitude,
@@ -751,7 +555,7 @@ LevelResult run_level(const MeshVariant &variant, const GridLevel &level, const 
         exact_gradient[cell_id] = analytical_gradient(mesh.cell_centers()[cell_id]);
     }
 
-    const cfd::ScalarBoundaryConditions boundary_conditions{make_boundary_conditions(mesh)};
+    const cfd::ScalarBoundaryConditions boundary_conditions{make_manufactured_neumann_boundary_conditions(mesh)};
     cfd::CellVectorField numerical_gradient{mesh.cell_count()};
     cfd::compute_least_squares_gradient(mesh, phi, boundary_conditions, numerical_gradient);
 
@@ -871,18 +675,17 @@ LevelResult run_level(const MeshVariant &variant, const GridLevel &level, const 
         throw std::runtime_error("Controlled-transition mesh does not preserve the rectangular domain area.");
     }
 
-    const ErrorStatistics all_statistics{all_errors.finish(measured_domain_area)};
-    const ErrorStatistics boundary_statistics{boundary_errors.finish(measured_domain_area)};
-    const ErrorStatistics regular_interior_statistics{regular_interior_errors.finish(measured_domain_area)};
-    const ErrorStatistics transition_interior_statistics{transition_interior_errors.finish(measured_domain_area)};
-    const ErrorStatistics shape_distorted_statistics{shape_distorted_errors.finish(measured_domain_area)};
-    const ErrorStatistics high_quality_transition_statistics{
-        high_quality_transition_errors.finish(measured_domain_area)};
-    const ErrorStatistics transition_stencil_statistics{transition_stencil_errors.finish(measured_domain_area)};
-    const ErrorStatistics regular_leading_statistics{regular_leading_errors.finish(measured_domain_area)};
-    const ErrorStatistics regular_remainder_statistics{regular_remainder_errors.finish(measured_domain_area)};
-    const ErrorStatistics transition_leading_statistics{transition_leading_errors.finish(measured_domain_area)};
-    const ErrorStatistics transition_remainder_statistics{transition_remainder_errors.finish(measured_domain_area)};
+    const ErrorStatistics all_statistics{all_errors.finish()};
+    const ErrorStatistics boundary_statistics{boundary_errors.finish()};
+    const ErrorStatistics regular_interior_statistics{regular_interior_errors.finish()};
+    const ErrorStatistics transition_interior_statistics{transition_interior_errors.finish()};
+    const ErrorStatistics shape_distorted_statistics{shape_distorted_errors.finish()};
+    const ErrorStatistics high_quality_transition_statistics{high_quality_transition_errors.finish()};
+    const ErrorStatistics transition_stencil_statistics{transition_stencil_errors.finish()};
+    const ErrorStatistics regular_leading_statistics{regular_leading_errors.finish()};
+    const ErrorStatistics regular_remainder_statistics{regular_remainder_errors.finish()};
+    const ErrorStatistics transition_leading_statistics{transition_leading_errors.finish()};
+    const ErrorStatistics transition_remainder_statistics{transition_remainder_errors.finish()};
 
     const double partition_area{boundary_statistics.total_area + regular_interior_statistics.total_area +
                                 transition_interior_statistics.total_area};
@@ -918,18 +721,29 @@ LevelResult run_level(const MeshVariant &variant, const GridLevel &level, const 
     return {
         .delta = level.delta,
         .cell_count = mesh.cell_count(),
-        .all_cells = {.errors = all_statistics, .rms_order = std::nullopt, .linf_order = std::nullopt},
-        .boundary_cells = {.errors = boundary_statistics, .rms_order = std::nullopt, .linf_order = std::nullopt},
+        .all_cells = {.errors = all_statistics,
+                      .area_fraction = all_statistics.total_area / measured_domain_area,
+                      .rms_order = std::nullopt,
+                      .linf_order = std::nullopt},
+        .boundary_cells = {.errors = boundary_statistics,
+                           .area_fraction = boundary_statistics.total_area / measured_domain_area,
+                           .rms_order = std::nullopt,
+                           .linf_order = std::nullopt},
         .regular_interior_cells = {.errors = regular_interior_statistics,
+                                   .area_fraction = regular_interior_statistics.total_area / measured_domain_area,
                                    .rms_order = std::nullopt,
                                    .linf_order = std::nullopt},
         .transition_interior_cells = {.errors = transition_interior_statistics,
+                                      .area_fraction = transition_interior_statistics.total_area / measured_domain_area,
                                       .rms_order = std::nullopt,
                                       .linf_order = std::nullopt},
         .shape_distorted_cells = {.errors = shape_distorted_statistics,
+                                  .area_fraction = shape_distorted_statistics.total_area / measured_domain_area,
                                   .rms_order = std::nullopt,
                                   .linf_order = std::nullopt},
         .high_quality_transition_cells = {.errors = high_quality_transition_statistics,
+                                          .area_fraction =
+                                              high_quality_transition_statistics.total_area / measured_domain_area,
                                           .rms_order = std::nullopt,
                                           .linf_order = std::nullopt},
         .transition_stencil_cells = transition_stencil_statistics,
@@ -957,6 +771,7 @@ LevelResult run_level(const MeshVariant &variant, const GridLevel &level, const 
         .regular_interior_squared_error_fraction = squared_error_fraction(regular_interior_statistics, all_statistics),
         .transition_interior_squared_error_fraction =
             squared_error_fraction(transition_interior_statistics, all_statistics),
+        .transition_area_fraction = transition_stencil_statistics.total_area / measured_domain_area,
         .transition_area_over_delta = transition_stencil_statistics.total_area / level.delta,
         .minimum_cell_quality = *minimum_quality,
         .maximum_cell_quality = *maximum_quality,
@@ -964,8 +779,8 @@ LevelResult run_level(const MeshVariant &variant, const GridLevel &level, const 
 }
 
 [[nodiscard]]
-std::optional<double> observed_order(const ErrorStatistics &coarse, const ErrorStatistics &fine,
-                                     const double coarse_delta, const double fine_delta, const bool use_linf)
+std::optional<double> category_observed_order(const ErrorStatistics &coarse, const ErrorStatistics &fine,
+                                              const double coarse_delta, const double fine_delta, const bool use_linf)
 {
     if (coarse.cell_count == 0 || fine.cell_count == 0)
     {
@@ -978,12 +793,7 @@ std::optional<double> observed_order(const ErrorStatistics &coarse, const ErrorS
     {
         return std::nullopt;
     }
-    const double order{std::log(coarse_error / fine_error) / std::log(coarse_delta / fine_delta)};
-    if (!std::isfinite(order))
-    {
-        throw std::runtime_error("Controlled-transition convergence order is non-finite.");
-    }
-    return order;
+    return cfd::verification::observed_order(coarse_error, fine_error, coarse_delta, fine_delta);
 }
 
 void compute_orders(std::vector<LevelResult> &results)
@@ -996,9 +806,9 @@ void compute_orders(std::vector<LevelResult> &results)
         const auto update_category = [&coarse, &fine](CategoryResult &fine_category,
                                                       const CategoryResult &coarse_category) {
             fine_category.rms_order =
-                observed_order(coarse_category.errors, fine_category.errors, coarse.delta, fine.delta, false);
+                category_observed_order(coarse_category.errors, fine_category.errors, coarse.delta, fine.delta, false);
             fine_category.linf_order =
-                observed_order(coarse_category.errors, fine_category.errors, coarse.delta, fine.delta, true);
+                category_observed_order(coarse_category.errors, fine_category.errors, coarse.delta, fine.delta, true);
         };
         update_category(fine.all_cells, coarse.all_cells);
         update_category(fine.boundary_cells, coarse.boundary_cells);
@@ -1009,11 +819,11 @@ void compute_orders(std::vector<LevelResult> &results)
 
         const auto update_taylor = [&coarse, &fine](TaylorResult &fine_taylor, const TaylorResult &coarse_taylor) {
             fine_taylor.actual_rms_order =
-                observed_order(coarse_taylor.actual, fine_taylor.actual, coarse.delta, fine.delta, false);
+                category_observed_order(coarse_taylor.actual, fine_taylor.actual, coarse.delta, fine.delta, false);
             fine_taylor.leading_rms_order =
-                observed_order(coarse_taylor.leading, fine_taylor.leading, coarse.delta, fine.delta, false);
-            fine_taylor.remainder_rms_order =
-                observed_order(coarse_taylor.remainder, fine_taylor.remainder, coarse.delta, fine.delta, false);
+                category_observed_order(coarse_taylor.leading, fine_taylor.leading, coarse.delta, fine.delta, false);
+            fine_taylor.remainder_rms_order = category_observed_order(coarse_taylor.remainder, fine_taylor.remainder,
+                                                                      coarse.delta, fine.delta, false);
         };
         update_taylor(fine.regular_interior_taylor, coarse.regular_interior_taylor);
         update_taylor(fine.transition_interior_taylor, coarse.transition_interior_taylor);
@@ -1086,7 +896,7 @@ void print_category_table(const MeshVariant &variant, const std::vector<LevelRes
             std::cout << std::fixed << std::setprecision(4) << std::setw(10) << result.delta << std::setw(26) << name
                       << std::setw(10) << errors.cell_count;
             print_error_value(errors, errors.total_area, 16);
-            print_error_value(errors, errors.area_fraction, 14);
+            print_error_value(errors, category->area_fraction, 14);
             print_error_value(errors, errors.area_weighted_rms_error, 16);
             print_order(category->rms_order, level_index == 0, 9);
             print_error_value(errors, errors.linf_error, 16);
@@ -1117,8 +927,7 @@ void print_transition_scaling_table(const std::vector<LevelResult> &results)
         std::cout << std::fixed << std::setprecision(4) << std::setw(12) << result.delta << std::setw(18)
                   << result.transition_stencil_cells.cell_count << std::scientific << std::setprecision(8)
                   << std::setw(20) << result.transition_stencil_cells.total_area << std::setw(22)
-                  << result.transition_stencil_cells.area_fraction << std::setw(20) << result.transition_area_over_delta
-                  << '\n';
+                  << result.transition_area_fraction << std::setw(20) << result.transition_area_over_delta << '\n';
     }
 }
 
