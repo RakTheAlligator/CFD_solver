@@ -11,9 +11,11 @@
 #include <array>
 #include <filesystem>
 #include <fstream>
+#include <random>
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <system_error>
 #include <utility>
 
 namespace
@@ -27,6 +29,64 @@ using cfd::test::require;
 using cfd::test::require_contains;
 using cfd::test::require_throws;
 
+class TemporaryDirectory
+{
+  public:
+    TemporaryDirectory()
+    {
+        constexpr std::size_t maximum_attempt_count{64};
+
+        const std::filesystem::path temporary_root{std::filesystem::temp_directory_path()};
+        std::random_device random_source;
+        std::uniform_int_distribution<unsigned long long> token_distribution;
+        std::error_code last_error;
+
+        for (std::size_t attempt = 0; attempt < maximum_attempt_count; ++attempt)
+        {
+            const std::filesystem::path candidate{
+                temporary_root / ("cfd_vtk_writer_tests_" + std::to_string(token_distribution(random_source)))};
+            std::error_code creation_error;
+
+            // create_directory() is the atomic uniqueness check; the random
+            // token only makes collisions unlikely before this check.
+            if (std::filesystem::create_directory(candidate, creation_error))
+            {
+                path_ = candidate;
+                return;
+            }
+
+            last_error = creation_error;
+        }
+
+        std::string message{"Unable to create a unique temporary directory for VtkWriter tests."};
+        if (last_error)
+        {
+            message += " Last filesystem error: " + last_error.message();
+        }
+        throw std::runtime_error(message);
+    }
+
+    ~TemporaryDirectory() noexcept
+    {
+        std::error_code cleanup_error;
+        std::filesystem::remove_all(path_, cleanup_error);
+    }
+
+    TemporaryDirectory(const TemporaryDirectory &) = delete;
+    TemporaryDirectory &operator=(const TemporaryDirectory &) = delete;
+    TemporaryDirectory(TemporaryDirectory &&) = delete;
+    TemporaryDirectory &operator=(TemporaryDirectory &&) = delete;
+
+    [[nodiscard]]
+    const std::filesystem::path &path() const noexcept
+    {
+        return path_;
+    }
+
+  private:
+    std::filesystem::path path_;
+};
+
 [[nodiscard]]
 std::string export_mesh_and_read(cfd::RawMeshData raw_mesh, const std::string_view file_name,
                                  const cfd::VtkCellData *const cell_data = nullptr)
@@ -34,7 +94,8 @@ std::string export_mesh_and_read(cfd::RawMeshData raw_mesh, const std::string_vi
     cfd::MeshBuildResult build_result{cfd::build_mesh(std::move(raw_mesh))};
     const cfd::Mesh &mesh{build_result.mesh};
 
-    const std::filesystem::path file_path{std::filesystem::temp_directory_path() / file_name};
+    const TemporaryDirectory temporary_directory;
+    const std::filesystem::path file_path{temporary_directory.path() / file_name};
 
     // Prepopulate the destination to verify that write_vtu() replaces existing
     // file content rather than appending to it.
@@ -60,8 +121,6 @@ std::string export_mesh_and_read(cfd::RawMeshData raw_mesh, const std::string_vi
     require(file_content.find("stale test content") == std::string::npos,
             "VTU writer did not replace existing file content.");
 
-    std::filesystem::remove(file_path);
-
     return file_content;
 }
 
@@ -70,9 +129,8 @@ void require_cell_data_rejected(const cfd::VtkCellData &cell_data, const std::st
 {
     cfd::MeshBuildResult build_result{cfd::build_mesh(make_two_triangle_raw_mesh())};
     const cfd::Mesh &mesh{build_result.mesh};
-    const std::filesystem::path file_path{std::filesystem::temp_directory_path() / file_name};
-
-    std::filesystem::remove(file_path);
+    const TemporaryDirectory temporary_directory;
+    const std::filesystem::path file_path{temporary_directory.path() / file_name};
 
     require_throws<std::invalid_argument>(
         [&mesh, &file_path, &cell_data]() { cfd::write_vtu(mesh, file_path, cell_data); }, message);
