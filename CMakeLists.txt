@@ -76,6 +76,7 @@ add_library(
     src/mesh_build/TopologyValidation.cpp
 
     src/numerics/LeastSquaresGradient.cpp
+    src/numerics/ScalarDiffusionOperator.cpp
 )
 
 target_include_directories(
@@ -162,6 +163,19 @@ if(BUILD_VERIFICATION)
     )
 
     cfd_enable_warnings(cfd_controlled_quad_transition_convergence)
+
+    add_executable(
+        cfd_scalar_diffusion_operator_convergence
+        verification/ScalarDiffusionOperatorConvergence.cpp
+    )
+
+    target_link_libraries(
+        cfd_scalar_diffusion_operator_convergence
+        PRIVATE
+            cfd_core
+    )
+
+    cfd_enable_warnings(cfd_scalar_diffusion_operator_convergence)
 endif()
 
 # -----------------------------------------------------------------------------
@@ -219,6 +233,12 @@ if(BUILD_TESTING)
         cfd_least_squares_gradient_tests
         least_squares_gradient
         tests/LeastSquaresGradientTests.cpp
+    )
+
+    cfd_add_test(
+        cfd_scalar_diffusion_operator_tests
+        scalar_diffusion_operator
+        tests/ScalarDiffusionOperatorTests.cpp
     )
 
     cfd_add_test(
