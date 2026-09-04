@@ -3,6 +3,7 @@
 #include "cfd/field/CellScalarField.hpp"
 #include "cfd/field/CellVectorField.hpp"
 #include "cfd/field/ScalarBoundaryConditions.hpp"
+#include "cfd/linear_algebra/ScalarLinearSystem.hpp"
 #include "cfd/math/Point2.hpp"
 #include "cfd/math/Vector2.hpp"
 #include "cfd/mesh/Boundary.hpp"
@@ -383,6 +384,164 @@ void test_neumann_flux_sign_magnitude_and_zero()
     require_near(flux_balance[0], 0.0, test_tolerance, "Homogeneous Neumann data did not produce exactly zero flux.");
 }
 
+void test_assembly_internal_diffusion_matrix()
+{
+    cfd::MeshBuildResult build_result{cfd::build_mesh(make_two_cell_rectangle_raw_mesh())};
+    const cfd::Mesh &mesh{build_result.mesh};
+    const cfd::ScalarDiffusionOperator diffusion{mesh, 2.0};
+    const cfd::ScalarBoundaryConditions boundary_conditions{make_uniform_neumann_conditions(1)};
+    cfd::ScalarLinearSystem system{mesh};
+
+    diffusion.add_matrix_contributions(boundary_conditions, system);
+
+    require_near(system.diagonal()[0], 2.0, test_tolerance, "Internal diffusion owner diagonal is incorrect.");
+    require_near(system.diagonal()[1], 2.0, test_tolerance, "Internal diffusion neighbor diagonal is incorrect.");
+
+    cfd::Index internal_face_count{};
+    for (cfd::Index face_id = 0; face_id < mesh.face_count(); ++face_id)
+    {
+        if (mesh.face_adjacencies()[face_id].is_boundary())
+        {
+            require_near(system.owner_neighbor_coefficients()[face_id], 0.0, 0.0,
+                         "A boundary owner-neighbor coefficient was modified.");
+            require_near(system.neighbor_owner_coefficients()[face_id], 0.0, 0.0,
+                         "A boundary neighbor-owner coefficient was modified.");
+            continue;
+        }
+
+        ++internal_face_count;
+        require_near(system.owner_neighbor_coefficients()[face_id], -2.0, test_tolerance,
+                     "Internal owner-neighbor diffusion coefficient is incorrect.");
+        require_near(system.neighbor_owner_coefficients()[face_id], -2.0, test_tolerance,
+                     "Internal neighbor-owner diffusion coefficient is incorrect.");
+    }
+    require(internal_face_count == 1, "The internal diffusion fixture must contain exactly one internal face.");
+
+    const std::vector<double> constant_field(mesh.cell_count(), 3.5);
+    std::vector<double> matrix_product(mesh.cell_count());
+    system.apply_matrix(constant_field, matrix_product);
+    require_near(matrix_product[0], 0.0, test_tolerance,
+                 "A constant field is not in the homogeneous-Neumann matrix nullspace.");
+    require_near(matrix_product[1], 0.0, test_tolerance,
+                 "A constant field is not in the homogeneous-Neumann matrix nullspace.");
+}
+
+void test_assembly_boundary_contributions()
+{
+    cfd::MeshBuildResult build_result{cfd::build_mesh(make_four_boundary_rectangle_raw_mesh())};
+    const cfd::Mesh &mesh{build_result.mesh};
+    const cfd::ScalarDiffusionOperator diffusion{mesh, 2.0};
+    std::vector<cfd::ScalarBoundaryCondition> conditions{
+        {cfd::ScalarBoundaryConditionType::Neumann, 0.0},
+        {cfd::ScalarBoundaryConditionType::Dirichlet, 1.0},
+        {cfd::ScalarBoundaryConditionType::Neumann, 0.0},
+        {cfd::ScalarBoundaryConditionType::Neumann, 0.0},
+    };
+    const cfd::ScalarBoundaryConditions boundary_conditions{4, std::move(conditions)};
+    cfd::ScalarLinearSystem system{mesh};
+
+    diffusion.add_matrix_contributions(boundary_conditions, system);
+    diffusion.add_boundary_rhs(boundary_conditions, system.rhs());
+
+    require_near(system.diagonal()[0], 4.0, test_tolerance,
+                 "Dirichlet assembly added an incorrect diagonal coefficient.");
+    require_near(system.rhs()[0], 4.0, test_tolerance, "Dirichlet assembly added an incorrect RHS contribution.");
+    for (cfd::Index face_id = 0; face_id < mesh.face_count(); ++face_id)
+    {
+        require_near(system.owner_neighbor_coefficients()[face_id], 0.0, 0.0,
+                     "Single-cell Dirichlet assembly modified an off-diagonal coefficient.");
+        require_near(system.neighbor_owner_coefficients()[face_id], 0.0, 0.0,
+                     "Single-cell Dirichlet assembly modified an off-diagonal coefficient.");
+    }
+
+    cfd::MeshBuildResult wide_build_result{cfd::build_mesh(make_four_boundary_rectangle_raw_mesh(2.0))};
+    const cfd::Mesh &wide_mesh{wide_build_result.mesh};
+    const cfd::ScalarDiffusionOperator wide_diffusion{wide_mesh, 3.0};
+    std::vector<cfd::ScalarBoundaryCondition> wide_conditions{
+        {cfd::ScalarBoundaryConditionType::Neumann, 0.0},
+        {cfd::ScalarBoundaryConditionType::Neumann, 0.0},
+        {cfd::ScalarBoundaryConditionType::Neumann, 0.0},
+        {cfd::ScalarBoundaryConditionType::Neumann, 2.0},
+    };
+    const cfd::ScalarBoundaryConditions wide_boundary_conditions{4, std::move(wide_conditions)};
+    cfd::ScalarLinearSystem wide_system{wide_mesh};
+
+    wide_diffusion.add_matrix_contributions(wide_boundary_conditions, wide_system);
+    wide_diffusion.add_boundary_rhs(wide_boundary_conditions, wide_system.rhs());
+
+    require_near(wide_system.diagonal()[0], 0.0, 0.0, "Neumann assembly modified the matrix diagonal.");
+    require_near(wide_system.rhs()[0], 12.0, test_tolerance,
+                 "Neumann assembly did not include diffusivity, derivative, and face length.");
+}
+
+void test_assembly_non_orthogonal_correction()
+{
+    cfd::MeshBuildResult sheared_build_result{cfd::build_mesh(make_two_cell_sheared_raw_mesh())};
+    const cfd::Mesh &sheared_mesh{sheared_build_result.mesh};
+    const cfd::ScalarDiffusionOperator sheared_diffusion{sheared_mesh, 1.0};
+    const cfd::ScalarBoundaryConditions sheared_boundary_conditions{
+        make_uniform_neumann_conditions(sheared_mesh.boundary_groups().size())};
+    const cfd::CellVectorField sheared_gradient{sheared_mesh.cell_count(), {0.0, 1.0}};
+    std::vector<double> sheared_rhs(sheared_mesh.cell_count());
+
+    sheared_diffusion.add_non_orthogonal_rhs(sheared_boundary_conditions, sheared_gradient, sheared_rhs);
+
+    require(std::abs(sheared_rhs[0]) > test_tolerance,
+            "The sheared internal face produced a trivial correction contribution.");
+    require_near(sheared_rhs[0] + sheared_rhs[1], 0.0, test_tolerance,
+                 "Internal non-orthogonal RHS contributions are not equal and opposite.");
+
+    cfd::MeshBuildResult orthogonal_build_result{cfd::build_mesh(make_two_cell_rectangle_raw_mesh())};
+    const cfd::Mesh &orthogonal_mesh{orthogonal_build_result.mesh};
+    const cfd::ScalarDiffusionOperator orthogonal_diffusion{orthogonal_mesh, 1.0};
+    const cfd::ScalarBoundaryConditions orthogonal_boundary_conditions{make_uniform_neumann_conditions(1)};
+    const cfd::CellVectorField orthogonal_gradient{orthogonal_mesh.cell_count(), {7.0, -11.0}};
+    std::vector<double> orthogonal_rhs(orthogonal_mesh.cell_count());
+
+    orthogonal_diffusion.add_non_orthogonal_rhs(orthogonal_boundary_conditions, orthogonal_gradient, orthogonal_rhs);
+
+    require_near(orthogonal_rhs[0], 0.0, test_tolerance,
+                 "An orthogonal owner cell received a nonzero correction contribution.");
+    require_near(orthogonal_rhs[1], 0.0, test_tolerance,
+                 "An orthogonal neighbor cell received a nonzero correction contribution.");
+}
+
+void test_assembly_matches_flux_balance()
+{
+    cfd::MeshBuildResult build_result{cfd::build_mesh(make_two_cell_sheared_raw_mesh())};
+    const cfd::Mesh &mesh{build_result.mesh};
+    const cfd::ScalarDiffusionOperator diffusion{mesh, 0.7};
+    cfd::CellScalarField field{mesh.cell_count()};
+    field[0] = -0.4;
+    field[1] = 2.3;
+    cfd::CellVectorField gradient{mesh.cell_count()};
+    gradient[0] = {0.8, -2.1};
+    gradient[1] = {-1.3, 4.2};
+    std::vector<cfd::ScalarBoundaryCondition> conditions{
+        {cfd::ScalarBoundaryConditionType::Dirichlet, 0.7},  {cfd::ScalarBoundaryConditionType::Neumann, -0.4},
+        {cfd::ScalarBoundaryConditionType::Dirichlet, 1.1},  {cfd::ScalarBoundaryConditionType::Neumann, 0.8},
+        {cfd::ScalarBoundaryConditionType::Dirichlet, -0.2}, {cfd::ScalarBoundaryConditionType::Neumann, 0.25},
+    };
+    const cfd::ScalarBoundaryConditions boundary_conditions{mesh.boundary_groups().size(), std::move(conditions)};
+    cfd::CellScalarField flux_balance{mesh.cell_count()};
+    cfd::ScalarLinearSystem system{mesh};
+
+    diffusion.compute_flux_balance(field, boundary_conditions, gradient, flux_balance);
+    diffusion.add_matrix_contributions(boundary_conditions, system);
+    diffusion.add_boundary_rhs(boundary_conditions, system.rhs());
+    diffusion.add_non_orthogonal_rhs(boundary_conditions, gradient, system.rhs());
+    std::vector<double> matrix_product(mesh.cell_count());
+    system.apply_matrix(field.values(), matrix_product);
+
+    // With outward diffusion balance L_h(phi), explicit boundary and cross
+    // terms move to the right-hand side: L_h(phi) = A*phi - b_boundary - b_cross.
+    for (cfd::Index cell_id = 0; cell_id < mesh.cell_count(); ++cell_id)
+    {
+        require_near(matrix_product[cell_id] - system.rhs()[cell_id], flux_balance[cell_id], 1.0e-12,
+                     "Assembled matrix and RHS do not reconstruct the diffusion flux balance.");
+    }
+}
+
 void test_rejects_cardinality_mismatches_and_aliasing()
 {
     cfd::MeshBuildResult build_result{cfd::build_mesh(make_two_cell_rectangle_raw_mesh())};
@@ -426,6 +585,29 @@ void test_rejects_cardinality_mismatches_and_aliasing()
             diffusion.compute_flux_balance(field, boundary_conditions, gradient, field);
         },
         "Scalar diffusion accepted an output alias of its input field.");
+
+    require_throws<std::invalid_argument>(
+        [&diffusion, &boundary_conditions]() {
+            cfd::MeshBuildResult other_build_result{cfd::build_mesh(make_two_cell_rectangle_raw_mesh())};
+            cfd::ScalarLinearSystem other_system{other_build_result.mesh};
+            diffusion.add_matrix_contributions(boundary_conditions, other_system);
+        },
+        "Scalar diffusion accepted a system referencing a different Mesh instance.");
+
+    require_throws<std::invalid_argument>(
+        [&diffusion, &boundary_conditions, &mesh]() {
+            std::vector<double> wrong_rhs(mesh.cell_count() + 1);
+            diffusion.add_boundary_rhs(boundary_conditions, wrong_rhs);
+        },
+        "Scalar diffusion accepted a boundary RHS with incorrect cardinality.");
+
+    require_throws<std::invalid_argument>(
+        [&diffusion, &boundary_conditions, &mesh]() {
+            const cfd::CellVectorField wrong_gradient{mesh.cell_count() + 1};
+            std::vector<double> rhs(mesh.cell_count());
+            diffusion.add_non_orthogonal_rhs(boundary_conditions, wrong_gradient, rhs);
+        },
+        "Scalar diffusion accepted a correction gradient with incorrect cardinality.");
 }
 
 void test_does_not_mutate_inputs()
@@ -472,6 +654,12 @@ int main()
                                          test_linear_exactness_on_sheared_quadrilaterals);
     failure_count += cfd::test::run_test("scalar diffusion Dirichlet sign", test_dirichlet_flux_sign_and_magnitude);
     failure_count += cfd::test::run_test("scalar diffusion Neumann sign", test_neumann_flux_sign_magnitude_and_zero);
+    failure_count +=
+        cfd::test::run_test("scalar diffusion internal matrix assembly", test_assembly_internal_diffusion_matrix);
+    failure_count += cfd::test::run_test("scalar diffusion boundary assembly", test_assembly_boundary_contributions);
+    failure_count +=
+        cfd::test::run_test("scalar diffusion non-orthogonal RHS assembly", test_assembly_non_orthogonal_correction);
+    failure_count += cfd::test::run_test("scalar diffusion assembly equivalence", test_assembly_matches_flux_balance);
     failure_count += cfd::test::run_test("scalar diffusion cardinality and alias validation",
                                          test_rejects_cardinality_mismatches_and_aliasing);
     failure_count += cfd::test::run_test("scalar diffusion input immutability", test_does_not_mutate_inputs);

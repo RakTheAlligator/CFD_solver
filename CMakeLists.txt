@@ -13,6 +13,12 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 # -----------------------------------------------------------------------------
+# Eigen
+# -----------------------------------------------------------------------------
+
+find_package(Eigen3 3.4 REQUIRED NO_MODULE)
+
+# -----------------------------------------------------------------------------
 # Gmsh
 # -----------------------------------------------------------------------------
 
@@ -64,6 +70,9 @@ add_library(
     src/io/MeshReport.cpp
     src/io/VtkWriter.cpp
 
+    src/linear_algebra/EigenConjugateGradientSolver.cpp
+    src/linear_algebra/ScalarLinearSystem.cpp
+
     src/mesh/MeshBuilder.cpp
     src/mesh/MeshStatistics.cpp
 
@@ -91,6 +100,9 @@ target_include_directories(
 
 target_link_libraries(
     cfd_core
+    PUBLIC
+        Eigen3::Eigen
+
     PRIVATE
         Gmsh::Gmsh
 )
@@ -176,6 +188,32 @@ if(BUILD_VERIFICATION)
     )
 
     cfd_enable_warnings(cfd_scalar_diffusion_operator_convergence)
+
+    add_executable(
+        cfd_scalar_diffusion_solution_convergence
+        verification/ScalarDiffusionSolutionConvergence.cpp
+    )
+
+    target_link_libraries(
+        cfd_scalar_diffusion_solution_convergence
+        PRIVATE
+            cfd_core
+    )
+
+    cfd_enable_warnings(cfd_scalar_diffusion_solution_convergence)
+
+    add_executable(
+        cfd_unstructured_scalar_diffusion_convergence
+        verification/UnstructuredScalarDiffusionConvergence.cpp
+    )
+
+    target_link_libraries(
+        cfd_unstructured_scalar_diffusion_convergence
+        PRIVATE
+            cfd_core
+    )
+
+    cfd_enable_warnings(cfd_unstructured_scalar_diffusion_convergence)
 endif()
 
 # -----------------------------------------------------------------------------
@@ -239,6 +277,18 @@ if(BUILD_TESTING)
         cfd_scalar_diffusion_operator_tests
         scalar_diffusion_operator
         tests/ScalarDiffusionOperatorTests.cpp
+    )
+
+    cfd_add_test(
+        cfd_scalar_linear_system_tests
+        scalar_linear_system
+        tests/ScalarLinearSystemTests.cpp
+    )
+
+    cfd_add_test(
+        cfd_eigen_conjugate_gradient_solver_tests
+        eigen_conjugate_gradient_solver
+        tests/EigenConjugateGradientSolverTests.cpp
     )
 
     cfd_add_test(

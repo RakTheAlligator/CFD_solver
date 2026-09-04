@@ -3,6 +3,7 @@
 #include "cfd/field/CellScalarField.hpp"
 #include "cfd/field/CellVectorField.hpp"
 #include "cfd/field/ScalarBoundaryConditions.hpp"
+#include "cfd/linear_algebra/ScalarLinearSystem.hpp"
 #include "cfd/math/Point2.hpp"
 #include "cfd/math/Vector2.hpp"
 #include "cfd/mesh/Face.hpp"
@@ -33,6 +34,22 @@ void throw_unusable_face_geometry(const Index face_id, const std::string &reason
 double dot(const Vector2 &first, const Vector2 &second) noexcept
 {
     return first.x * second.x + first.y * second.y;
+}
+
+void validate_boundary_condition_count(const Mesh &mesh, const ScalarBoundaryConditions &boundary_conditions)
+{
+    if (boundary_conditions.size() != mesh.boundary_groups().size())
+    {
+        throw std::invalid_argument("Scalar diffusion boundary-condition count must match the mesh boundary count.");
+    }
+}
+
+void validate_rhs_size(const Mesh &mesh, const std::span<double> rhs)
+{
+    if (rhs.size() != mesh.cell_count())
+    {
+        throw std::invalid_argument("Scalar diffusion RHS size must match the mesh cell count.");
+    }
 }
 
 } // namespace
@@ -218,6 +235,113 @@ void ScalarDiffusionOperator::compute_flux_balance(const CellScalarField &field,
         }
 
         balance_values[owner_id] += flux;
+    }
+}
+
+void ScalarDiffusionOperator::add_matrix_contributions(const ScalarBoundaryConditions &boundary_conditions,
+                                                       ScalarLinearSystem &system) const
+{
+    validate_boundary_condition_count(*mesh_, boundary_conditions);
+    if (&system.mesh() != mesh_ || system.cell_count() != mesh_->cell_count() ||
+        system.face_count() != mesh_->face_count())
+    {
+        throw std::invalid_argument("Scalar diffusion system must reference the operator Mesh.");
+    }
+
+    auto diagonal{system.diagonal()};
+    auto owner_neighbor_coefficients{system.owner_neighbor_coefficients()};
+    auto neighbor_owner_coefficients{system.neighbor_owner_coefficients()};
+    const auto face_adjacencies{mesh_->face_adjacencies()};
+    const auto face_boundary_ids{mesh_->face_boundary_ids()};
+
+    for (Index face_id = 0; face_id < mesh_->face_count(); ++face_id)
+    {
+        const FaceAdjacency &adjacency{face_adjacencies[face_id]};
+        const double coefficient{face_data_[face_id].primary_coefficient};
+        if (!adjacency.is_boundary())
+        {
+            diagonal[adjacency.owner] += coefficient;
+            diagonal[adjacency.neighbor] += coefficient;
+            owner_neighbor_coefficients[face_id] -= coefficient;
+            neighbor_owner_coefficients[face_id] -= coefficient;
+            continue;
+        }
+
+        if (boundary_conditions[face_boundary_ids[face_id]].type == ScalarBoundaryConditionType::Dirichlet)
+        {
+            diagonal[adjacency.owner] += coefficient;
+        }
+    }
+}
+
+void ScalarDiffusionOperator::add_boundary_rhs(const ScalarBoundaryConditions &boundary_conditions,
+                                               const std::span<double> rhs) const
+{
+    validate_boundary_condition_count(*mesh_, boundary_conditions);
+    validate_rhs_size(*mesh_, rhs);
+
+    const auto face_adjacencies{mesh_->face_adjacencies()};
+    const auto face_boundary_ids{mesh_->face_boundary_ids()};
+    const auto face_lengths{mesh_->face_lengths()};
+    for (Index face_id = 0; face_id < mesh_->face_count(); ++face_id)
+    {
+        const FaceAdjacency &adjacency{face_adjacencies[face_id]};
+        if (!adjacency.is_boundary())
+        {
+            continue;
+        }
+
+        const ScalarBoundaryCondition &condition{boundary_conditions[face_boundary_ids[face_id]]};
+        switch (condition.type)
+        {
+        case ScalarBoundaryConditionType::Dirichlet:
+            rhs[adjacency.owner] += face_data_[face_id].primary_coefficient * condition.value;
+            break;
+
+        case ScalarBoundaryConditionType::Neumann:
+            rhs[adjacency.owner] += diffusivity_ * condition.value * face_lengths[face_id];
+            break;
+        }
+    }
+}
+
+void ScalarDiffusionOperator::add_non_orthogonal_rhs(const ScalarBoundaryConditions &boundary_conditions,
+                                                     const CellVectorField &gradient, const std::span<double> rhs) const
+{
+    validate_boundary_condition_count(*mesh_, boundary_conditions);
+    if (gradient.size() != mesh_->cell_count())
+    {
+        throw std::invalid_argument("Scalar diffusion gradient size must match the mesh cell count.");
+    }
+    validate_rhs_size(*mesh_, rhs);
+
+    const auto face_adjacencies{mesh_->face_adjacencies()};
+    const auto face_boundary_ids{mesh_->face_boundary_ids()};
+    const auto gradients{gradient.values()};
+    for (Index face_id = 0; face_id < mesh_->face_count(); ++face_id)
+    {
+        const FaceAdjacency &adjacency{face_adjacencies[face_id]};
+        const FaceData &data{face_data_[face_id]};
+        if (!adjacency.is_boundary())
+        {
+            const Vector2 &owner_gradient{gradients[adjacency.owner]};
+            const Vector2 &neighbor_gradient{gradients[adjacency.neighbor]};
+            const double lambda{data.neighbor_gradient_weight};
+            const Vector2 face_gradient{
+                owner_gradient.x + lambda * (neighbor_gradient.x - owner_gradient.x),
+                owner_gradient.y + lambda * (neighbor_gradient.y - owner_gradient.y),
+            };
+            const double correction_flux{dot(face_gradient, data.correction_flux_vector)};
+            rhs[adjacency.owner] -= correction_flux;
+            rhs[adjacency.neighbor] += correction_flux;
+            continue;
+        }
+
+        if (boundary_conditions[face_boundary_ids[face_id]].type == ScalarBoundaryConditionType::Dirichlet)
+        {
+            const double correction_flux{dot(gradients[adjacency.owner], data.correction_flux_vector)};
+            rhs[adjacency.owner] -= correction_flux;
+        }
     }
 }
 

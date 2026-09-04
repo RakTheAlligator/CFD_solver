@@ -290,12 +290,13 @@ Required:
 
 * C++20 compiler
 * CMake >= 3.20
+* Eigen 3.4 development headers
 * Gmsh development library
 
 On Ubuntu:
 
 ```bash
-sudo apt install gmsh libgmsh-dev
+sudo apt install gmsh libeigen3-dev libgmsh-dev
 ```
 
 Optional development and visualization tools:

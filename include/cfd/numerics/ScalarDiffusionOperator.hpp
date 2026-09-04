@@ -2,6 +2,7 @@
 
 #include "cfd/math/Vector2.hpp"
 
+#include <span>
 #include <vector>
 
 namespace cfd
@@ -11,6 +12,7 @@ class CellScalarField;
 class CellVectorField;
 class Mesh;
 class ScalarBoundaryConditions;
+class ScalarLinearSystem;
 
 /// Constant-isotropic finite-volume diffusion operator in two dimensions.
 ///
@@ -64,6 +66,32 @@ class ScalarDiffusionOperator
     ///         the Mesh or if `field` and `flux_balance` are the same object.
     void compute_flux_balance(const CellScalarField &field, const ScalarBoundaryConditions &boundary_conditions,
                               const CellVectorField &gradient, CellScalarField &flux_balance) const;
+
+    /// Adds the two-point diffusion coefficients to an existing system matrix.
+    ///
+    /// Cross-diffusion is intentionally excluded and treated by
+    /// `add_non_orthogonal_rhs()`.
+    ///
+    /// @throws std::invalid_argument If the boundary-condition cardinality is
+    ///         incompatible or `system` does not reference this operator's
+    ///         exact Mesh instance with matching cardinalities.
+    void add_matrix_contributions(const ScalarBoundaryConditions &boundary_conditions,
+                                  ScalarLinearSystem &system) const;
+
+    /// Adds fixed Dirichlet and Neumann boundary contributions to `rhs`.
+    ///
+    /// This operation does not clear `rhs` and does not add a volumetric source.
+    ///
+    /// @throws std::invalid_argument If a cardinality is incompatible.
+    void add_boundary_rhs(const ScalarBoundaryConditions &boundary_conditions, std::span<double> rhs) const;
+
+    /// Adds explicit non-orthogonal correction contributions to `rhs`.
+    ///
+    /// This operation does not clear `rhs`.
+    ///
+    /// @throws std::invalid_argument If a cardinality is incompatible.
+    void add_non_orthogonal_rhs(const ScalarBoundaryConditions &boundary_conditions, const CellVectorField &gradient,
+                                std::span<double> rhs) const;
 
   private:
     struct FaceData
