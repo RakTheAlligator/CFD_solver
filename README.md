@@ -197,7 +197,17 @@ The accumulated lengths of the physical boundaries are also checked against the 
 
 ## Reference case
 
-The demonstration case uses:
+The first case interface uses a deliberately limited OpenFOAM-inspired dictionary syntax. It is not full OpenFOAM compatibility.
+
+```text
+cases/scalar_diffusion/
+├── 0/
+│   └── c
+└── system/
+    └── meshDict
+```
+
+The example defines:
 
 ```text
 Length    = 5.0 m
@@ -214,6 +224,12 @@ The analytical domain area is:
 The preprocessing pipeline verifies that the sum of the cell areas is consistent with the domain area.
 
 Exact node and cell counts are deliberately not used as regression values because they may legitimately vary between Gmsh versions or meshing algorithms.
+
+Run it with:
+
+```bash
+./build/CFD_solver cases/scalar_diffusion
+```
 
 ## Visualization
 
@@ -389,7 +405,7 @@ cmake --build build --parallel
 Run:
 
 ```bash
-./build/CFD_solver
+./build/CFD_solver cases/scalar_diffusion
 ```
 
 Run the complete test suite:
@@ -419,7 +435,7 @@ ctest --test-dir build-release --output-on-failure
 Run:
 
 ```bash
-./build-release/CFD_solver
+./build-release/CFD_solver cases/scalar_diffusion
 ```
 
 ### Numerical verification

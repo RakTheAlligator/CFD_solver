@@ -1,0 +1,20 @@
+FoamFile
+{
+    version 2.0;
+    format ascii;
+    class dictionary;
+    object meshDict;
+}
+
+geometry
+{
+    type rectangle;
+    length 5.0;
+    height 1.0;
+}
+
+mesh
+{
+    cellType quadrilateral;
+    size 0.2;
+}

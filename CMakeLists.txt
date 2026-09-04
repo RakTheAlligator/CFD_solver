@@ -67,6 +67,8 @@ add_library(
     cfd_core
     STATIC
 
+    src/input/OpenFOAMCaseReader.cpp
+
     src/io/MeshReport.cpp
     src/io/VtkWriter.cpp
 
@@ -232,6 +234,12 @@ if(BUILD_TESTING)
         cfd_scalar_boundary_conditions_tests
         scalar_boundary_conditions
         tests/ScalarBoundaryConditionsTests.cpp
+    )
+
+    cfd_add_test(
+        cfd_openfoam_case_reader_tests
+        openfoam_case_reader
+        tests/OpenFOAMCaseReaderTests.cpp
     )
 
     cfd_add_test(
