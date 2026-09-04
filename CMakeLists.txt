@@ -137,83 +137,50 @@ option(
 )
 
 if(BUILD_VERIFICATION)
-    add_executable(
+    function(cfd_add_verification target_name source_file)
+        add_executable(
+            ${target_name}
+            ${source_file}
+        )
+
+        target_link_libraries(
+            ${target_name}
+            PRIVATE
+                cfd_core
+        )
+
+        cfd_enable_warnings(${target_name})
+    endfunction()
+
+    cfd_add_verification(
         cfd_least_squares_gradient_convergence
         verification/LeastSquaresGradientConvergence.cpp
     )
 
-    target_link_libraries(
-        cfd_least_squares_gradient_convergence
-        PRIVATE
-            cfd_core
-    )
-
-    cfd_enable_warnings(cfd_least_squares_gradient_convergence)
-
-    add_executable(
+    cfd_add_verification(
         cfd_structured_least_squares_gradient_convergence
         verification/StructuredLeastSquaresGradientConvergence.cpp
     )
 
-    target_link_libraries(
-        cfd_structured_least_squares_gradient_convergence
-        PRIVATE
-            cfd_core
-    )
-
-    cfd_enable_warnings(cfd_structured_least_squares_gradient_convergence)
-
-    add_executable(
+    cfd_add_verification(
         cfd_controlled_quad_transition_convergence
         verification/ControlledQuadTransitionConvergence.cpp
     )
 
-    target_link_libraries(
-        cfd_controlled_quad_transition_convergence
-        PRIVATE
-            cfd_core
-    )
-
-    cfd_enable_warnings(cfd_controlled_quad_transition_convergence)
-
-    add_executable(
+    cfd_add_verification(
         cfd_scalar_diffusion_operator_convergence
         verification/ScalarDiffusionOperatorConvergence.cpp
     )
 
-    target_link_libraries(
-        cfd_scalar_diffusion_operator_convergence
-        PRIVATE
-            cfd_core
-    )
-
-    cfd_enable_warnings(cfd_scalar_diffusion_operator_convergence)
-
-    add_executable(
+    cfd_add_verification(
         cfd_scalar_diffusion_solution_convergence
         verification/ScalarDiffusionSolutionConvergence.cpp
     )
 
-    target_link_libraries(
-        cfd_scalar_diffusion_solution_convergence
-        PRIVATE
-            cfd_core
-    )
-
-    cfd_enable_warnings(cfd_scalar_diffusion_solution_convergence)
-
-    add_executable(
+    cfd_add_verification(
         cfd_unstructured_scalar_diffusion_convergence
         verification/UnstructuredScalarDiffusionConvergence.cpp
     )
-
-    target_link_libraries(
-        cfd_unstructured_scalar_diffusion_convergence
-        PRIVATE
-            cfd_core
-    )
-
-    cfd_enable_warnings(cfd_unstructured_scalar_diffusion_convergence)
 endif()
 
 # -----------------------------------------------------------------------------

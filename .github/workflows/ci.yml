@@ -116,7 +116,7 @@ jobs:
 
       - name: Check formatting
         run: |
-          find include src tests \
+          find include src tests verification \
             -type f \
             \( -name "*.hpp" -o -name "*.cpp" \) \
             -print0 \
@@ -128,15 +128,16 @@ jobs:
             -S . \
             -B build \
             -DCMAKE_BUILD_TYPE=Debug \
-            -DBUILD_TESTING=ON
+            -DBUILD_TESTING=ON \
+            -DBUILD_VERIFICATION=ON
 
       - name: Run clang-tidy
         run: |
-          find src tests \
+          find src tests verification \
             -type f \
             -name "*.cpp" \
             -print0 \
             | xargs -0 -n1 clang-tidy \
                 -p build \
-                --header-filter="^${GITHUB_WORKSPACE}/(include|src|tests)/" \
+                --header-filter="^${GITHUB_WORKSPACE}/(include|src|tests|verification)/" \
                 --warnings-as-errors="*"

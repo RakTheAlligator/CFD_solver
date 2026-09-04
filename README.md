@@ -2,9 +2,9 @@
 
 A 2D finite-volume CFD solver written in modern C++.
 
-This project is developed as a learning project in both computational fluid dynamics and scientific C++, with an emphasis on mathematical correctness, robust validation, maintainable architecture, contiguous data structures, automated testing, and performance-aware design.
+This project is developed as a learning project in both computational fluid dynamics and scientific C++, with an emphasis on mathematical correctness, rigorous verification, maintainable architecture, contiguous data structures, automated testing, and performance-aware design.
 
-> **Current status:** mesh preprocessing and VTU export are implemented and validated. The finite-volume equations are not implemented yet.
+> **Current status:** mesh preprocessing, numerical fields, weighted least-squares gradients, corrected scalar diffusion, finite-volume linear-system assembly, and an Eigen conjugate-gradient solve are implemented and verified. Scalar convection is the next major development stage.
 
 ## Current pipeline
 
@@ -26,10 +26,20 @@ Geometry construction
 Geometry validation
         ↓
 Mesh
- ├── MeshStatistics / MeshReport
- └── VTU export
+ ├── MeshStatistics / MeshReport / VTU export
+ └── CellScalarField / CellVectorField
           ↓
-       ParaView
+    ScalarBoundaryConditions
+          ↓
+    Weighted least-squares gradient
+          ↓
+    Corrected scalar diffusion operator
+          ↓
+    ScalarLinearSystem
+          ↓
+    Eigen conjugate-gradient backend
+          ↓
+    Scalar diffusion solution / VTU export
 ```
 
 ## Implemented preprocessing features
@@ -61,6 +71,21 @@ The current preprocessing pipeline provides:
 The final `Mesh` owns contiguous arrays and exposes read-only views through `std::span`.
 
 `Mesh` is move-only to avoid accidental copies of potentially large mesh storage.
+
+## Implemented numerical features
+
+The current numerical layer provides:
+
+* fixed-cardinality cell-centered scalar and vector fields
+* scalar Dirichlet and outward-normal Neumann boundary conditions
+* inverse-distance-weighted least-squares gradient reconstruction
+* constant-isotropic, non-orthogonally corrected scalar diffusion
+* face-addressed scalar finite-volume matrix and right-hand-side storage
+* matrix-vector application for residual checks
+* Eigen sparse-matrix conversion and conjugate gradient with diagonal preconditioning
+* scalar and vector CellData export to VTU
+
+Diffusion v1 is covered by focused unit tests and manufactured-solution verification on structured, graded, and Gmsh-generated unstructured meshes.
 
 ## Cell types
 
@@ -226,19 +251,35 @@ ParaView is not linked to the numerical core. The project only writes a standard
 CFD_solver/
 ├── include/
 │   └── cfd/
+│       ├── field/
+│       │   ├── CellScalarField.hpp
+│       │   ├── CellVectorField.hpp
+│       │   └── ScalarBoundaryConditions.hpp
 │       ├── io/
 │       │   ├── MeshReport.hpp
 │       │   └── VtkWriter.hpp
+│       ├── linear_algebra/
+│       │   ├── EigenConjugateGradientSolver.hpp
+│       │   └── ScalarLinearSystem.hpp
+│       ├── math/
+│       │   ├── Point2.hpp
+│       │   └── Vector2.hpp
 │       ├── mesh/
 │       │   └── ...
-│       └── meshing/
-│           ├── GmshMesher.hpp
-│           └── RectangleGeometry.hpp
+│       ├── meshing/
+│       │   ├── GmshMesher.hpp
+│       │   └── RectangleGeometry.hpp
+│       └── numerics/
+│           ├── LeastSquaresGradient.hpp
+│           └── ScalarDiffusionOperator.hpp
 │
 ├── src/
 │   ├── io/
 │   │   ├── MeshReport.cpp
 │   │   └── VtkWriter.cpp
+│   ├── linear_algebra/
+│   │   ├── EigenConjugateGradientSolver.cpp
+│   │   └── ScalarLinearSystem.cpp
 │   ├── mesh/
 │   │   ├── MeshBuilder.cpp
 │   │   └── MeshStatistics.cpp
@@ -255,9 +296,19 @@ CFD_solver/
 │   ├── meshing/
 │   │   ├── GmshMesher.cpp
 │   │   └── RawMeshValidation.cpp
+│   ├── numerics/
+│   │   ├── LeastSquaresGradient.cpp
+│   │   └── ScalarDiffusionOperator.cpp
 │   └── main.cpp
 │
 ├── tests/
+│   ├── CellScalarFieldTests.cpp
+│   ├── CellVectorFieldTests.cpp
+│   ├── ScalarBoundaryConditionsTests.cpp
+│   ├── LeastSquaresGradientTests.cpp
+│   ├── ScalarDiffusionOperatorTests.cpp
+│   ├── ScalarLinearSystemTests.cpp
+│   ├── EigenConjugateGradientSolverTests.cpp
 │   ├── GmshMesherTests.cpp
 │   ├── MeshTopologyTests.cpp
 │   ├── MeshGeometryTests.cpp
@@ -267,6 +318,17 @@ CFD_solver/
 │   └── support/
 │       ├── MeshFixtures.hpp
 │       └── TestUtils.hpp
+│
+├── verification/
+│   ├── LeastSquaresGradientConvergence.cpp
+│   ├── StructuredLeastSquaresGradientConvergence.cpp
+│   ├── ControlledQuadTransitionConvergence.cpp
+│   ├── ScalarDiffusionOperatorConvergence.cpp
+│   ├── ScalarDiffusionSolutionConvergence.cpp
+│   ├── UnstructuredScalarDiffusionConvergence.cpp
+│   └── support/
+│       ├── GradientVerification.hpp
+│       └── VerificationStatistics.hpp
 │
 ├── .github/
 │   └── workflows/
@@ -280,9 +342,10 @@ CFD_solver/
 
 The main CMake targets are:
 
-* `cfd_core` — reusable preprocessing library
+* `cfd_core` — reusable preprocessing and numerical library
 * `CFD_solver` — main executable
-* dedicated CTest executables for meshing, topology, geometry, validation, reporting, and VTU output
+* dedicated CTest executables for fields, boundary conditions, numerical operators, linear algebra, meshing, preprocessing, reporting, and VTU output
+* optional numerical-verification executables when `BUILD_VERIFICATION=ON`
 
 ## Requirements
 
@@ -359,9 +422,57 @@ Run:
 ./build-release/CFD_solver
 ```
 
+### Numerical verification
+
+Manual convergence studies are enabled separately from the fast test suite:
+
+```bash
+cmake -S . -B build-release \
+    -DCMAKE_BUILD_TYPE=Release \
+    -DBUILD_TESTING=ON \
+    -DBUILD_VERIFICATION=ON
+
+cmake --build build-release --parallel
+```
+
+The resulting executables are:
+
+```text
+cfd_least_squares_gradient_convergence
+cfd_structured_least_squares_gradient_convergence
+cfd_controlled_quad_transition_convergence
+cfd_scalar_diffusion_operator_convergence
+cfd_scalar_diffusion_solution_convergence
+cfd_unstructured_scalar_diffusion_convergence
+```
+
+The solution studies accept `--write-vtu` to write inspection fields under `output/verification/`.
+
+These studies are intentionally not registered with CTest. `tests/` contains fast correctness and regression tests; `verification/` contains manually run numerical-verification experiments.
+
 ## Testing
 
-The test suite covers several levels of the preprocessing pipeline.
+The CTest suite covers fields, numerical infrastructure, and the preprocessing pipeline.
+
+### Fields, boundary conditions, and linear algebra
+
+Tests cover:
+
+* scalar/vector field cardinality and value semantics
+* scalar boundary-condition validation
+* fixed-cardinality scalar-system storage and clearing
+* symmetric and nonsymmetric matrix-vector application
+* Eigen CG convergence, residuals, repeated solves, and invalid use
+
+### Numerical operators
+
+Tests cover:
+
+* weighted least-squares linear exactness and inverse-distance weighting
+* Dirichlet and unit-normal Neumann reconstruction
+* corrected diffusion signs, conservation, and linear exactness
+* matrix, boundary-RHS, and non-orthogonal-correction assembly
+* equivalence between assembled diffusion and direct operator application
 
 ### Gmsh meshing
 
@@ -430,6 +541,15 @@ Tests cover:
 * VTU quadrilateral export
 * VTU connectivity and offset values
 * replacement of existing VTU output files
+* scalar and vector CellData export and validation
+
+## Numerical verification and future validation
+
+Manufactured analytical fields are used to verify gradient reconstruction, diffusion truncation behavior, assembled solves, algebraic residuals, and observed convergence. The diffusion-solution drivers orchestrate repeated non-orthogonal correction solves using the previous solution as the initial guess. The studies include uniform and sheared structured meshes, fixed-diagonal triangles, smoothly graded orthogonal quadrilaterals, unstructured Gmsh triangles, and recombined Gmsh quadrilaterals.
+
+The solved diffusion field is approximately second order on the tested triangle, uniform, and graded families. Recombined Gmsh quadrilaterals can exhibit reduced asymptotic order when their geometric quality degrades under refinement; this is not presented as a universal second-order result.
+
+Here, *verification* means comparison against known mathematical solutions. *Validation* is reserved for future comparison with physical or experimental reference data, such as Poiseuille flow.
 
 ## Code quality
 
@@ -474,7 +594,7 @@ AddressSanitizer remains active for invalid memory accesses, and UndefinedBehavi
 
 ## Naming conventions
 
-The preprocessing code follows these naming conventions:
+The project code follows these naming conventions:
 
 ```text
 Types / classes / structs     PascalCase
@@ -504,21 +624,19 @@ The project follows several explicit design principles:
 * simple and explicit ownership
 * contiguous storage for frequently traversed numerical data
 * no unnecessary copies of large mesh arrays
-* no dynamic allocation in future numerical hot loops unless justified
+* no dynamic allocation in numerical hot loops unless justified
 * validate imported data early
 * separate construction from validation
 * separate mesh data from statistics and reporting
-* keep Gmsh outside future numerical hot loops
+* keep Gmsh outside numerical hot loops
 * test both valid and invalid inputs
 * measure performance before optimizing
 
 Performance-related decisions are intended to remain evidence-based rather than speculative.
 
-## Preprocessing v1 status
+## Preprocessing and diffusion v1 status
 
-The preprocessing architecture is considered sufficiently complete to serve as the stable foundation of the finite-volume solver.
-
-Current preprocessing provides the topology and geometry required to begin implementing numerical fields and finite-volume operators.
+The preprocessing architecture is the stable foundation of the implemented field, gradient, diffusion, assembly, and linear-solution pipeline. Diffusion v1 is sufficiently characterized by unit tests and solution studies to support the next development stage.
 
 Additional geometric quantities will be introduced only when required by a numerical scheme.
 
@@ -535,21 +653,15 @@ These quantities should be added when their mathematical role is defined rather 
 
 ## Next development stage
 
-The next stage is the numerical-field infrastructure.
+The next major stage is scalar convection.
 
 Planned progression:
 
-1. cell-centered scalar fields
-2. boundary conditions
-3. vector fields
-4. gradient reconstruction
-5. diffusion operators
-6. convection operators
-7. sparse matrix assembly
-8. linear-system solution
-9. momentum equations
-10. pressure correction
-11. SIMPLE pressure-velocity coupling
+1. convection operators
+2. complete scalar transport equations
+3. momentum equations
+4. pressure correction
+5. SIMPLE pressure-velocity coupling
 
 Planned CFD validation cases include:
 
