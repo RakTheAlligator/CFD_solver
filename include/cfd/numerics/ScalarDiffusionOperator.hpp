@@ -73,7 +73,7 @@ class ScalarDiffusionOperator
         double neighbor_gradient_weight{};
     };
 
-    const Mesh &mesh_;
+    const Mesh *mesh_;
     double diffusivity_;
     std::vector<FaceData> face_data_;
 };

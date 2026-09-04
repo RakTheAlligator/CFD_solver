@@ -38,21 +38,21 @@ double dot(const Vector2 &first, const Vector2 &second) noexcept
 } // namespace
 
 ScalarDiffusionOperator::ScalarDiffusionOperator(const Mesh &mesh, const double diffusivity)
-    : mesh_(mesh), diffusivity_(diffusivity)
+    : mesh_(&mesh), diffusivity_(diffusivity)
 {
     if (!std::isfinite(diffusivity_) || !(diffusivity_ > 0.0))
     {
         throw std::invalid_argument("Scalar diffusion diffusivity must be finite and strictly positive.");
     }
 
-    const Index face_count{mesh_.face_count()};
+    const Index face_count{mesh_->face_count()};
     face_data_.resize(face_count);
 
-    const auto face_adjacencies{mesh_.face_adjacencies()};
-    const auto cell_centers{mesh_.cell_centers()};
-    const auto face_centers{mesh_.face_centers()};
-    const auto face_lengths{mesh_.face_lengths()};
-    const auto face_area_vectors{mesh_.face_area_vectors()};
+    const auto face_adjacencies{mesh_->face_adjacencies()};
+    const auto cell_centers{mesh_->cell_centers()};
+    const auto face_centers{mesh_->face_centers()};
+    const auto face_lengths{mesh_->face_lengths()};
+    const auto face_area_vectors{mesh_->face_area_vectors()};
 
     constexpr double relative_projection_tolerance{projection_safety_factor * std::numeric_limits<double>::epsilon()};
 
@@ -146,7 +146,7 @@ void ScalarDiffusionOperator::compute_flux_balance(const CellScalarField &field,
                                                    const ScalarBoundaryConditions &boundary_conditions,
                                                    const CellVectorField &gradient, CellScalarField &flux_balance) const
 {
-    const Index cell_count{mesh_.cell_count()};
+    const Index cell_count{mesh_->cell_count()};
 
     if (field.size() != cell_count)
     {
@@ -160,7 +160,7 @@ void ScalarDiffusionOperator::compute_flux_balance(const CellScalarField &field,
     {
         throw std::invalid_argument("Scalar diffusion output size must match the mesh cell count.");
     }
-    if (boundary_conditions.size() != mesh_.boundary_groups().size())
+    if (boundary_conditions.size() != mesh_->boundary_groups().size())
     {
         throw std::invalid_argument("Scalar diffusion boundary-condition count must match the mesh boundary count.");
     }
@@ -169,16 +169,16 @@ void ScalarDiffusionOperator::compute_flux_balance(const CellScalarField &field,
         throw std::invalid_argument("Scalar diffusion output must not alias the input scalar field.");
     }
 
-    const auto face_adjacencies{mesh_.face_adjacencies()};
-    const auto face_boundary_ids{mesh_.face_boundary_ids()};
-    const auto face_lengths{mesh_.face_lengths()};
+    const auto face_adjacencies{mesh_->face_adjacencies()};
+    const auto face_boundary_ids{mesh_->face_boundary_ids()};
+    const auto face_lengths{mesh_->face_lengths()};
     const auto field_values{field.values()};
     const auto gradient_values{gradient.values()};
     auto balance_values{flux_balance.values()};
 
     std::fill(balance_values.begin(), balance_values.end(), 0.0);
 
-    for (Index face_id = 0; face_id < mesh_.face_count(); ++face_id)
+    for (Index face_id = 0; face_id < mesh_->face_count(); ++face_id)
     {
         const FaceAdjacency &adjacency{face_adjacencies[face_id]};
         const Index owner_id{adjacency.owner};
