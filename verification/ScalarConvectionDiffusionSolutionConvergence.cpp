@@ -61,6 +61,19 @@ constexpr std::array grid_levels{
     GridLevel{0.025, 80, 40}, GridLevel{0.0125, 160, 80},
 };
 
+struct SchemeStudy
+{
+    cfd::ScalarConvectionScheme scheme;
+    std::string_view name;
+    double minimum_final_order;
+    double maximum_final_order;
+};
+
+constexpr std::array scheme_studies{
+    SchemeStudy{cfd::ScalarConvectionScheme::FirstOrderUpwind, "FirstOrderUpwind", 0.5, 1.5},
+    SchemeStudy{cfd::ScalarConvectionScheme::Linear, "Linear", 1.5, 2.5},
+};
+
 struct LevelResult
 {
     double delta{};
@@ -299,14 +312,14 @@ cfd::Index count_internal_faces(const cfd::Mesh &mesh) noexcept
 }
 
 [[nodiscard]]
-LevelResult run_level(const GridLevel &level)
+LevelResult run_level(const GridLevel &level, const SchemeStudy &study)
 {
     cfd::MeshBuildResult build_result{cfd::build_mesh(make_raw_mesh(level))};
     const cfd::Mesh &mesh{build_result.mesh};
     const cfd::ScalarBoundaryConditions boundary_conditions{make_boundary_conditions(mesh)};
     auto [face_flux, maximum_flux_imbalance]{make_face_flux(mesh)};
     const cfd::ScalarDiffusionOperator diffusion{mesh, diffusivity};
-    const cfd::ScalarConvectionOperator convection{mesh};
+    const cfd::ScalarConvectionOperator convection{mesh, study.scheme};
     cfd::ScalarLinearSystem system{mesh};
 
     system.clear();
@@ -350,7 +363,8 @@ LevelResult run_level(const GridLevel &level)
         maximum_flux_imbalance > flux_imbalance_tolerance)
     {
         std::ostringstream message;
-        message << "Convection-diffusion consistency diagnostic exceeded its tolerance at delta=" << level.delta
+        message << study.name
+                << " convection-diffusion consistency diagnostic exceeded its tolerance at delta=" << level.delta
                 << "; algebraic_residual=" << algebraic_residual << ", full_residual=" << full_residual
                 << ", maximum_flux_imbalance=" << maximum_flux_imbalance << '.';
         throw std::runtime_error(message.str());
@@ -393,7 +407,7 @@ void compute_orders(std::vector<LevelResult> &results)
     }
 }
 
-void require_expected_convergence(const std::vector<LevelResult> &results)
+void require_expected_convergence(const SchemeStudy &study, const std::vector<LevelResult> &results)
 {
     for (std::size_t level_index = 1; level_index < results.size(); ++level_index)
     {
@@ -402,15 +416,18 @@ void require_expected_convergence(const std::vector<LevelResult> &results)
         if (!(fine.solution_errors.area_weighted_rms_error < coarse.solution_errors.area_weighted_rms_error) ||
             !(fine.solution_errors.linf_error < coarse.solution_errors.linf_error))
         {
-            throw std::runtime_error("Convection-diffusion solution errors did not decrease monotonically.");
+            throw std::runtime_error(std::string{study.name} +
+                                     " convection-diffusion solution errors did not decrease monotonically.");
         }
     }
 
     const LevelResult &finest{results.back()};
-    if (!finest.rms_order.has_value() || !finest.linf_order.has_value() || !(*finest.rms_order > 0.5) ||
-        !(*finest.rms_order < 1.5) || !(*finest.linf_order > 0.5) || !(*finest.linf_order < 1.5))
+    if (!finest.rms_order.has_value() || !finest.linf_order.has_value() ||
+        !(*finest.rms_order > study.minimum_final_order) || !(*finest.rms_order < study.maximum_final_order) ||
+        !(*finest.linf_order > study.minimum_final_order) || !(*finest.linf_order < study.maximum_final_order))
     {
-        throw std::runtime_error("Convection-diffusion asymptotic order is not consistent with first-order upwind.");
+        throw std::runtime_error(std::string{study.name} +
+                                 " convection-diffusion asymptotic order is outside its expected range.");
     }
 }
 
@@ -424,9 +441,10 @@ void print_order(const std::optional<double> order, const bool first_level)
     std::cout << std::setw(9) << (first_level ? "-" : "n/a");
 }
 
-void print_results(const std::vector<LevelResult> &results)
+void print_results(const SchemeStudy &study, const std::vector<LevelResult> &results)
 {
-    std::cout << "\nScalar convection-diffusion solution convergence - Cartesian QUAD - all Dirichlet\n"
+    std::cout << "\nScalar convection-diffusion solution convergence - " << study.name
+              << " - Cartesian QUAD - all Dirichlet\n"
               << "div(u phi) - div(Gamma grad(phi)) = s, u=(1,0.5), Gamma=0.1\n\n"
               << std::left << std::setw(10) << "delta" << std::setw(12) << "h_char" << std::setw(9) << "cells"
               << std::setw(11) << "int_faces" << std::setw(17) << "RMS(phi)" << std::setw(9) << "p_RMS" << std::setw(17)
@@ -451,9 +469,16 @@ void print_results(const std::vector<LevelResult> &results)
                   << std::setw(15) << result.maximum_flux_imbalance << '\n';
     }
 
-    std::cout << "\nScope: production diffusion and first-order upwind convection assemble consistently; the directed "
-                 "nonsymmetric system is solved by BiCGSTAB; exact constant face flux is discretely conservative; "
-                 "Cartesian solution error approaches first order because of upwind convection.\n";
+    if (study.scheme == cfd::ScalarConvectionScheme::FirstOrderUpwind)
+    {
+        std::cout << "\nInterpretation: FirstOrderUpwind is robust first-order convective interpolation with numerical "
+                     "diffusion; this Cartesian MMS approaches first-order behavior.\n";
+        return;
+    }
+    std::cout << "\nInterpretation: Linear is geometry-aware interpolation and reduces to the classical centered "
+                 "scheme on this uniform Cartesian mesh; it has lower numerical diffusion and approximately "
+                 "second-order behavior for this smooth MMS, but no boundedness claim is made for "
+                 "convection-dominated problems.\n";
 }
 
 } // namespace
@@ -462,15 +487,18 @@ int main()
 {
     try
     {
-        std::vector<LevelResult> results;
-        results.reserve(grid_levels.size());
-        for (const GridLevel &level : grid_levels)
+        for (const SchemeStudy &study : scheme_studies)
         {
-            results.push_back(run_level(level));
+            std::vector<LevelResult> results;
+            results.reserve(grid_levels.size());
+            for (const GridLevel &level : grid_levels)
+            {
+                results.push_back(run_level(level, study));
+            }
+            compute_orders(results);
+            require_expected_convergence(study, results);
+            print_results(study, results);
         }
-        compute_orders(results);
-        require_expected_convergence(results);
-        print_results(results);
         return 0;
     }
     catch (const std::exception &error)

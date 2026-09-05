@@ -35,6 +35,7 @@ static_assert(!std::is_copy_constructible_v<cfd::ScalarConvectionOperator>);
 static_assert(!std::is_copy_assignable_v<cfd::ScalarConvectionOperator>);
 static_assert(std::is_nothrow_move_constructible_v<cfd::ScalarConvectionOperator>);
 static_assert(!std::is_move_assignable_v<cfd::ScalarConvectionOperator>);
+static_assert(std::is_nothrow_constructible_v<cfd::ScalarConvectionOperator, const cfd::Mesh &>);
 
 [[nodiscard]]
 cfd::RawMeshData make_two_cell_rectangle_raw_mesh()
@@ -58,6 +59,15 @@ cfd::RawMeshData make_two_cell_rectangle_raw_mesh()
         {{0, 1}, wall_boundary_id}, {{1, 2}, wall_boundary_id}, {{2, 5}, wall_boundary_id},
         {{5, 4}, wall_boundary_id}, {{4, 3}, wall_boundary_id}, {{3, 0}, wall_boundary_id},
     };
+    return raw_mesh;
+}
+
+[[nodiscard]]
+cfd::RawMeshData make_nonuniform_two_cell_rectangle_raw_mesh()
+{
+    cfd::RawMeshData raw_mesh{make_two_cell_rectangle_raw_mesh()};
+    raw_mesh.nodes[2].x = 3.0;
+    raw_mesh.nodes[5].x = 3.0;
     return raw_mesh;
 }
 
@@ -480,6 +490,289 @@ void test_assembly_is_additive()
     require_near(system.rhs()[boundary_owner], 64.0, 0.0, "Convection boundary assembly overwrote the existing RHS.");
 }
 
+void test_linear_internal_interpolation_is_geometry_aware()
+{
+    cfd::MeshBuildResult build_result{cfd::build_mesh(make_nonuniform_two_cell_rectangle_raw_mesh())};
+    const cfd::Mesh &mesh{build_result.mesh};
+    const cfd::ScalarConvectionOperator convection{mesh, cfd::ScalarConvectionScheme::Linear};
+    const cfd::ScalarBoundaryConditions conditions{
+        make_uniform_conditions(1, cfd::ScalarBoundaryConditionType::Neumann, 0.0)};
+    const cfd::Index face_id{internal_face_id(mesh)};
+    const cfd::FaceAdjacency &adjacency{mesh.face_adjacencies()[face_id]};
+    cfd::CellScalarField field{mesh.cell_count()};
+    field[adjacency.owner] = 2.0;
+    field[adjacency.neighbor] = 8.0;
+    cfd::FaceFluxField face_flux{mesh.face_count()};
+    face_flux[face_id] = 3.0;
+    cfd::CellScalarField balance{mesh.cell_count()};
+    cfd::ScalarLinearSystem system{mesh};
+
+    convection.compute_flux_balance(field, conditions, face_flux, balance);
+    convection.add_matrix_contributions(conditions, face_flux, system);
+
+    require_near(balance[adjacency.owner], 12.0, test_tolerance,
+                 "Linear interpolation gave an incorrect owner balance for lambda=1/3.");
+    require_near(balance[adjacency.neighbor], -12.0, test_tolerance,
+                 "Linear interpolation gave an incorrect neighbor balance for lambda=1/3.");
+    require_near(balance[adjacency.owner] + balance[adjacency.neighbor], 0.0, test_tolerance,
+                 "Linear internal-face contributions are not conservative.");
+    require_near(system.diagonal()[adjacency.owner], 2.0, test_tolerance,
+                 "Linear interpolation gave an incorrect owner diagonal for lambda=1/3.");
+    require_near(system.owner_neighbor_coefficients()[face_id], 1.0, test_tolerance,
+                 "Linear interpolation gave an incorrect A(owner,neighbor) for lambda=1/3.");
+    require_near(system.neighbor_owner_coefficients()[face_id], -2.0, test_tolerance,
+                 "Linear interpolation gave an incorrect A(neighbor,owner) for lambda=1/3.");
+    require_near(system.diagonal()[adjacency.neighbor], -1.0, test_tolerance,
+                 "Linear interpolation gave an incorrect neighbor diagonal for lambda=1/3.");
+}
+
+void test_linear_dirichlet_boundary_for_both_flux_directions()
+{
+    cfd::MeshBuildResult build_result{cfd::build_mesh(make_single_quadrilateral_raw_mesh())};
+    const cfd::Mesh &mesh{build_result.mesh};
+    const cfd::ScalarConvectionOperator convection{mesh, cfd::ScalarConvectionScheme::Linear};
+    const cfd::ScalarBoundaryConditions conditions{
+        make_uniform_conditions(1, cfd::ScalarBoundaryConditionType::Dirichlet, 7.0)};
+    const cfd::CellScalarField field{mesh.cell_count(), 3.0};
+    const cfd::Index face_id{first_boundary_face_id(mesh)};
+
+    for (const double carrier_flux : {-2.0, 2.0})
+    {
+        cfd::FaceFluxField face_flux{mesh.face_count()};
+        face_flux[face_id] = carrier_flux;
+        cfd::CellScalarField balance{mesh.cell_count()};
+        cfd::ScalarLinearSystem system{mesh};
+        convection.compute_flux_balance(field, conditions, face_flux, balance);
+        convection.add_matrix_contributions(conditions, face_flux, system);
+        convection.add_boundary_rhs(conditions, face_flux, system.rhs());
+
+        require_near(balance[0], carrier_flux * 7.0, 0.0,
+                     "Linear Dirichlet boundary did not use the prescribed value.");
+        require_near(system.diagonal()[0], 0.0, 0.0, "Linear Dirichlet boundary incorrectly changed the diagonal.");
+        require_near(system.rhs()[0], -carrier_flux * 7.0, 0.0,
+                     "Linear Dirichlet boundary gave an incorrect RHS contribution.");
+        require_near(system.diagonal()[0] * field[0] - system.rhs()[0], balance[0], 0.0,
+                     "Linear Dirichlet boundary assembly does not match its direct balance.");
+    }
+}
+
+void test_linear_zero_gradient_boundary_for_both_flux_directions()
+{
+    cfd::MeshBuildResult build_result{cfd::build_mesh(make_single_quadrilateral_raw_mesh())};
+    const cfd::Mesh &mesh{build_result.mesh};
+    const cfd::ScalarConvectionOperator convection{mesh, cfd::ScalarConvectionScheme::Linear};
+    const cfd::ScalarBoundaryConditions conditions{
+        make_uniform_conditions(1, cfd::ScalarBoundaryConditionType::Neumann, 0.0)};
+    const cfd::CellScalarField field{mesh.cell_count(), 3.0};
+    const cfd::Index face_id{first_boundary_face_id(mesh)};
+
+    for (const double carrier_flux : {-2.0, 2.0})
+    {
+        cfd::FaceFluxField face_flux{mesh.face_count()};
+        face_flux[face_id] = carrier_flux;
+        cfd::CellScalarField balance{mesh.cell_count()};
+        cfd::ScalarLinearSystem system{mesh};
+        convection.compute_flux_balance(field, conditions, face_flux, balance);
+        convection.add_matrix_contributions(conditions, face_flux, system);
+        convection.add_boundary_rhs(conditions, face_flux, system.rhs());
+
+        require_near(balance[0], carrier_flux * 3.0, 0.0, "Linear zeroGradient boundary did not use the owner value.");
+        require_near(system.diagonal()[0], carrier_flux, 0.0,
+                     "Linear zeroGradient boundary gave an incorrect diagonal.");
+        require_near(system.rhs()[0], 0.0, 0.0, "Linear zeroGradient boundary changed the RHS.");
+    }
+}
+
+void test_linear_nonzero_neumann_boundary_for_both_flux_directions()
+{
+    cfd::MeshBuildResult build_result{cfd::build_mesh(make_single_quadrilateral_raw_mesh())};
+    const cfd::Mesh &mesh{build_result.mesh};
+    const cfd::ScalarConvectionOperator convection{mesh, cfd::ScalarConvectionScheme::Linear};
+    const cfd::ScalarBoundaryConditions conditions{
+        make_uniform_conditions(1, cfd::ScalarBoundaryConditionType::Neumann, 4.0)};
+    const cfd::CellScalarField field{mesh.cell_count(), 3.0};
+    const cfd::Index face_id{first_boundary_face_id(mesh)};
+
+    for (const double carrier_flux : {-2.0, 2.0})
+    {
+        cfd::FaceFluxField face_flux{mesh.face_count()};
+        face_flux[face_id] = carrier_flux;
+        cfd::CellScalarField balance{mesh.cell_count()};
+        cfd::ScalarLinearSystem system{mesh};
+        convection.compute_flux_balance(field, conditions, face_flux, balance);
+        convection.add_matrix_contributions(conditions, face_flux, system);
+        convection.add_boundary_rhs(conditions, face_flux, system.rhs());
+
+        require_near(balance[0], carrier_flux * 5.0, test_tolerance,
+                     "Linear Neumann boundary reconstructed an incorrect face value.");
+        require_near(system.diagonal()[0], carrier_flux, 0.0, "Linear Neumann boundary gave an incorrect diagonal.");
+        require_near(system.rhs()[0], -carrier_flux * 2.0, test_tolerance,
+                     "Linear Neumann boundary gave an incorrect RHS contribution.");
+        require_near(system.diagonal()[0] * field[0] - system.rhs()[0], balance[0], test_tolerance,
+                     "Linear Neumann boundary assembly does not match its direct balance.");
+    }
+}
+
+void test_linear_constant_field_preservation()
+{
+    cfd::MeshBuildResult build_result{cfd::build_mesh(make_single_cell_four_boundary_raw_mesh())};
+    const cfd::Mesh &mesh{build_result.mesh};
+    const cfd::ScalarConvectionOperator convection{mesh, cfd::ScalarConvectionScheme::Linear};
+    std::vector<cfd::ScalarBoundaryCondition> condition_values{
+        {cfd::ScalarBoundaryConditionType::Dirichlet, 4.0},
+        {cfd::ScalarBoundaryConditionType::Neumann, 0.0},
+        {cfd::ScalarBoundaryConditionType::Dirichlet, 4.0},
+        {cfd::ScalarBoundaryConditionType::Neumann, 0.0},
+    };
+    const cfd::ScalarBoundaryConditions conditions{4, std::move(condition_values)};
+    const cfd::CellScalarField field{mesh.cell_count(), 4.0};
+    cfd::FaceFluxField face_flux{mesh.face_count()};
+    set_boundary_flux(mesh, face_flux, find_boundary_id(mesh, "left"), -1.0);
+    set_boundary_flux(mesh, face_flux, find_boundary_id(mesh, "right"), 1.0);
+    set_boundary_flux(mesh, face_flux, find_boundary_id(mesh, "bottom"), -2.0);
+    set_boundary_flux(mesh, face_flux, find_boundary_id(mesh, "top"), 2.0);
+    cfd::CellScalarField balance{mesh.cell_count()};
+
+    convection.compute_flux_balance(field, conditions, face_flux, balance);
+
+    require_near(balance[0], 0.0, test_tolerance, "Linear convection did not preserve a compatible constant field.");
+}
+
+void test_linear_assembly_matches_direct_balance()
+{
+    cfd::MeshBuildResult build_result{cfd::build_mesh(make_two_cell_six_boundary_raw_mesh())};
+    const cfd::Mesh &mesh{build_result.mesh};
+    const cfd::ScalarConvectionOperator convection{mesh, cfd::ScalarConvectionScheme::Linear};
+    std::vector<cfd::ScalarBoundaryCondition> condition_values{
+        {cfd::ScalarBoundaryConditionType::Dirichlet, 1.2},  {cfd::ScalarBoundaryConditionType::Neumann, -0.4},
+        {cfd::ScalarBoundaryConditionType::Dirichlet, -2.0}, {cfd::ScalarBoundaryConditionType::Neumann, 0.7},
+        {cfd::ScalarBoundaryConditionType::Dirichlet, 3.0},  {cfd::ScalarBoundaryConditionType::Neumann, -1.1},
+    };
+    const cfd::ScalarBoundaryConditions conditions{6, std::move(condition_values)};
+    cfd::CellScalarField field{mesh.cell_count()};
+    field[0] = 2.3;
+    field[1] = -0.8;
+    cfd::FaceFluxField face_flux{mesh.face_count()};
+    face_flux[internal_face_id(mesh)] = -1.7;
+    set_boundary_flux(mesh, face_flux, find_boundary_id(mesh, "bottom_0"), -0.7);
+    set_boundary_flux(mesh, face_flux, find_boundary_id(mesh, "bottom_1"), -1.1);
+    set_boundary_flux(mesh, face_flux, find_boundary_id(mesh, "right"), 0.6);
+    set_boundary_flux(mesh, face_flux, find_boundary_id(mesh, "top_1"), 0.9);
+    set_boundary_flux(mesh, face_flux, find_boundary_id(mesh, "left"), -0.3);
+    cfd::CellScalarField balance{mesh.cell_count()};
+    cfd::ScalarLinearSystem system{mesh};
+
+    convection.compute_flux_balance(field, conditions, face_flux, balance);
+    convection.add_matrix_contributions(conditions, face_flux, system);
+    convection.add_boundary_rhs(conditions, face_flux, system.rhs());
+    std::vector<double> matrix_product(mesh.cell_count());
+    system.apply_matrix(field.values(), matrix_product);
+
+    for (cfd::Index cell_id = 0; cell_id < mesh.cell_count(); ++cell_id)
+    {
+        require_near(matrix_product[cell_id] - system.rhs()[cell_id], balance[cell_id], test_tolerance,
+                     "Linear convection assembly does not reconstruct the direct balance.");
+    }
+}
+
+void test_linear_assembly_is_additive()
+{
+    cfd::MeshBuildResult build_result{cfd::build_mesh(make_nonuniform_two_cell_rectangle_raw_mesh())};
+    const cfd::Mesh &mesh{build_result.mesh};
+    const cfd::ScalarConvectionOperator convection{mesh, cfd::ScalarConvectionScheme::Linear};
+    const cfd::ScalarBoundaryConditions conditions{
+        make_uniform_conditions(1, cfd::ScalarBoundaryConditionType::Dirichlet, 7.0)};
+    cfd::FaceFluxField face_flux{mesh.face_count()};
+    const cfd::Index internal_id{internal_face_id(mesh)};
+    const cfd::Index boundary_id{first_boundary_face_id(mesh)};
+    const cfd::FaceAdjacency &adjacency{mesh.face_adjacencies()[internal_id]};
+    const cfd::Index boundary_owner{mesh.face_adjacencies()[boundary_id].owner};
+    face_flux[internal_id] = 3.0;
+    face_flux[boundary_id] = 2.0;
+
+    cfd::ScalarLinearSystem system{mesh};
+    system.diagonal()[adjacency.owner] = 10.0;
+    system.diagonal()[adjacency.neighbor] = 20.0;
+    system.owner_neighbor_coefficients()[internal_id] = 30.0;
+    system.neighbor_owner_coefficients()[internal_id] = 40.0;
+    system.rhs()[boundary_owner] = 50.0;
+
+    convection.add_matrix_contributions(conditions, face_flux, system);
+    convection.add_boundary_rhs(conditions, face_flux, system.rhs());
+
+    require_near(system.diagonal()[adjacency.owner], 12.0, test_tolerance,
+                 "Linear convection overwrote the existing owner diagonal.");
+    require_near(system.diagonal()[adjacency.neighbor], 19.0, test_tolerance,
+                 "Linear convection overwrote the existing neighbor diagonal.");
+    require_near(system.owner_neighbor_coefficients()[internal_id], 31.0, test_tolerance,
+                 "Linear convection overwrote A(owner,neighbor).");
+    require_near(system.neighbor_owner_coefficients()[internal_id], 38.0, test_tolerance,
+                 "Linear convection overwrote A(neighbor,owner).");
+    require_near(system.rhs()[boundary_owner], 36.0, test_tolerance, "Linear convection overwrote the existing RHS.");
+}
+
+void test_linear_validation_and_input_immutability()
+{
+    cfd::MeshBuildResult build_result{cfd::build_mesh(make_two_cell_rectangle_raw_mesh())};
+    const cfd::Mesh &mesh{build_result.mesh};
+    const cfd::ScalarConvectionOperator convection{mesh, cfd::ScalarConvectionScheme::Linear};
+    cfd::CellScalarField field{mesh.cell_count()};
+    field[0] = 1.25;
+    field[1] = -0.75;
+    cfd::FaceFluxField face_flux{mesh.face_count()};
+    face_flux[internal_face_id(mesh)] = -2.5;
+    const cfd::ScalarBoundaryConditions conditions{
+        make_uniform_conditions(1, cfd::ScalarBoundaryConditionType::Neumann, 0.5)};
+    const cfd::CellScalarField original_field{field};
+    const cfd::FaceFluxField original_flux{face_flux};
+    cfd::CellScalarField balance{mesh.cell_count()};
+    cfd::ScalarLinearSystem system{mesh};
+
+    require_throws<std::invalid_argument>(
+        [&convection, &field, &conditions, &balance, &mesh]() {
+            const cfd::FaceFluxField wrong_flux{mesh.face_count() + 1};
+            convection.compute_flux_balance(field, conditions, wrong_flux, balance);
+        },
+        "Linear convection accepted face fluxes with incorrect cardinality.");
+    require_throws<std::invalid_argument>(
+        [&convection, &field, &conditions, &face_flux]() {
+            convection.compute_flux_balance(field, conditions, face_flux, field);
+        },
+        "Linear convection accepted an output alias of its input field.");
+
+    convection.compute_flux_balance(field, conditions, face_flux, balance);
+    convection.add_matrix_contributions(conditions, face_flux, system);
+    convection.add_boundary_rhs(conditions, face_flux, system.rhs());
+
+    for (cfd::Index cell_id = 0; cell_id < mesh.cell_count(); ++cell_id)
+    {
+        require_near(field[cell_id], original_field[cell_id], 0.0, "Linear convection modified its input field.");
+    }
+    for (cfd::Index face_id = 0; face_id < mesh.face_count(); ++face_id)
+    {
+        require_near(face_flux[face_id], original_flux[face_id], 0.0,
+                     "Linear convection modified its input face flux.");
+    }
+    require(conditions[0].type == cfd::ScalarBoundaryConditionType::Neumann && conditions[0].value == 0.5,
+            "Linear convection modified its boundary condition.");
+}
+
+void test_rejects_unsupported_scheme()
+{
+    cfd::MeshBuildResult build_result{cfd::build_mesh(make_single_quadrilateral_raw_mesh())};
+    const cfd::Mesh &mesh{build_result.mesh};
+
+    require_throws<std::invalid_argument>(
+        [&mesh]() {
+            static_cast<void>(cfd::ScalarConvectionOperator{
+                mesh,
+                // NOLINTNEXTLINE(clang-analyzer-optin.core.EnumCastOutOfRange)
+                static_cast<cfd::ScalarConvectionScheme>(255),
+            });
+        },
+        "Scalar convection accepted an unsupported scheme.");
+}
+
 void test_rejects_incompatible_inputs_and_aliasing()
 {
     cfd::MeshBuildResult build_result{cfd::build_mesh(make_two_cell_rectangle_raw_mesh())};
@@ -591,6 +884,23 @@ int main()
         cfd::test::run_test("scalar convection constant-field preservation", test_constant_field_preservation);
     failure_count += cfd::test::run_test("scalar convection assembly identity", test_assembly_matches_direct_balance);
     failure_count += cfd::test::run_test("scalar convection additive assembly", test_assembly_is_additive);
+    failure_count += cfd::test::run_test("linear convection geometry-aware interpolation",
+                                         test_linear_internal_interpolation_is_geometry_aware);
+    failure_count += cfd::test::run_test("linear convection Dirichlet boundary",
+                                         test_linear_dirichlet_boundary_for_both_flux_directions);
+    failure_count += cfd::test::run_test("linear convection zeroGradient boundary",
+                                         test_linear_zero_gradient_boundary_for_both_flux_directions);
+    failure_count += cfd::test::run_test("linear convection non-zero Neumann boundary",
+                                         test_linear_nonzero_neumann_boundary_for_both_flux_directions);
+    failure_count +=
+        cfd::test::run_test("linear convection constant-field preservation", test_linear_constant_field_preservation);
+    failure_count +=
+        cfd::test::run_test("linear convection assembly identity", test_linear_assembly_matches_direct_balance);
+    failure_count += cfd::test::run_test("linear convection additive assembly", test_linear_assembly_is_additive);
+    failure_count += cfd::test::run_test("linear convection validation and input immutability",
+                                         test_linear_validation_and_input_immutability);
+    failure_count +=
+        cfd::test::run_test("scalar convection unsupported scheme rejection", test_rejects_unsupported_scheme);
     failure_count += cfd::test::run_test("scalar convection input validation and alias rejection",
                                          test_rejects_incompatible_inputs_and_aliasing);
     failure_count += cfd::test::run_test("scalar convection input immutability", test_does_not_mutate_inputs);
