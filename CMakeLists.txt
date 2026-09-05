@@ -232,6 +232,12 @@ if(BUILD_TESTING)
     )
 
     cfd_add_test(
+        cfd_cell_velocity_field_tests
+        cell_velocity_field
+        tests/CellVelocityFieldTests.cpp
+    )
+
+    cfd_add_test(
         cfd_cell_vector_field_tests
         cell_vector_field
         tests/CellVectorFieldTests.cpp
