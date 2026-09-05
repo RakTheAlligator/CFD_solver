@@ -89,6 +89,7 @@ add_library(
 
     src/numerics/IncompressibleMomentumAssembler.cpp
     src/numerics/LeastSquaresGradient.cpp
+    src/numerics/MomentumPressureResponse.cpp
     src/numerics/ScalarConvectionOperator.cpp
     src/numerics/ScalarDiffusionOperator.cpp
 )
@@ -241,6 +242,12 @@ if(BUILD_TESTING)
         cfd_cell_velocity_field_tests
         cell_velocity_field
         tests/CellVelocityFieldTests.cpp
+    )
+
+    cfd_add_test(
+        cfd_cell_momentum_pressure_response_tests
+        cell_momentum_pressure_response
+        tests/CellMomentumPressureResponseTests.cpp
     )
 
     cfd_add_test(
