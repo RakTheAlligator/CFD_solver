@@ -87,6 +87,7 @@ add_library(
     src/mesh_build/TopologyValidation.cpp
 
     src/numerics/LeastSquaresGradient.cpp
+    src/numerics/ScalarConvectionOperator.cpp
     src/numerics/ScalarDiffusionOperator.cpp
 )
 
@@ -231,6 +232,12 @@ if(BUILD_TESTING)
     )
 
     cfd_add_test(
+        cfd_face_flux_field_tests
+        face_flux_field
+        tests/FaceFluxFieldTests.cpp
+    )
+
+    cfd_add_test(
         cfd_scalar_boundary_conditions_tests
         scalar_boundary_conditions
         tests/ScalarBoundaryConditionsTests.cpp
@@ -252,6 +259,12 @@ if(BUILD_TESTING)
         cfd_scalar_diffusion_operator_tests
         scalar_diffusion_operator
         tests/ScalarDiffusionOperatorTests.cpp
+    )
+
+    cfd_add_test(
+        cfd_scalar_convection_operator_tests
+        scalar_convection_operator
+        tests/ScalarConvectionOperatorTests.cpp
     )
 
     cfd_add_test(
