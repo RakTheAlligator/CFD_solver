@@ -87,6 +87,7 @@ add_library(
     src/mesh_build/TopologyBuilder.cpp
     src/mesh_build/TopologyValidation.cpp
 
+    src/numerics/IncompressibleMomentumAssembler.cpp
     src/numerics/LeastSquaresGradient.cpp
     src/numerics/ScalarConvectionOperator.cpp
     src/numerics/ScalarDiffusionOperator.cpp
@@ -277,6 +278,12 @@ if(BUILD_TESTING)
         cfd_scalar_convection_operator_tests
         scalar_convection_operator
         tests/ScalarConvectionOperatorTests.cpp
+    )
+
+    cfd_add_test(
+        cfd_incompressible_momentum_assembler_tests
+        incompressible_momentum_assembler
+        tests/IncompressibleMomentumAssemblerTests.cpp
     )
 
     cfd_add_test(
