@@ -182,6 +182,11 @@ if(BUILD_VERIFICATION)
     )
 
     cfd_add_verification(
+        cfd_scalar_convection_diffusion_solution_convergence
+        verification/ScalarConvectionDiffusionSolutionConvergence.cpp
+    )
+
+    cfd_add_verification(
         cfd_unstructured_scalar_diffusion_convergence
         verification/UnstructuredScalarDiffusionConvergence.cpp
     )
