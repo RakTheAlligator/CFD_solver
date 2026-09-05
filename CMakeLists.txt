@@ -72,6 +72,7 @@ add_library(
     src/io/MeshReport.cpp
     src/io/VtkWriter.cpp
 
+    src/linear_algebra/EigenBiCGSTABSolver.cpp
     src/linear_algebra/EigenConjugateGradientSolver.cpp
     src/linear_algebra/ScalarLinearSystem.cpp
 
@@ -271,6 +272,12 @@ if(BUILD_TESTING)
         cfd_scalar_linear_system_tests
         scalar_linear_system
         tests/ScalarLinearSystemTests.cpp
+    )
+
+    cfd_add_test(
+        cfd_eigen_bicgstab_solver_tests
+        eigen_bicgstab_solver
+        tests/EigenBiCGSTABSolverTests.cpp
     )
 
     cfd_add_test(

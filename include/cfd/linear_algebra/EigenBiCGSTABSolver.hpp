@@ -13,35 +13,35 @@ namespace cfd
 
 class ScalarLinearSystem;
 
-/// Runtime controls for the Eigen conjugate-gradient backend.
-struct ConjugateGradientOptions
+/// Runtime controls for the Eigen BiCGSTAB backend.
+struct BiCGSTABOptions
 {
     double relative_tolerance{1.0e-10};
     Index maximum_iterations{1000};
 };
 
-/// Eigen conjugate-gradient solver for symmetric positive-definite systems.
+/// Eigen BiCGSTAB solver for nonsymmetric scalar systems.
 ///
-/// `compute_matrix()` copies the finite-volume coefficients into Eigen sparse
-/// storage and prepares a diagonal preconditioner. Repeated `solve()` calls
-/// reuse both objects and use the supplied solution as the initial guess.
-class EigenConjugateGradientSolver
+/// `compute_matrix()` copies the directed finite-volume coefficients into
+/// Eigen sparse storage and prepares a diagonal preconditioner. Repeated
+/// `solve()` calls reuse both objects and use the supplied solution as the
+/// initial guess.
+class EigenBiCGSTABSolver
 {
   public:
-    explicit EigenConjugateGradientSolver(ConjugateGradientOptions options = {});
+    explicit EigenBiCGSTABSolver(BiCGSTABOptions options = {});
 
-    EigenConjugateGradientSolver(const EigenConjugateGradientSolver &) = delete;
-    EigenConjugateGradientSolver &operator=(const EigenConjugateGradientSolver &) = delete;
-    EigenConjugateGradientSolver(EigenConjugateGradientSolver &&) = delete;
-    EigenConjugateGradientSolver &operator=(EigenConjugateGradientSolver &&) = delete;
+    EigenBiCGSTABSolver(const EigenBiCGSTABSolver &) = delete;
+    EigenBiCGSTABSolver &operator=(const EigenBiCGSTABSolver &) = delete;
+    EigenBiCGSTABSolver(EigenBiCGSTABSolver &&) = delete;
+    EigenBiCGSTABSolver &operator=(EigenBiCGSTABSolver &&) = delete;
 
-    ~EigenConjugateGradientSolver() = default;
+    ~EigenBiCGSTABSolver() = default;
 
     /// Converts and prepares a matrix for subsequent solves.
     ///
     /// Directed off-diagonal coefficients are copied without symmetrization.
-    /// The caller is responsible for satisfying the symmetric
-    /// positive-definite precondition of conjugate gradient.
+    /// Boundary-face off-diagonal storage is ignored.
     ///
     /// @throws std::invalid_argument If a matrix coefficient is non-finite or
     ///         the matrix cardinality is unsupported by Eigen.
@@ -62,10 +62,9 @@ class EigenConjugateGradientSolver
 
   private:
     using SparseMatrix = Eigen::SparseMatrix<double>;
-    using Solver =
-        Eigen::ConjugateGradient<SparseMatrix, Eigen::Lower | Eigen::Upper, Eigen::DiagonalPreconditioner<double>>;
+    using Solver = Eigen::BiCGSTAB<SparseMatrix, Eigen::DiagonalPreconditioner<double>>;
 
-    ConjugateGradientOptions options_;
+    BiCGSTABOptions options_;
     SparseMatrix matrix_;
     Solver solver_;
     Index matrix_size_{};
