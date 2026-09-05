@@ -188,6 +188,11 @@ if(BUILD_VERIFICATION)
     )
 
     cfd_add_verification(
+        cfd_incompressible_momentum_solution_convergence
+        verification/IncompressibleMomentumSolutionConvergence.cpp
+    )
+
+    cfd_add_verification(
         cfd_unstructured_scalar_diffusion_convergence
         verification/UnstructuredScalarDiffusionConvergence.cpp
     )
