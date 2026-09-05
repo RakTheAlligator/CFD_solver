@@ -90,6 +90,7 @@ add_library(
     src/numerics/IncompressibleMomentumAssembler.cpp
     src/numerics/LeastSquaresGradient.cpp
     src/numerics/MomentumPressureResponse.cpp
+    src/numerics/RhieChowInternalFaceInterpolation.cpp
     src/numerics/ScalarConvectionOperator.cpp
     src/numerics/ScalarDiffusionOperator.cpp
 )
@@ -263,6 +264,12 @@ if(BUILD_TESTING)
     )
 
     cfd_add_test(
+        cfd_face_pressure_response_field_tests
+        face_pressure_response_field
+        tests/FacePressureResponseFieldTests.cpp
+    )
+
+    cfd_add_test(
         cfd_scalar_boundary_conditions_tests
         scalar_boundary_conditions
         tests/ScalarBoundaryConditionsTests.cpp
@@ -278,6 +285,12 @@ if(BUILD_TESTING)
         cfd_least_squares_gradient_tests
         least_squares_gradient
         tests/LeastSquaresGradientTests.cpp
+    )
+
+    cfd_add_test(
+        cfd_rhie_chow_internal_face_interpolation_tests
+        rhie_chow_internal_face_interpolation
+        tests/RhieChowInternalFaceInterpolationTests.cpp
     )
 
     cfd_add_test(
