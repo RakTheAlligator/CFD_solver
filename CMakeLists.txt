@@ -88,6 +88,7 @@ add_library(
     src/mesh_build/TopologyValidation.cpp
 
     src/numerics/IncompressibleMomentumAssembler.cpp
+    src/numerics/IncompressiblePressureCorrectionAssembler.cpp
     src/numerics/LeastSquaresGradient.cpp
     src/numerics/MomentumPressureResponse.cpp
     src/numerics/RhieChowInternalFaceInterpolation.cpp
@@ -309,6 +310,12 @@ if(BUILD_TESTING)
         cfd_incompressible_momentum_assembler_tests
         incompressible_momentum_assembler
         tests/IncompressibleMomentumAssemblerTests.cpp
+    )
+
+    cfd_add_test(
+        cfd_incompressible_pressure_correction_assembler_tests
+        incompressible_pressure_correction_assembler
+        tests/IncompressiblePressureCorrectionAssemblerTests.cpp
     )
 
     cfd_add_test(
