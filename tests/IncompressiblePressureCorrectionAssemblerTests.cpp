@@ -102,6 +102,34 @@ std::array<cfd::Index, 2> two_internal_face_ids(const cfd::Mesh &mesh)
     return face_ids;
 }
 
+[[nodiscard]]
+std::array<cfd::Index, 2> two_boundary_face_ids(const cfd::Mesh &mesh)
+{
+    std::array<cfd::Index, 2> face_ids{cfd::invalid_index, cfd::invalid_index};
+    cfd::Index boundary_count{};
+    for (cfd::Index face_id = 0; face_id < mesh.face_count() && boundary_count < face_ids.size(); ++face_id)
+    {
+        if (!mesh.face_adjacencies()[face_id].is_boundary())
+        {
+            continue;
+        }
+        switch (boundary_count)
+        {
+        case 0:
+            face_ids[0] = face_id;
+            break;
+        case 1:
+            face_ids[1] = face_id;
+            break;
+        default:
+            cfd::test::fail("Boundary-face collection exceeded its requested size.");
+        }
+        ++boundary_count;
+    }
+    require(boundary_count == face_ids.size(), "Pressure-correction test fixture has fewer than two boundary faces.");
+    return face_ids;
+}
+
 void seed_system(cfd::ScalarLinearSystem &system)
 {
     for (cfd::Index cell_id = 0; cell_id < system.cell_count(); ++cell_id)
@@ -122,6 +150,21 @@ void require_seeded_system_unchanged(const cfd::ScalarLinearSystem &system, cons
     {
         require(system.diagonal()[cell_id] == 11.0 + static_cast<double>(cell_id), context + " diagonal changed.");
         require(system.rhs()[cell_id] == 21.0 + static_cast<double>(cell_id), context + " RHS changed.");
+    }
+    for (cfd::Index face_id = 0; face_id < system.face_count(); ++face_id)
+    {
+        require(system.owner_neighbor_coefficients()[face_id] == 31.0 + static_cast<double>(face_id),
+                context + " owner-neighbor coefficient changed.");
+        require(system.neighbor_owner_coefficients()[face_id] == 41.0 + static_cast<double>(face_id),
+                context + " neighbor-owner coefficient changed.");
+    }
+}
+
+void require_seeded_matrix_unchanged(const cfd::ScalarLinearSystem &system, const std::string &context)
+{
+    for (cfd::Index cell_id = 0; cell_id < system.cell_count(); ++cell_id)
+    {
+        require(system.diagonal()[cell_id] == 11.0 + static_cast<double>(cell_id), context + " diagonal changed.");
     }
     for (cfd::Index face_id = 0; face_id < system.face_count(); ++face_id)
     {
@@ -368,6 +411,180 @@ void test_later_invalid_internal_face_is_transactional()
         system, "Pressure-correction assembly mutated the system before rejecting a later invalid face.");
 }
 
+void test_boundary_flux_sign_convention()
+{
+    cfd::MeshBuildResult build_result{cfd::build_mesh(make_two_triangle_raw_mesh())};
+    const cfd::Mesh &mesh{build_result.mesh};
+    const cfd::IncompressiblePressureCorrectionAssembler assembler{mesh};
+    const cfd::Index face_id{two_boundary_face_ids(mesh)[0]};
+    const cfd::Index owner{mesh.face_adjacencies()[face_id].owner};
+
+    for (const double boundary_flux : {3.0, -3.0})
+    {
+        cfd::FaceFluxField provisional_mass_flux{mesh.face_count()};
+        provisional_mass_flux[face_id] = boundary_flux;
+        cfd::ScalarLinearSystem system{mesh};
+
+        assembler.add_boundary_provisional_flux_rhs(provisional_mass_flux, system);
+
+        require_near(system.rhs()[owner], -boundary_flux, 0.0,
+                     "Boundary provisional flux produced an incorrect owner RHS contribution.");
+    }
+}
+
+void test_boundary_fluxes_accumulate_additively_without_changing_matrix()
+{
+    cfd::MeshBuildResult build_result{cfd::build_mesh(make_two_triangle_raw_mesh())};
+    const cfd::Mesh &mesh{build_result.mesh};
+    const cfd::IncompressiblePressureCorrectionAssembler assembler{mesh};
+    cfd::FaceFluxField provisional_mass_flux{mesh.face_count()};
+    cfd::ScalarLinearSystem system{mesh};
+    seed_system(system);
+
+    for (cfd::Index face_id = 0; face_id < mesh.face_count(); ++face_id)
+    {
+        if (mesh.face_adjacencies()[face_id].is_boundary())
+        {
+            provisional_mass_flux[face_id] = 0.5 + static_cast<double>(face_id);
+        }
+    }
+
+    assembler.add_boundary_provisional_flux_rhs(provisional_mass_flux, system);
+
+    for (cfd::Index cell_id = 0; cell_id < mesh.cell_count(); ++cell_id)
+    {
+        double expected_rhs{21.0 + static_cast<double>(cell_id)};
+        for (cfd::Index face_id = 0; face_id < mesh.face_count(); ++face_id)
+        {
+            const cfd::FaceAdjacency &adjacency{mesh.face_adjacencies()[face_id]};
+            if (adjacency.is_boundary() && adjacency.owner == cell_id)
+            {
+                expected_rhs -= provisional_mass_flux[face_id];
+            }
+        }
+        require_near(system.rhs()[cell_id], expected_rhs, 0.0,
+                     "Boundary provisional fluxes did not accumulate on the seeded RHS.");
+    }
+    require_seeded_matrix_unchanged(system, "Boundary provisional-flux assembly");
+}
+
+void test_internal_flux_values_are_ignored_by_boundary_assembly()
+{
+    cfd::MeshBuildResult build_result{cfd::build_mesh(make_two_triangle_raw_mesh())};
+    const cfd::Mesh &mesh{build_result.mesh};
+    const cfd::IncompressiblePressureCorrectionAssembler assembler{mesh};
+    cfd::FaceFluxField provisional_mass_flux{mesh.face_count()};
+    cfd::ScalarLinearSystem system{mesh};
+    seed_system(system);
+    const cfd::Index face_id{internal_face_id(mesh)};
+
+    for (const double invalid_flux : {std::numeric_limits<double>::quiet_NaN(), std::numeric_limits<double>::infinity(),
+                                      -std::numeric_limits<double>::infinity()})
+    {
+        provisional_mass_flux[face_id] = invalid_flux;
+        assembler.add_boundary_provisional_flux_rhs(provisional_mass_flux, system);
+        require_seeded_system_unchanged(system, "Boundary assembly consumed an internal provisional flux.");
+    }
+}
+
+void test_boundary_assembly_rejects_incompatible_inputs_before_mutation()
+{
+    cfd::MeshBuildResult build_result{cfd::build_mesh(make_two_triangle_raw_mesh())};
+    const cfd::Mesh &mesh{build_result.mesh};
+    const cfd::IncompressiblePressureCorrectionAssembler assembler{mesh};
+    const cfd::FaceFluxField provisional_mass_flux{mesh.face_count()};
+    cfd::ScalarLinearSystem system{mesh};
+    seed_system(system);
+
+    const cfd::FaceFluxField wrong_flux{mesh.face_count() + 1};
+    require_rejected_without_mutation<std::invalid_argument>(
+        [&]() { assembler.add_boundary_provisional_flux_rhs(wrong_flux, system); }, system,
+        "Boundary pressure-correction assembly accepted a provisional flux with incorrect cardinality.");
+
+    cfd::MeshBuildResult other_build_result{cfd::build_mesh(make_two_triangle_raw_mesh())};
+    cfd::ScalarLinearSystem other_system{other_build_result.mesh};
+    seed_system(other_system);
+    require_rejected_without_mutation<std::invalid_argument>(
+        [&]() { assembler.add_boundary_provisional_flux_rhs(provisional_mass_flux, other_system); }, other_system,
+        "Boundary pressure-correction assembly accepted a system referencing another Mesh.");
+}
+
+void test_rejects_nonfinite_boundary_flux_before_mutation()
+{
+    cfd::MeshBuildResult build_result{cfd::build_mesh(make_two_triangle_raw_mesh())};
+    const cfd::Mesh &mesh{build_result.mesh};
+    const cfd::IncompressiblePressureCorrectionAssembler assembler{mesh};
+    cfd::FaceFluxField provisional_mass_flux{mesh.face_count()};
+    cfd::ScalarLinearSystem system{mesh};
+    seed_system(system);
+    const cfd::Index face_id{two_boundary_face_ids(mesh)[0]};
+
+    for (const double invalid_flux : {std::numeric_limits<double>::quiet_NaN(), std::numeric_limits<double>::infinity(),
+                                      -std::numeric_limits<double>::infinity()})
+    {
+        provisional_mass_flux[face_id] = invalid_flux;
+        require_rejected_without_mutation<std::runtime_error>(
+            [&]() { assembler.add_boundary_provisional_flux_rhs(provisional_mass_flux, system); }, system,
+            "Boundary pressure-correction assembly accepted a non-finite boundary provisional flux.");
+    }
+}
+
+void test_later_invalid_boundary_face_is_transactional()
+{
+    cfd::MeshBuildResult build_result{cfd::build_mesh(make_two_triangle_raw_mesh())};
+    const cfd::Mesh &mesh{build_result.mesh};
+    const cfd::IncompressiblePressureCorrectionAssembler assembler{mesh};
+    cfd::FaceFluxField provisional_mass_flux{mesh.face_count()};
+    const std::array boundary_ids{two_boundary_face_ids(mesh)};
+    provisional_mass_flux[boundary_ids[0]] = 3.0;
+    provisional_mass_flux[boundary_ids[1]] = std::numeric_limits<double>::infinity();
+    cfd::ScalarLinearSystem system{mesh};
+    seed_system(system);
+
+    require_rejected_without_mutation<std::runtime_error>(
+        [&]() { assembler.add_boundary_provisional_flux_rhs(provisional_mass_flux, system); }, system,
+        "Boundary pressure-correction assembly mutated the system before rejecting a later invalid face.");
+}
+
+void test_combined_provisional_flux_rhs_is_negative_cell_mass_imbalance()
+{
+    cfd::MeshBuildResult build_result{cfd::build_mesh(make_two_triangle_raw_mesh())};
+    const cfd::Mesh &mesh{build_result.mesh};
+    const cfd::IncompressiblePressureCorrectionAssembler assembler{mesh};
+    cfd::FaceFluxField provisional_mass_flux{mesh.face_count()};
+    const cfd::FacePressureResponseField face_pressure_response{mesh.face_count(), 2.0};
+    cfd::ScalarLinearSystem system{mesh};
+    seed_system(system);
+
+    for (cfd::Index face_id = 0; face_id < mesh.face_count(); ++face_id)
+    {
+        provisional_mass_flux[face_id] = 0.25 + static_cast<double>(face_id);
+    }
+
+    assembler.add_internal_face_contributions(provisional_mass_flux, face_pressure_response, system);
+    assembler.add_boundary_provisional_flux_rhs(provisional_mass_flux, system);
+
+    for (cfd::Index cell_id = 0; cell_id < mesh.cell_count(); ++cell_id)
+    {
+        double outward_mass_flux{};
+        for (cfd::Index face_id = 0; face_id < mesh.face_count(); ++face_id)
+        {
+            const cfd::FaceAdjacency &adjacency{mesh.face_adjacencies()[face_id]};
+            if (adjacency.owner == cell_id)
+            {
+                outward_mass_flux += provisional_mass_flux[face_id];
+            }
+            else if (!adjacency.is_boundary() && adjacency.neighbor == cell_id)
+            {
+                outward_mass_flux -= provisional_mass_flux[face_id];
+            }
+        }
+        const double expected_rhs{21.0 + static_cast<double>(cell_id) - outward_mass_flux};
+        require_near(system.rhs()[cell_id], expected_rhs, 0.0,
+                     "Combined pressure-correction assembly did not produce the negative cell mass imbalance.");
+    }
+}
+
 } // namespace
 
 int main()
@@ -389,6 +606,19 @@ int main()
                                          test_rejects_invalid_internal_pressure_response_before_mutation);
     failure_count += cfd::test::run_test("pressure-correction transactional validation",
                                          test_later_invalid_internal_face_is_transactional);
+    failure_count += cfd::test::run_test("pressure-correction boundary flux sign", test_boundary_flux_sign_convention);
+    failure_count += cfd::test::run_test("pressure-correction boundary additive assembly",
+                                         test_boundary_fluxes_accumulate_additively_without_changing_matrix);
+    failure_count += cfd::test::run_test("pressure-correction boundary internal-face isolation",
+                                         test_internal_flux_values_are_ignored_by_boundary_assembly);
+    failure_count += cfd::test::run_test("pressure-correction boundary API validation",
+                                         test_boundary_assembly_rejects_incompatible_inputs_before_mutation);
+    failure_count += cfd::test::run_test("pressure-correction boundary flux validation",
+                                         test_rejects_nonfinite_boundary_flux_before_mutation);
+    failure_count += cfd::test::run_test("pressure-correction boundary transactional validation",
+                                         test_later_invalid_boundary_face_is_transactional);
+    failure_count += cfd::test::run_test("pressure-correction combined provisional-flux RHS",
+                                         test_combined_provisional_flux_rhs_is_negative_cell_mass_imbalance);
 
     return cfd::test::finish_tests(failure_count, "incompressible pressure correction assembler");
 }

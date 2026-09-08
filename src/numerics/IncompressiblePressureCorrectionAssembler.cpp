@@ -34,6 +34,13 @@ void throw_invalid_internal_face_value(const Index face_id, const std::string &r
     throw std::runtime_error("Pressure-correction assembly rejected face " + std::to_string(face_id) + ": " + reason);
 }
 
+[[noreturn]]
+void throw_invalid_boundary_face_value(const Index face_id, const std::string &reason)
+{
+    throw std::runtime_error("Pressure-correction boundary assembly rejected face " + std::to_string(face_id) + ": " +
+                             reason);
+}
+
 } // namespace
 
 IncompressiblePressureCorrectionAssembler::IncompressiblePressureCorrectionAssembler(const Mesh &mesh) noexcept
@@ -100,6 +107,46 @@ void IncompressiblePressureCorrectionAssembler::add_internal_face_contributions(
 
         rhs[adjacency.owner] -= provisional_flux;
         rhs[adjacency.neighbor] += provisional_flux;
+    }
+}
+
+void IncompressiblePressureCorrectionAssembler::add_boundary_provisional_flux_rhs(
+    const FaceFluxField &provisional_mass_flux, ScalarLinearSystem &system) const
+{
+    const Index face_count{mesh_->face_count()};
+    if (provisional_mass_flux.size() != face_count)
+    {
+        throw std::invalid_argument("Provisional mass-flux size must match the pressure-correction Mesh face count.");
+    }
+    validate_system(*mesh_, system);
+
+    const auto face_adjacencies{mesh_->face_adjacencies()};
+    const auto flux_values{provisional_mass_flux.values()};
+
+    // Validate every used boundary face before modifying the caller-owned RHS.
+    for (Index face_id = 0; face_id < face_count; ++face_id)
+    {
+        if (!face_adjacencies[face_id].is_boundary())
+        {
+            continue;
+        }
+
+        if (!std::isfinite(flux_values[face_id]))
+        {
+            throw_invalid_boundary_face_value(face_id, "the provisional mass flux must be finite.");
+        }
+    }
+
+    auto rhs{system.rhs()};
+    for (Index face_id = 0; face_id < face_count; ++face_id)
+    {
+        const FaceAdjacency &adjacency{face_adjacencies[face_id]};
+        if (!adjacency.is_boundary())
+        {
+            continue;
+        }
+
+        rhs[adjacency.owner] -= flux_values[face_id];
     }
 }
 

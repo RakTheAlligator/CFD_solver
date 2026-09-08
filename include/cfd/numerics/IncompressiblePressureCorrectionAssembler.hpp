@@ -8,7 +8,7 @@ class FacePressureResponseField;
 class Mesh;
 class ScalarLinearSystem;
 
-/// Assembles internal-face incompressible pressure-correction contributions.
+/// Assembles incompressible pressure-correction contributions.
 ///
 /// `F_star` is the integrated owner-oriented provisional mass flux, and `Dp_f`
 /// is the integrated mass-flux response to the pressure difference. For each
@@ -21,7 +21,7 @@ class ScalarLinearSystem;
 class IncompressiblePressureCorrectionAssembler
 {
   public:
-    /// Constructs an internal-face assembler for a fixed Mesh.
+    /// Constructs a pressure-correction assembler for a fixed Mesh.
     explicit IncompressiblePressureCorrectionAssembler(const Mesh &mesh) noexcept;
 
     IncompressiblePressureCorrectionAssembler(const IncompressiblePressureCorrectionAssembler &) = delete;
@@ -44,8 +44,9 @@ class IncompressiblePressureCorrectionAssembler
     /// before the system is modified.
     ///
     /// @note This internal-face component alone does not form a complete
-    ///       solvable pressure-correction system. Boundary treatment and
-    ///       pressure-reference/gauge fixing remain intentionally absent.
+    ///       solvable pressure-correction system. Boundary pressure-response
+    ///       treatment and pressure-reference/gauge fixing remain intentionally
+    ///       absent.
     ///
     /// @throws std::invalid_argument If a face-field cardinality is
     ///         incompatible, or `system` does not reference this assembler's
@@ -56,6 +57,26 @@ class IncompressiblePressureCorrectionAssembler
     void add_internal_face_contributions(const FaceFluxField &provisional_mass_flux,
                                          const FacePressureResponseField &face_pressure_response,
                                          ScalarLinearSystem &system) const;
+
+    /// Adds the provisional boundary mass imbalance to the right-hand side.
+    ///
+    /// `F_b_star` is the integrated outward, owner-oriented provisional mass
+    /// flux. Each boundary face contributes `-F_b_star` to its owner RHS; the
+    /// matrix is unchanged. Combined with `add_internal_face_contributions()`,
+    /// the provisional-flux increment is
+    /// `delta_rhs[P] = -sum_outward(F_f_star)` before later boundary
+    /// pressure-response terms are added.
+    ///
+    /// Internal face values are neither read nor validated. This method does
+    /// not define how pressure correction changes boundary fluxes.
+    ///
+    /// @throws std::invalid_argument If the face-field cardinality is
+    ///         incompatible, or `system` does not reference this assembler's
+    ///         exact Mesh with matching cardinalities.
+    /// @throws std::runtime_error If a used boundary provisional mass flux is
+    ///         not finite.
+    void add_boundary_provisional_flux_rhs(const FaceFluxField &provisional_mass_flux,
+                                           ScalarLinearSystem &system) const;
 
   private:
     const Mesh *mesh_;
