@@ -4,6 +4,7 @@
 #include "cfd/meshing/GmshMesher.hpp"
 #include "cfd/meshing/RectangleGeometry.hpp"
 
+#include <array>
 #include <filesystem>
 #include <string>
 #include <vector>
@@ -33,9 +34,13 @@ struct NamedScalarBoundaryCondition
 };
 
 /// Cell-scalar field data read from an OpenFOAM-inspired field file.
+///
+/// Dimension exponents are retained exactly as parsed; the reader performs no
+/// unit conversion.
 struct ScalarFieldInput
 {
     std::string object_name;
+    std::array<double, 7> dimensions{};
     double internal_value{};
     std::vector<NamedScalarBoundaryCondition> boundary_conditions;
 };

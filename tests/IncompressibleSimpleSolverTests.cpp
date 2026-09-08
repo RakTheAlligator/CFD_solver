@@ -5,6 +5,7 @@
 #include "cfd/field/FaceFluxField.hpp"
 #include "cfd/field/PressureCorrectionBoundaryConditions.hpp"
 #include "cfd/field/ScalarBoundaryConditions.hpp"
+#include "cfd/math/Vector2.hpp"
 #include "cfd/mesh/Boundary.hpp"
 #include "cfd/mesh/Cell.hpp"
 #include "cfd/mesh/Mesh.hpp"
@@ -170,6 +171,8 @@ cfd::IncompressibleSimpleOptions test_options()
 
 void test_constructor_and_options_validation()
 {
+    require(cfd::IncompressibleSimpleOptions{}.rhie_chow_flux_relaxation_factor == 1.0,
+            "SIMPLE changed the default unrelaxed Rhie-Chow flux path.");
     cfd::MeshBuildResult build_result{cfd::build_mesh(make_channel_raw_mesh(2, 2))};
     const cfd::Mesh &mesh{build_result.mesh};
     require_throws<std::invalid_argument>(
@@ -200,6 +203,14 @@ void test_constructor_and_options_validation()
                 cfd::IncompressibleSimpleSolver solver{mesh, 1.0, 0.1, cfd::ScalarConvectionScheme::Linear, options};
             },
             "SIMPLE accepted an invalid pressure relaxation factor.");
+
+        options = test_options();
+        options.rhie_chow_flux_relaxation_factor = invalid_factor;
+        require_throws<std::invalid_argument>(
+            [&]() {
+                cfd::IncompressibleSimpleSolver solver{mesh, 1.0, 0.1, cfd::ScalarConvectionScheme::Linear, options};
+            },
+            "SIMPLE accepted an invalid Rhie-Chow flux relaxation factor.");
     }
     for (const double invalid_tolerance :
          {0.0, -1.0, 1.0, std::numeric_limits<double>::quiet_NaN(), std::numeric_limits<double>::infinity()})
@@ -423,6 +434,83 @@ cfd::IncompressibleSimpleResult solve_pressure_driven_channel(
                         velocity, pressure, mass_flux);
 }
 
+struct OneIterationFluxResult
+{
+    cfd::IncompressibleSimpleResult solve_result;
+    std::vector<double> mass_flux;
+};
+
+[[nodiscard]]
+OneIterationFluxResult run_one_iteration_with_flux_relaxation(const cfd::Mesh &mesh, const double relaxation_factor,
+                                                              const std::vector<double> &initial_mass_flux)
+{
+    cfd::CellVelocityField velocity{mesh.cell_count()};
+    cfd::CellScalarField pressure{mesh.cell_count()};
+    cfd::FaceFluxField mass_flux{mesh.face_count()};
+    std::copy(initial_mass_flux.begin(), initial_mass_flux.end(), mass_flux.values().begin());
+    cfd::IncompressibleSimpleOptions options{test_options()};
+    options.maximum_iterations = 1;
+    options.velocity_relative_tolerance = 1.0e-14;
+    options.rhie_chow_flux_relaxation_factor = relaxation_factor;
+    const cfd::IncompressibleSimpleResult result{
+        solve_pressure_driven_channel(mesh, options, velocity, pressure, mass_flux)};
+    return {result, {mass_flux.values().begin(), mass_flux.values().end()}};
+}
+
+void test_rhie_chow_flux_relaxation_path()
+{
+    cfd::MeshBuildResult build_result{cfd::build_mesh(make_channel_raw_mesh(2, 2))};
+    const cfd::Mesh &mesh{build_result.mesh};
+    constexpr cfd::Vector2 uniform_flux_velocity{0.01, 0.001};
+    std::vector<double> initial_mass_flux(mesh.face_count());
+    for (cfd::Index face_id = 0; face_id < mesh.face_count(); ++face_id)
+    {
+        const cfd::Vector2 &area_vector{mesh.face_area_vectors()[face_id]};
+        initial_mass_flux[face_id] = uniform_flux_velocity.x * area_vector.x + uniform_flux_velocity.y * area_vector.y;
+    }
+
+    // A uniform vector dotted with every owner-oriented area vector is
+    // divergence-free. The linear pressure-correction projection therefore
+    // preserves the same blend that was applied to the provisional flux.
+    const OneIterationFluxResult unrelaxed{run_one_iteration_with_flux_relaxation(mesh, 1.0, initial_mass_flux)};
+    constexpr double relaxation_factor{0.25};
+    const OneIterationFluxResult relaxed{
+        run_one_iteration_with_flux_relaxation(mesh, relaxation_factor, initial_mass_flux)};
+    require(unrelaxed.solve_result.maximum_mass_imbalance < 1.0e-12 &&
+                relaxed.solve_result.maximum_mass_imbalance < 1.0e-12,
+            "Flux relaxation prevented pressure correction from restoring continuity.");
+
+    const auto face_adjacencies{mesh.face_adjacencies()};
+    const auto face_boundary_ids{mesh.face_boundary_ids()};
+    const cfd::PressureCorrectionBoundaryConditions pressure_correction_conditions{
+        channel_pressure_correction_conditions(mesh)};
+    bool checked_internal_face{};
+    bool checked_fixed_pressure_face{};
+    bool checked_nonzero_fixed_mass_flux_face{};
+    for (cfd::Index face_id = 0; face_id < mesh.face_count(); ++face_id)
+    {
+        if (face_adjacencies[face_id].is_boundary() && pressure_correction_conditions[face_boundary_ids[face_id]] ==
+                                                           cfd::PressureCorrectionBoundaryConditionType::FixedMassFlux)
+        {
+            require(relaxed.mass_flux[face_id] == initial_mass_flux[face_id],
+                    "Flux relaxation changed a FixedMassFlux boundary value.");
+            checked_nonzero_fixed_mass_flux_face =
+                checked_nonzero_fixed_mass_flux_face || initial_mass_flux[face_id] != 0.0;
+            continue;
+        }
+
+        checked_internal_face = checked_internal_face || !face_adjacencies[face_id].is_boundary();
+        checked_fixed_pressure_face = checked_fixed_pressure_face || face_adjacencies[face_id].is_boundary();
+
+        const double expected_flux{relaxation_factor * unrelaxed.mass_flux[face_id] +
+                                   (1.0 - relaxation_factor) * initial_mass_flux[face_id]};
+        require(std::abs(relaxed.mass_flux[face_id] - expected_flux) < 1.0e-11,
+                "Computed-face flux does not follow the requested Rhie-Chow relaxation blend.");
+    }
+    require(checked_internal_face && checked_fixed_pressure_face && checked_nonzero_fixed_mass_flux_face,
+            "Flux-relaxation fixture did not exercise every required face category.");
+}
+
 void test_pressure_correction_gradient_boundary_mapping()
 {
     cfd::MeshBuildResult build_result{cfd::build_mesh(make_channel_raw_mesh(8, 4))};
@@ -494,6 +582,7 @@ int main()
     failure_count += cfd::test::run_test("SIMPLE solve input validation", test_input_validation_precedes_iterations);
     failure_count += cfd::test::run_test("SIMPLE p-prime gradient boundary mapping",
                                          test_pressure_correction_gradient_boundary_mapping);
+    failure_count += cfd::test::run_test("SIMPLE Rhie-Chow flux relaxation", test_rhie_chow_flux_relaxation_path);
     failure_count += cfd::test::run_test("SIMPLE channel convergence",
                                          test_maximum_iteration_nonconvergence_and_channel_convergence);
 

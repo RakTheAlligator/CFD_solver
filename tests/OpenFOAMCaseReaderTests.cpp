@@ -7,6 +7,7 @@
 
 #include "support/TestUtils.hpp"
 
+#include <array>
 #include <filesystem>
 #include <fstream>
 #include <random>
@@ -461,6 +462,7 @@ boundaryField
     const cfd::input::ScalarFieldInput input{read_scalar_input(content)};
 
     require(input.object_name == "c", "Scalar field object name was not retained.");
+    require(input.dimensions == std::array<double, 7>{}, "Dimensionless scalar-field dimensions were not retained.");
     require_near(input.internal_value, -125.0, 0.0, "Scalar internalField was parsed incorrectly.");
     require(input.boundary_conditions.size() == 3, "Scalar field has an incorrect boundary-condition count.");
 
@@ -474,6 +476,76 @@ boundaryField
             "zeroGradient was not mapped to the expected zero Neumann condition.");
     require(outlet.type == cfd::ScalarBoundaryConditionType::Neumann && outlet.value == -0.25,
             "fixedGradient was not mapped to the expected Neumann condition.");
+}
+
+void test_preserves_nonzero_physical_dimensions()
+{
+    constexpr std::string_view content{R"(
+FoamFile
+{
+    version 2.0;
+    format ascii;
+    class volScalarField;
+    object p;
+}
+dimensions [1 -1 -2 0 0 0 0];
+internalField uniform 0;
+boundaryField {}
+)"};
+
+    const cfd::input::ScalarFieldInput input{read_scalar_input(content)};
+    constexpr std::array<double, 7> expected_dimensions{1.0, -1.0, -2.0, 0.0, 0.0, 0.0, 0.0};
+
+    require(input.dimensions == expected_dimensions, "Nonzero scalar-field dimensions were not retained.");
+}
+
+void test_rejects_malformed_dimension_list()
+{
+    constexpr std::string_view content{R"(
+FoamFile
+{
+    format ascii;
+    class volScalarField;
+    object c;
+}
+dimensions [0 1 invalid 0 0 0 0];
+internalField uniform 0;
+boundaryField {}
+)"};
+
+    require_throws<std::runtime_error>([content]() { static_cast<void>(read_scalar_input(content)); },
+                                       "Scalar reader accepted a malformed dimension list.");
+}
+
+void test_requires_exactly_seven_dimension_exponents()
+{
+    constexpr std::string_view too_few{R"(
+FoamFile
+{
+    format ascii;
+    class volScalarField;
+    object c;
+}
+dimensions [0 0 0 0 0 0];
+internalField uniform 0;
+boundaryField {}
+)"};
+    constexpr std::string_view too_many{R"(
+FoamFile
+{
+    format ascii;
+    class volScalarField;
+    object c;
+}
+dimensions [0 0 0 0 0 0 0 0];
+internalField uniform 0;
+boundaryField {}
+)"};
+
+    require_throws<std::runtime_error>([too_few]() { static_cast<void>(read_scalar_input(too_few)); },
+                                       "Scalar reader accepted fewer than seven dimension exponents.");
+    require_throws<std::runtime_error>([too_many]() { static_cast<void>(read_scalar_input(too_many)); },
+                                       "Scalar reader accepted more than seven dimension exponents.");
 }
 
 void test_accepts_line_and_block_comments()
@@ -702,6 +774,11 @@ int main()
     failure_count += cfd::test::run_test("reject unknown key", test_rejects_unknown_key);
     failure_count += cfd::test::run_test("read scalar field and map supported conditions",
                                          test_reads_scalar_field_and_maps_supported_conditions);
+    failure_count +=
+        cfd::test::run_test("preserve nonzero physical dimensions", test_preserves_nonzero_physical_dimensions);
+    failure_count += cfd::test::run_test("reject malformed dimension list", test_rejects_malformed_dimension_list);
+    failure_count += cfd::test::run_test("require exactly seven dimension exponents",
+                                         test_requires_exactly_seven_dimension_exponents);
     failure_count += cfd::test::run_test("accept line and block comments", test_accepts_line_and_block_comments);
     failure_count += cfd::test::run_test("resolve boundary names independently of input order",
                                          test_resolves_boundaries_independently_of_input_order);

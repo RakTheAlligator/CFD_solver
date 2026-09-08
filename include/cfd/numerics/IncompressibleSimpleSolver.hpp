@@ -4,6 +4,7 @@
 #include "cfd/field/CellScalarField.hpp"
 #include "cfd/field/CellVectorField.hpp"
 #include "cfd/field/CellVelocityField.hpp"
+#include "cfd/field/FaceFluxField.hpp"
 #include "cfd/field/FacePressureResponseField.hpp"
 #include "cfd/linear_algebra/EigenBiCGSTABSolver.hpp"
 #include "cfd/linear_algebra/EigenConjugateGradientSolver.hpp"
@@ -19,7 +20,6 @@
 namespace cfd
 {
 
-class FaceFluxField;
 class Mesh;
 class PressureCorrectionBoundaryConditions;
 class ScalarBoundaryConditions;
@@ -30,6 +30,14 @@ struct IncompressibleSimpleOptions
     Index maximum_iterations{500};
     double momentum_relaxation_factor{1.0};
     double pressure_relaxation_factor{0.3};
+    /// Relaxes computed integrated owner-oriented Rhie-Chow mass fluxes before pressure correction.
+    ///
+    /// Internal and `FixedPressure` boundary faces use
+    /// `F_provisional = alpha_rc * F_RhieChow + (1 - alpha_rc) * F_previous`,
+    /// where `F_previous` is the corrected flux from the preceding iteration.
+    /// `FixedMassFlux` boundary values and face pressure-response coefficients
+    /// are unchanged. A value of one preserves the unrelaxed path.
+    double rhie_chow_flux_relaxation_factor{1.0};
     double velocity_relative_tolerance{1.0e-8};
     double continuity_relative_tolerance{1.0e-10};
     BiCGSTABOptions momentum_linear_solver{};
@@ -57,6 +65,10 @@ struct IncompressibleSimpleResult
 /// one. The current momentum-weighted interpolation uses the final momentum
 /// diagonal and does not yet implement a relaxation-consistent Majumdar
 /// treatment. Pressure under-relaxation remains supported.
+///
+/// Computed provisional face mass fluxes may be relaxed independently after
+/// Rhie-Chow interpolation and before pressure-correction assembly. This is
+/// provisional face-flux relaxation, not Majumdar momentum under-relaxation.
 ///
 /// @note The referenced Mesh is not owned and must outlive this solver.
 /// @note Construction allocates the field and system workspace. Outer
@@ -124,6 +136,7 @@ class IncompressibleSimpleSolver
     IncompressiblePressureVelocityCorrection pressure_velocity_corrector_;
 
     CellVelocityField previous_velocity_;
+    FaceFluxField previous_mass_flux_;
     CellVectorField u_gradient_;
     CellVectorField v_gradient_;
     CellVectorField pressure_gradient_;

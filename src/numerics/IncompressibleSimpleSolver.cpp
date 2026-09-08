@@ -53,6 +53,11 @@ IncompressibleSimpleOptions validate_options(IncompressibleSimpleOptions options
     {
         throw std::invalid_argument("SIMPLE pressure relaxation factor must be finite and in (0, 1].");
     }
+    if (!std::isfinite(options.rhie_chow_flux_relaxation_factor) || !(options.rhie_chow_flux_relaxation_factor > 0.0) ||
+        !(options.rhie_chow_flux_relaxation_factor <= 1.0))
+    {
+        throw std::invalid_argument("SIMPLE Rhie-Chow flux relaxation factor must be finite and in (0, 1].");
+    }
     if (!std::isfinite(options.velocity_relative_tolerance) || !(options.velocity_relative_tolerance > 0.0) ||
         !(options.velocity_relative_tolerance < 1.0))
     {
@@ -284,11 +289,11 @@ IncompressibleSimpleSolver::IncompressibleSimpleSolver(const Mesh &mesh, const d
                           convection_scheme),
       internal_face_interpolation_(mesh, density_), boundary_face_interpolation_(mesh, density_),
       pressure_correction_assembler_(mesh), pressure_velocity_corrector_(mesh), previous_velocity_(mesh.cell_count()),
-      u_gradient_(mesh.cell_count()), v_gradient_(mesh.cell_count()), pressure_gradient_(mesh.cell_count()),
-      pressure_correction_gradient_(mesh.cell_count()), momentum_response_(mesh.cell_count()),
-      face_pressure_response_(mesh.face_count()), pressure_correction_(mesh.cell_count()),
-      mass_imbalance_(mesh.cell_count()), u_momentum_system_(mesh), v_momentum_system_(mesh),
-      pressure_correction_system_(mesh)
+      previous_mass_flux_(mesh.face_count()), u_gradient_(mesh.cell_count()), v_gradient_(mesh.cell_count()),
+      pressure_gradient_(mesh.cell_count()), pressure_correction_gradient_(mesh.cell_count()),
+      momentum_response_(mesh.cell_count()), face_pressure_response_(mesh.face_count()),
+      pressure_correction_(mesh.cell_count()), mass_imbalance_(mesh.cell_count()), u_momentum_system_(mesh),
+      v_momentum_system_(mesh), pressure_correction_system_(mesh)
 {
 }
 
@@ -331,11 +336,39 @@ IncompressibleSimpleResult IncompressibleSimpleSolver::solve(
         require_converged(v_momentum_solver_.solve(v_momentum_system_.rhs(), velocity.v().values()), "v-momentum");
 
         compute_momentum_pressure_response(*mesh_, u_momentum_system_, v_momentum_system_, momentum_response_);
+        const bool relax_rhie_chow_flux{options_.rhie_chow_flux_relaxation_factor != 1.0};
+
+        if (relax_rhie_chow_flux)
+        {
+            std::copy(mass_flux.values().begin(), mass_flux.values().end(), previous_mass_flux_.values().begin());
+        }
         internal_face_interpolation_.update_internal_faces(velocity, pressure, pressure_gradient_, momentum_response_,
                                                            mass_flux, face_pressure_response_);
         boundary_face_interpolation_.update_fixed_pressure_boundaries(
             velocity, pressure, pressure_gradient_, momentum_response_, pressure_boundary_conditions,
             pressure_correction_boundary_conditions, mass_flux, face_pressure_response_);
+        if (relax_rhie_chow_flux)
+        {
+            const double relaxation_factor{options_.rhie_chow_flux_relaxation_factor};
+            const auto face_adjacencies{mesh_->face_adjacencies()};
+            const auto face_boundary_ids{mesh_->face_boundary_ids()};
+            for (Index face_id = 0; face_id < mesh_->face_count(); ++face_id)
+            {
+                if (face_adjacencies[face_id].is_boundary())
+                {
+                    switch (pressure_correction_boundary_conditions[face_boundary_ids[face_id]])
+                    {
+                    case PressureCorrectionBoundaryConditionType::FixedMassFlux:
+                        continue;
+
+                    case PressureCorrectionBoundaryConditionType::FixedPressure:
+                        break;
+                    }
+                }
+                mass_flux[face_id] =
+                    relaxation_factor * mass_flux[face_id] + (1.0 - relaxation_factor) * previous_mass_flux_[face_id];
+            }
+        }
 
         pressure_correction_system_.clear();
         pressure_correction_assembler_.add_internal_face_contributions(mass_flux, face_pressure_response_,

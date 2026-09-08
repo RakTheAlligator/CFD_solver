@@ -5,3 +5,4 @@ build/
 /build-debug
 /build-release/
 /build-sanitizers/
+cases/**/results/

@@ -5,6 +5,7 @@
 #include "cfd/mesh/Mesh.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cctype>
 #include <cmath>
 #include <cstdint>
@@ -97,15 +98,10 @@ class CaseParser
         expect_keyword("dimensions");
         expect(TokenKind::LeftBracket, "'['");
 
-        constexpr std::size_t dimension_count{7};
-        for (std::size_t dimension_index = 0; dimension_index < dimension_count; ++dimension_index)
+        std::array<double, 7> dimensions{};
+        for (double &dimension : dimensions)
         {
-            const Token dimension{take_number("a dimension exponent")};
-
-            if (dimension.number != 0.0)
-            {
-                fail(dimension.line, "Only dimensionless scalar fields are supported.");
-            }
+            dimension = take_number("a dimension exponent").number;
         }
 
         expect(TokenKind::RightBracket, "']'");
@@ -155,6 +151,7 @@ class CaseParser
 
         return {
             .object_name = std::move(object_name),
+            .dimensions = dimensions,
             .internal_value = internal_value,
             .boundary_conditions = std::move(boundary_conditions),
         };
