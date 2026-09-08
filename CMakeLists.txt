@@ -90,6 +90,7 @@ add_library(
     src/numerics/IncompressibleMomentumAssembler.cpp
     src/numerics/IncompressiblePressureCorrectionAssembler.cpp
     src/numerics/IncompressiblePressureVelocityCorrection.cpp
+    src/numerics/IncompressibleSimpleSolver.cpp
     src/numerics/LeastSquaresGradient.cpp
     src/numerics/MassFluxBalance.cpp
     src/numerics/MomentumPressureResponse.cpp
@@ -197,6 +198,11 @@ if(BUILD_VERIFICATION)
     cfd_add_verification(
         cfd_incompressible_momentum_solution_convergence
         verification/IncompressibleMomentumSolutionConvergence.cpp
+    )
+
+    cfd_add_verification(
+        cfd_incompressible_simple_poiseuille
+        verification/IncompressibleSimplePoiseuille.cpp
     )
 
     cfd_add_verification(
@@ -332,6 +338,12 @@ if(BUILD_TESTING)
         cfd_incompressible_pressure_velocity_correction_tests
         incompressible_pressure_velocity_correction
         tests/IncompressiblePressureVelocityCorrectionTests.cpp
+    )
+
+    cfd_add_test(
+        cfd_incompressible_simple_solver_tests
+        incompressible_simple_solver
+        tests/IncompressibleSimpleSolverTests.cpp
     )
 
     cfd_add_test(
