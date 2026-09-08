@@ -6,6 +6,7 @@ namespace cfd
 class FaceFluxField;
 class FacePressureResponseField;
 class Mesh;
+class PressureCorrectionBoundaryConditions;
 class ScalarLinearSystem;
 
 /// Assembles incompressible pressure-correction contributions.
@@ -43,10 +44,9 @@ class IncompressiblePressureCorrectionAssembler
     /// validated. All used values and output-system invariants are validated
     /// before the system is modified.
     ///
-    /// @note This internal-face component alone does not form a complete
-    ///       solvable pressure-correction system. Boundary pressure-response
-    ///       treatment and pressure-reference/gauge fixing remain intentionally
-    ///       absent.
+    /// @note This method alone does not form a complete pressure-correction
+    ///       system. Boundary pressure-response contributions must be assembled
+    ///       separately, and pressure-reference/gauge fixing remains absent.
     ///
     /// @throws std::invalid_argument If a face-field cardinality is
     ///         incompatible, or `system` does not reference this assembler's
@@ -77,6 +77,28 @@ class IncompressiblePressureCorrectionAssembler
     ///         not finite.
     void add_boundary_provisional_flux_rhs(const FaceFluxField &provisional_mass_flux,
                                            ScalarLinearSystem &system) const;
+
+    /// Adds the boundary pressure-response contribution to the matrix.
+    ///
+    /// A `FixedMassFlux` boundary imposes `F'_b = 0` and contributes nothing.
+    /// A `FixedPressure` boundary imposes `p'_b = 0`, so
+    /// `F'_b = Dp_b * p'_P` and each face additively contributes `Dp_b` to its
+    /// owner diagonal. The right-hand side and off-diagonal coefficients are
+    /// unchanged.
+    ///
+    /// This method consumes `Dp_b` for `FixedPressure` faces but does not
+    /// compute it. A later boundary momentum/Rhie-Chow component will provide
+    /// those coefficients. Values on internal and `FixedMassFlux` faces are
+    /// neither read nor validated.
+    ///
+    /// @throws std::invalid_argument If a collection cardinality is
+    ///         incompatible, or `system` does not reference this assembler's
+    ///         exact Mesh with matching cardinalities.
+    /// @throws std::runtime_error If a used `FixedPressure` response is not
+    ///         finite or not strictly positive.
+    void add_boundary_pressure_response(const PressureCorrectionBoundaryConditions &boundary_conditions,
+                                        const FacePressureResponseField &face_pressure_response,
+                                        ScalarLinearSystem &system) const;
 
   private:
     const Mesh *mesh_;

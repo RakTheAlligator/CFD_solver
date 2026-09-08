@@ -2,6 +2,7 @@
 
 #include "cfd/field/FaceFluxField.hpp"
 #include "cfd/field/FacePressureResponseField.hpp"
+#include "cfd/field/PressureCorrectionBoundaryConditions.hpp"
 #include "cfd/linear_algebra/ScalarLinearSystem.hpp"
 #include "cfd/mesh/Cell.hpp"
 #include "cfd/mesh/Face.hpp"
@@ -20,6 +21,7 @@
 #include <string>
 #include <type_traits>
 #include <utility>
+#include <vector>
 
 namespace
 {
@@ -34,6 +36,12 @@ static_assert(!std::is_copy_constructible_v<cfd::IncompressiblePressureCorrectio
 static_assert(!std::is_copy_assignable_v<cfd::IncompressiblePressureCorrectionAssembler>);
 static_assert(std::is_nothrow_move_constructible_v<cfd::IncompressiblePressureCorrectionAssembler>);
 static_assert(!std::is_move_assignable_v<cfd::IncompressiblePressureCorrectionAssembler>);
+
+static_assert(!std::is_default_constructible_v<cfd::PressureCorrectionBoundaryConditions>);
+static_assert(std::is_copy_constructible_v<cfd::PressureCorrectionBoundaryConditions>);
+static_assert(!std::is_copy_assignable_v<cfd::PressureCorrectionBoundaryConditions>);
+static_assert(std::is_nothrow_move_constructible_v<cfd::PressureCorrectionBoundaryConditions>);
+static_assert(!std::is_move_assignable_v<cfd::PressureCorrectionBoundaryConditions>);
 
 [[nodiscard]]
 cfd::RawMeshData make_three_cell_strip_raw_mesh()
@@ -59,6 +67,38 @@ cfd::RawMeshData make_three_cell_strip_raw_mesh()
         {{7, 6}, wall_boundary_id}, {{6, 5}, wall_boundary_id}, {{5, 4}, wall_boundary_id}, {{4, 0}, wall_boundary_id},
     };
     return raw_mesh;
+}
+
+[[nodiscard]]
+cfd::RawMeshData make_four_boundary_group_two_triangle_raw_mesh()
+{
+    constexpr cfd::BoundaryId bottom_boundary_id{0};
+    constexpr cfd::BoundaryId right_boundary_id{1};
+    constexpr cfd::BoundaryId top_boundary_id{2};
+    constexpr cfd::BoundaryId left_boundary_id{3};
+
+    cfd::RawMeshData raw_mesh{make_two_triangle_raw_mesh()};
+    raw_mesh.boundary_groups = {
+        {bottom_boundary_id, "bottom"},
+        {right_boundary_id, "right"},
+        {top_boundary_id, "top"},
+        {left_boundary_id, "left"},
+    };
+    raw_mesh.boundary_edges = {
+        {{0, 1}, bottom_boundary_id},
+        {{1, 2}, right_boundary_id},
+        {{2, 3}, top_boundary_id},
+        {{3, 0}, left_boundary_id},
+    };
+    return raw_mesh;
+}
+
+[[nodiscard]]
+cfd::PressureCorrectionBoundaryConditions make_uniform_pressure_correction_boundary_conditions(
+    const cfd::Mesh &mesh, const cfd::PressureCorrectionBoundaryConditionType condition)
+{
+    return {mesh.boundary_groups().size(),
+            std::vector<cfd::PressureCorrectionBoundaryConditionType>(mesh.boundary_groups().size(), condition)};
 }
 
 [[nodiscard]]
@@ -165,6 +205,22 @@ void require_seeded_matrix_unchanged(const cfd::ScalarLinearSystem &system, cons
     for (cfd::Index cell_id = 0; cell_id < system.cell_count(); ++cell_id)
     {
         require(system.diagonal()[cell_id] == 11.0 + static_cast<double>(cell_id), context + " diagonal changed.");
+    }
+    for (cfd::Index face_id = 0; face_id < system.face_count(); ++face_id)
+    {
+        require(system.owner_neighbor_coefficients()[face_id] == 31.0 + static_cast<double>(face_id),
+                context + " owner-neighbor coefficient changed.");
+        require(system.neighbor_owner_coefficients()[face_id] == 41.0 + static_cast<double>(face_id),
+                context + " neighbor-owner coefficient changed.");
+    }
+}
+
+void require_seeded_rhs_and_off_diagonal_coefficients_unchanged(const cfd::ScalarLinearSystem &system,
+                                                                const std::string &context)
+{
+    for (cfd::Index cell_id = 0; cell_id < system.cell_count(); ++cell_id)
+    {
+        require(system.rhs()[cell_id] == 21.0 + static_cast<double>(cell_id), context + " RHS changed.");
     }
     for (cfd::Index face_id = 0; face_id < system.face_count(); ++face_id)
     {
@@ -585,6 +641,226 @@ void test_combined_provisional_flux_rhs_is_negative_cell_mass_imbalance()
     }
 }
 
+void test_pressure_correction_boundary_condition_collection_validation()
+{
+    using cfd::PressureCorrectionBoundaryConditionType;
+
+    const cfd::PressureCorrectionBoundaryConditions boundary_conditions{
+        2,
+        {PressureCorrectionBoundaryConditionType::FixedMassFlux,
+         PressureCorrectionBoundaryConditionType::FixedPressure},
+    };
+    require(boundary_conditions.size() == 2,
+            "Pressure-correction boundary conditions contain an incorrect number of values.");
+    require(boundary_conditions[0] == PressureCorrectionBoundaryConditionType::FixedMassFlux,
+            "Pressure-correction boundary condition 0 has an incorrect type.");
+    require(boundary_conditions[1] == PressureCorrectionBoundaryConditionType::FixedPressure,
+            "Pressure-correction boundary condition 1 has an incorrect type.");
+
+    require_throws<std::invalid_argument>(
+        []() {
+            static_cast<void>(cfd::PressureCorrectionBoundaryConditions{
+                2,
+                {cfd::PressureCorrectionBoundaryConditionType::FixedMassFlux},
+            });
+        },
+        "Pressure-correction boundary conditions accepted an incorrect condition count.");
+
+    require_throws<std::invalid_argument>(
+        []() {
+            // NOLINTNEXTLINE(clang-analyzer-optin.core.EnumCastOutOfRange)
+            const auto invalid_type{static_cast<cfd::PressureCorrectionBoundaryConditionType>(255)};
+            static_cast<void>(cfd::PressureCorrectionBoundaryConditions{1, {invalid_type}});
+        },
+        "Pressure-correction boundary conditions accepted an unsupported condition type.");
+}
+
+void test_fixed_mass_flux_boundaries_do_not_modify_system_or_read_responses()
+{
+    cfd::MeshBuildResult build_result{cfd::build_mesh(make_two_triangle_raw_mesh())};
+    const cfd::Mesh &mesh{build_result.mesh};
+    const cfd::IncompressiblePressureCorrectionAssembler assembler{mesh};
+    const cfd::PressureCorrectionBoundaryConditions boundary_conditions{
+        make_uniform_pressure_correction_boundary_conditions(
+            mesh, cfd::PressureCorrectionBoundaryConditionType::FixedMassFlux)};
+    cfd::FacePressureResponseField face_pressure_response{mesh.face_count()};
+    const std::array invalid_responses{
+        0.0,
+        -1.0,
+        std::numeric_limits<double>::quiet_NaN(),
+        std::numeric_limits<double>::infinity(),
+        -std::numeric_limits<double>::infinity(),
+    };
+    for (cfd::Index face_id = 0; face_id < mesh.face_count(); ++face_id)
+    {
+        face_pressure_response[face_id] = invalid_responses[face_id % invalid_responses.size()];
+    }
+    cfd::ScalarLinearSystem system{mesh};
+    seed_system(system);
+
+    assembler.add_boundary_pressure_response(boundary_conditions, face_pressure_response, system);
+
+    require_seeded_system_unchanged(
+        system, "FixedMassFlux boundary assembly consumed an unused boundary or internal response.");
+}
+
+void test_mixed_boundaries_add_only_fixed_pressure_response()
+{
+    constexpr cfd::BoundaryId fixed_pressure_boundary_id{1};
+
+    cfd::MeshBuildResult build_result{cfd::build_mesh(make_four_boundary_group_two_triangle_raw_mesh())};
+    const cfd::Mesh &mesh{build_result.mesh};
+    const cfd::IncompressiblePressureCorrectionAssembler assembler{mesh};
+    std::vector<cfd::PressureCorrectionBoundaryConditionType> conditions(
+        mesh.boundary_groups().size(), cfd::PressureCorrectionBoundaryConditionType::FixedMassFlux);
+    conditions[fixed_pressure_boundary_id] = cfd::PressureCorrectionBoundaryConditionType::FixedPressure;
+    const cfd::PressureCorrectionBoundaryConditions boundary_conditions{mesh.boundary_groups().size(),
+                                                                        std::move(conditions)};
+    cfd::FacePressureResponseField face_pressure_response{mesh.face_count(), std::numeric_limits<double>::quiet_NaN()};
+    cfd::Index fixed_pressure_owner{cfd::invalid_index};
+    for (cfd::Index face_id = 0; face_id < mesh.face_count(); ++face_id)
+    {
+        if (mesh.face_boundary_ids()[face_id] == fixed_pressure_boundary_id)
+        {
+            face_pressure_response[face_id] = 2.0;
+            fixed_pressure_owner = mesh.face_adjacencies()[face_id].owner;
+        }
+    }
+    require(fixed_pressure_owner != cfd::invalid_index, "Mixed-boundary fixture has no FixedPressure face.");
+    cfd::ScalarLinearSystem system{mesh};
+    seed_system(system);
+
+    assembler.add_boundary_pressure_response(boundary_conditions, face_pressure_response, system);
+
+    for (cfd::Index cell_id = 0; cell_id < mesh.cell_count(); ++cell_id)
+    {
+        const double expected_diagonal{11.0 + static_cast<double>(cell_id) +
+                                       (cell_id == fixed_pressure_owner ? 2.0 : 0.0)};
+        require(system.diagonal()[cell_id] == expected_diagonal,
+                "Mixed boundary assembly added an incorrect diagonal response.");
+    }
+    require_seeded_rhs_and_off_diagonal_coefficients_unchanged(system, "Mixed boundary pressure-response assembly");
+}
+
+void test_multiple_fixed_pressure_faces_accumulate_on_owner_diagonals()
+{
+    cfd::MeshBuildResult build_result{cfd::build_mesh(make_two_triangle_raw_mesh())};
+    const cfd::Mesh &mesh{build_result.mesh};
+    const cfd::IncompressiblePressureCorrectionAssembler assembler{mesh};
+    const cfd::PressureCorrectionBoundaryConditions boundary_conditions{
+        make_uniform_pressure_correction_boundary_conditions(
+            mesh, cfd::PressureCorrectionBoundaryConditionType::FixedPressure)};
+    cfd::FacePressureResponseField face_pressure_response{mesh.face_count(), std::numeric_limits<double>::quiet_NaN()};
+    for (cfd::Index face_id = 0; face_id < mesh.face_count(); ++face_id)
+    {
+        if (mesh.face_adjacencies()[face_id].is_boundary())
+        {
+            face_pressure_response[face_id] = 2.0;
+        }
+    }
+    cfd::ScalarLinearSystem system{mesh};
+    seed_system(system);
+
+    assembler.add_boundary_pressure_response(boundary_conditions, face_pressure_response, system);
+
+    for (cfd::Index cell_id = 0; cell_id < mesh.cell_count(); ++cell_id)
+    {
+        double expected_diagonal{11.0 + static_cast<double>(cell_id)};
+        cfd::Index contributing_face_count{};
+        for (cfd::Index face_id = 0; face_id < mesh.face_count(); ++face_id)
+        {
+            const cfd::FaceAdjacency &adjacency{mesh.face_adjacencies()[face_id]};
+            if (adjacency.is_boundary() && adjacency.owner == cell_id)
+            {
+                expected_diagonal += 2.0;
+                ++contributing_face_count;
+            }
+        }
+        require(contributing_face_count > 1,
+                "Multiple-response fixture does not attach multiple boundary faces to the cell.");
+        require(system.diagonal()[cell_id] == expected_diagonal,
+                "Multiple FixedPressure responses did not accumulate on the owner diagonal.");
+    }
+    require_seeded_rhs_and_off_diagonal_coefficients_unchanged(system, "Multiple FixedPressure boundary assembly");
+}
+
+void test_rejects_invalid_fixed_pressure_response_before_mutation()
+{
+    cfd::MeshBuildResult build_result{cfd::build_mesh(make_two_triangle_raw_mesh())};
+    const cfd::Mesh &mesh{build_result.mesh};
+    const cfd::IncompressiblePressureCorrectionAssembler assembler{mesh};
+    const cfd::PressureCorrectionBoundaryConditions boundary_conditions{
+        make_uniform_pressure_correction_boundary_conditions(
+            mesh, cfd::PressureCorrectionBoundaryConditionType::FixedPressure)};
+    cfd::FacePressureResponseField face_pressure_response{mesh.face_count(), 1.0};
+    const cfd::Index face_id{two_boundary_face_ids(mesh)[0]};
+    cfd::ScalarLinearSystem system{mesh};
+    seed_system(system);
+
+    for (const double invalid_response :
+         {0.0, -1.0, std::numeric_limits<double>::quiet_NaN(), std::numeric_limits<double>::infinity(),
+          -std::numeric_limits<double>::infinity()})
+    {
+        face_pressure_response[face_id] = invalid_response;
+        require_rejected_without_mutation<std::runtime_error>(
+            [&]() { assembler.add_boundary_pressure_response(boundary_conditions, face_pressure_response, system); },
+            system, "Boundary pressure-response assembly accepted an invalid FixedPressure response.");
+    }
+}
+
+void test_boundary_pressure_response_rejects_incompatible_inputs_before_mutation()
+{
+    cfd::MeshBuildResult build_result{cfd::build_mesh(make_two_triangle_raw_mesh())};
+    const cfd::Mesh &mesh{build_result.mesh};
+    const cfd::IncompressiblePressureCorrectionAssembler assembler{mesh};
+    const cfd::PressureCorrectionBoundaryConditions boundary_conditions{
+        make_uniform_pressure_correction_boundary_conditions(
+            mesh, cfd::PressureCorrectionBoundaryConditionType::FixedMassFlux)};
+    const cfd::FacePressureResponseField face_pressure_response{mesh.face_count()};
+    cfd::ScalarLinearSystem system{mesh};
+    seed_system(system);
+
+    const cfd::FacePressureResponseField wrong_response{mesh.face_count() + 1};
+    require_rejected_without_mutation<std::invalid_argument>(
+        [&]() { assembler.add_boundary_pressure_response(boundary_conditions, wrong_response, system); }, system,
+        "Boundary pressure-response assembly accepted a face response with incorrect cardinality.");
+
+    const cfd::PressureCorrectionBoundaryConditions wrong_boundary_conditions{
+        mesh.boundary_groups().size() + 1,
+        std::vector<cfd::PressureCorrectionBoundaryConditionType>(
+            mesh.boundary_groups().size() + 1, cfd::PressureCorrectionBoundaryConditionType::FixedMassFlux)};
+    require_rejected_without_mutation<std::invalid_argument>(
+        [&]() { assembler.add_boundary_pressure_response(wrong_boundary_conditions, face_pressure_response, system); },
+        system, "Boundary pressure-response assembly accepted an incorrect boundary-condition cardinality.");
+
+    cfd::MeshBuildResult other_build_result{cfd::build_mesh(make_two_triangle_raw_mesh())};
+    cfd::ScalarLinearSystem other_system{other_build_result.mesh};
+    seed_system(other_system);
+    require_rejected_without_mutation<std::invalid_argument>(
+        [&]() { assembler.add_boundary_pressure_response(boundary_conditions, face_pressure_response, other_system); },
+        other_system, "Boundary pressure-response assembly accepted a system referencing another Mesh.");
+}
+
+void test_later_invalid_fixed_pressure_face_is_transactional()
+{
+    cfd::MeshBuildResult build_result{cfd::build_mesh(make_two_triangle_raw_mesh())};
+    const cfd::Mesh &mesh{build_result.mesh};
+    const cfd::IncompressiblePressureCorrectionAssembler assembler{mesh};
+    const cfd::PressureCorrectionBoundaryConditions boundary_conditions{
+        make_uniform_pressure_correction_boundary_conditions(
+            mesh, cfd::PressureCorrectionBoundaryConditionType::FixedPressure)};
+    cfd::FacePressureResponseField face_pressure_response{mesh.face_count(), 1.0};
+    const std::array boundary_ids{two_boundary_face_ids(mesh)};
+    face_pressure_response[boundary_ids[0]] = 2.0;
+    face_pressure_response[boundary_ids[1]] = std::numeric_limits<double>::infinity();
+    cfd::ScalarLinearSystem system{mesh};
+    seed_system(system);
+
+    require_rejected_without_mutation<std::runtime_error>(
+        [&]() { assembler.add_boundary_pressure_response(boundary_conditions, face_pressure_response, system); },
+        system, "Boundary pressure-response assembly mutated the system before rejecting a later invalid face.");
+}
+
 } // namespace
 
 int main()
@@ -619,6 +895,20 @@ int main()
                                          test_later_invalid_boundary_face_is_transactional);
     failure_count += cfd::test::run_test("pressure-correction combined provisional-flux RHS",
                                          test_combined_provisional_flux_rhs_is_negative_cell_mass_imbalance);
+    failure_count += cfd::test::run_test("pressure-correction boundary-condition collection",
+                                         test_pressure_correction_boundary_condition_collection_validation);
+    failure_count += cfd::test::run_test("pressure-correction FixedMassFlux response isolation",
+                                         test_fixed_mass_flux_boundaries_do_not_modify_system_or_read_responses);
+    failure_count += cfd::test::run_test("pressure-correction mixed boundary pressure response",
+                                         test_mixed_boundaries_add_only_fixed_pressure_response);
+    failure_count += cfd::test::run_test("pressure-correction multiple FixedPressure responses",
+                                         test_multiple_fixed_pressure_faces_accumulate_on_owner_diagonals);
+    failure_count += cfd::test::run_test("pressure-correction FixedPressure response validation",
+                                         test_rejects_invalid_fixed_pressure_response_before_mutation);
+    failure_count += cfd::test::run_test("pressure-correction boundary pressure-response API validation",
+                                         test_boundary_pressure_response_rejects_incompatible_inputs_before_mutation);
+    failure_count += cfd::test::run_test("pressure-correction boundary pressure-response transaction",
+                                         test_later_invalid_fixed_pressure_face_is_transactional);
 
     return cfd::test::finish_tests(failure_count, "incompressible pressure correction assembler");
 }

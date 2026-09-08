@@ -2,6 +2,7 @@
 
 #include "cfd/field/FaceFluxField.hpp"
 #include "cfd/field/FacePressureResponseField.hpp"
+#include "cfd/field/PressureCorrectionBoundaryConditions.hpp"
 #include "cfd/linear_algebra/ScalarLinearSystem.hpp"
 #include "cfd/mesh/Face.hpp"
 #include "cfd/mesh/Mesh.hpp"
@@ -147,6 +148,71 @@ void IncompressiblePressureCorrectionAssembler::add_boundary_provisional_flux_rh
         }
 
         rhs[adjacency.owner] -= flux_values[face_id];
+    }
+}
+
+void IncompressiblePressureCorrectionAssembler::add_boundary_pressure_response(
+    const PressureCorrectionBoundaryConditions &boundary_conditions,
+    const FacePressureResponseField &face_pressure_response, ScalarLinearSystem &system) const
+{
+    const Index face_count{mesh_->face_count()};
+    if (boundary_conditions.size() != mesh_->boundary_groups().size())
+    {
+        throw std::invalid_argument(
+            "Pressure-correction boundary condition count must match the pressure-correction Mesh boundary count.");
+    }
+    if (face_pressure_response.size() != face_count)
+    {
+        throw std::invalid_argument("Face pressure-response size must match the pressure-correction Mesh face count.");
+    }
+    validate_system(*mesh_, system);
+
+    const auto face_adjacencies{mesh_->face_adjacencies()};
+    const auto face_boundary_ids{mesh_->face_boundary_ids()};
+    const auto response_values{face_pressure_response.values()};
+
+    // Validate every used boundary response before modifying the caller-owned diagonal.
+    for (Index face_id = 0; face_id < face_count; ++face_id)
+    {
+        if (!face_adjacencies[face_id].is_boundary())
+        {
+            continue;
+        }
+
+        const PressureCorrectionBoundaryConditionType condition{boundary_conditions[face_boundary_ids[face_id]]};
+        switch (condition)
+        {
+        case PressureCorrectionBoundaryConditionType::FixedMassFlux:
+            break;
+
+        case PressureCorrectionBoundaryConditionType::FixedPressure:
+            if (!std::isfinite(response_values[face_id]) || !(response_values[face_id] > 0.0))
+            {
+                throw_invalid_boundary_face_value(face_id,
+                                                  "the face pressure response must be finite and strictly positive.");
+            }
+            break;
+        }
+    }
+
+    auto diagonal{system.diagonal()};
+    for (Index face_id = 0; face_id < face_count; ++face_id)
+    {
+        const FaceAdjacency &adjacency{face_adjacencies[face_id]};
+        if (!adjacency.is_boundary())
+        {
+            continue;
+        }
+
+        switch (boundary_conditions[face_boundary_ids[face_id]])
+        {
+        case PressureCorrectionBoundaryConditionType::FixedMassFlux:
+            break;
+
+        case PressureCorrectionBoundaryConditionType::FixedPressure:
+            diagonal[adjacency.owner] += response_values[face_id];
+            break;
+        }
     }
 }
 
