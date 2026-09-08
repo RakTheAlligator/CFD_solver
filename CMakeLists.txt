@@ -91,6 +91,8 @@ add_library(
     src/numerics/IncompressiblePressureCorrectionAssembler.cpp
     src/numerics/LeastSquaresGradient.cpp
     src/numerics/MomentumPressureResponse.cpp
+    src/numerics/PressureCorrectionReference.cpp
+    src/numerics/RhieChowBoundaryFaceInterpolation.cpp
     src/numerics/RhieChowInternalFaceInterpolation.cpp
     src/numerics/ScalarConvectionOperator.cpp
     src/numerics/ScalarDiffusionOperator.cpp
@@ -289,6 +291,12 @@ if(BUILD_TESTING)
     )
 
     cfd_add_test(
+        cfd_rhie_chow_boundary_face_interpolation_tests
+        rhie_chow_boundary_face_interpolation
+        tests/RhieChowBoundaryFaceInterpolationTests.cpp
+    )
+
+    cfd_add_test(
         cfd_rhie_chow_internal_face_interpolation_tests
         rhie_chow_internal_face_interpolation
         tests/RhieChowInternalFaceInterpolationTests.cpp
@@ -316,6 +324,12 @@ if(BUILD_TESTING)
         cfd_incompressible_pressure_correction_assembler_tests
         incompressible_pressure_correction_assembler
         tests/IncompressiblePressureCorrectionAssemblerTests.cpp
+    )
+
+    cfd_add_test(
+        cfd_pressure_correction_reference_tests
+        pressure_correction_reference
+        tests/PressureCorrectionReferenceTests.cpp
     )
 
     cfd_add_test(
