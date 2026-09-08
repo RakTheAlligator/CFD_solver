@@ -89,7 +89,9 @@ add_library(
 
     src/numerics/IncompressibleMomentumAssembler.cpp
     src/numerics/IncompressiblePressureCorrectionAssembler.cpp
+    src/numerics/IncompressiblePressureVelocityCorrection.cpp
     src/numerics/LeastSquaresGradient.cpp
+    src/numerics/MassFluxBalance.cpp
     src/numerics/MomentumPressureResponse.cpp
     src/numerics/PressureCorrectionReference.cpp
     src/numerics/RhieChowBoundaryFaceInterpolation.cpp
@@ -324,6 +326,18 @@ if(BUILD_TESTING)
         cfd_incompressible_pressure_correction_assembler_tests
         incompressible_pressure_correction_assembler
         tests/IncompressiblePressureCorrectionAssemblerTests.cpp
+    )
+
+    cfd_add_test(
+        cfd_incompressible_pressure_velocity_correction_tests
+        incompressible_pressure_velocity_correction
+        tests/IncompressiblePressureVelocityCorrectionTests.cpp
+    )
+
+    cfd_add_test(
+        cfd_mass_flux_balance_tests
+        mass_flux_balance
+        tests/MassFluxBalanceTests.cpp
     )
 
     cfd_add_test(

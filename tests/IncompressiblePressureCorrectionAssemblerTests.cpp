@@ -693,7 +693,7 @@ void test_fixed_mass_flux_boundaries_do_not_modify_system_or_read_responses()
     };
     for (cfd::Index face_id = 0; face_id < mesh.face_count(); ++face_id)
     {
-        face_pressure_response[face_id] = invalid_responses[face_id % invalid_responses.size()];
+        face_pressure_response[face_id] = invalid_responses.at(face_id % invalid_responses.size());
     }
     cfd::ScalarLinearSystem system{mesh};
     seed_system(system);
