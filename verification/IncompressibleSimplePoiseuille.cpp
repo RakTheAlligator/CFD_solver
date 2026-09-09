@@ -38,6 +38,7 @@ constexpr double density{1.0};
 constexpr double dynamic_viscosity{0.1};
 constexpr double inlet_pressure{0.04};
 constexpr double outlet_pressure{0.0};
+constexpr double corrected_continuity_tolerance{1.0e-10};
 
 constexpr cfd::BoundaryId bottom_boundary_id{0};
 constexpr cfd::BoundaryId right_boundary_id{1};
@@ -56,12 +57,16 @@ constexpr std::array grid_levels{
     GridLevel{64, 16},
 };
 
+constexpr GridLevel cold_start_grid{32, 8};
+
 struct LevelResult
 {
     cfd::Index cell_count{};
     double mesh_spacing{};
+    bool converged{};
     cfd::Index simple_iterations{};
     double velocity_relative_change{};
+    double provisional_continuity_relative_residual{};
     double continuity_relative_residual{};
     double maximum_mass_imbalance{};
     double relative_u_error{};
@@ -200,6 +205,16 @@ cfd::IncompressibleSimpleOptions simple_options()
 }
 
 [[nodiscard]]
+cfd::IncompressibleSimpleOptions cold_start_options()
+{
+    cfd::IncompressibleSimpleOptions options{simple_options()};
+    options.maximum_iterations = 2000;
+    options.pressure_relaxation_factor = 0.1;
+    options.rhie_chow_flux_relaxation_factor = 0.3;
+    return options;
+}
+
+[[nodiscard]]
 double relative_mass_flow_mismatch(const double inlet_mass_flow, const double outlet_mass_flow) noexcept
 {
     const double scale{std::max(std::abs(inlet_mass_flow), std::abs(outlet_mass_flow))};
@@ -212,16 +227,20 @@ double relative_mass_flow_mismatch(const double inlet_mass_flow, const double ou
 }
 
 [[nodiscard]]
-LevelResult solve_level(const GridLevel &level)
+LevelResult solve_level(const GridLevel &level, const cfd::IncompressibleSimpleOptions &options,
+                        const bool initialize_with_exact_pressure)
 {
     cfd::MeshBuildResult build_result{cfd::build_mesh(make_channel_raw_mesh(level))};
     const cfd::Mesh &mesh{build_result.mesh};
     cfd::CellVelocityField velocity{mesh.cell_count()};
     cfd::CellScalarField pressure{mesh.cell_count()};
     cfd::FaceFluxField mass_flux{mesh.face_count()};
-    for (cfd::Index cell_id = 0; cell_id < mesh.cell_count(); ++cell_id)
+    if (initialize_with_exact_pressure)
     {
-        pressure[cell_id] = exact_pressure(mesh.cell_centers()[cell_id].x);
+        for (cfd::Index cell_id = 0; cell_id < mesh.cell_count(); ++cell_id)
+        {
+            pressure[cell_id] = exact_pressure(mesh.cell_centers()[cell_id].x);
+        }
     }
 
     const cfd::ScalarBoundaryConditions velocity_conditions{velocity_boundary_conditions(mesh)};
@@ -229,15 +248,10 @@ LevelResult solve_level(const GridLevel &level)
     const cfd::PressureCorrectionBoundaryConditions pressure_correction_conditions{
         pressure_correction_boundary_conditions(mesh)};
     cfd::IncompressibleSimpleSolver solver{mesh, density, dynamic_viscosity, cfd::ScalarConvectionScheme::Linear,
-                                           simple_options()};
+                                           options};
     const cfd::IncompressibleSimpleResult result{solver.solve(velocity_conditions, velocity_conditions,
                                                               pressure_conditions, pressure_correction_conditions,
                                                               velocity, pressure, mass_flux)};
-    if (!result.converged)
-    {
-        throw std::runtime_error("Poiseuille SIMPLE solve did not converge.");
-    }
-
     ErrorAccumulator u_error;
     ErrorAccumulator u_reference;
     ErrorAccumulator pressure_error;
@@ -288,8 +302,10 @@ LevelResult solve_level(const GridLevel &level)
     return {
         .cell_count = mesh.cell_count(),
         .mesh_spacing = domain_height / static_cast<double>(level.y_cell_count),
+        .converged = result.converged,
         .simple_iterations = result.iteration_count,
         .velocity_relative_change = result.velocity_relative_change,
+        .provisional_continuity_relative_residual = result.provisional_continuity_relative_residual,
         .continuity_relative_residual = result.continuity_relative_residual,
         .maximum_mass_imbalance = result.maximum_mass_imbalance,
         .relative_u_error = u_error.finish().area_weighted_rms_error / u_reference_rms,
@@ -300,6 +316,48 @@ LevelResult solve_level(const GridLevel &level)
         .relative_mass_flow_mismatch = relative_mass_flow_mismatch(inlet_mass_flow, outlet_mass_flow),
         .observed_u_order = std::nullopt,
     };
+}
+
+[[nodiscard]]
+LevelResult solve_level(const GridLevel &level)
+{
+    return solve_level(level, simple_options(), true);
+}
+
+void validate_cold_start_result(const LevelResult &result, const cfd::IncompressibleSimpleOptions &options)
+{
+    if (!result.converged)
+    {
+        throw std::runtime_error("Cold-start SIMPLE solve did not converge.");
+    }
+    if (result.velocity_relative_change > options.velocity_relative_tolerance)
+    {
+        throw std::runtime_error("Cold-start velocity relative change exceeds its tolerance.");
+    }
+    if (result.provisional_continuity_relative_residual > options.continuity_relative_tolerance)
+    {
+        throw std::runtime_error("Cold-start provisional continuity residual exceeds its tolerance.");
+    }
+    if (result.continuity_relative_residual > corrected_continuity_tolerance)
+    {
+        throw std::runtime_error("Cold-start corrected continuity residual is too large.");
+    }
+    if (result.maximum_mass_imbalance > 1.0e-12)
+    {
+        throw std::runtime_error("Cold-start maximum mass imbalance is too large.");
+    }
+    if (result.maximum_absolute_v > 1.0e-10)
+    {
+        throw std::runtime_error("Cold-start transverse velocity is too large.");
+    }
+    if (result.relative_mass_flow_mismatch > 1.0e-10)
+    {
+        throw std::runtime_error("Cold-start mass-flow mismatch is too large.");
+    }
+    if (result.normalized_pressure_error > 1.0e-8)
+    {
+        throw std::runtime_error("Cold-start pressure error is too large.");
+    }
 }
 
 void validate_results(const std::vector<LevelResult> &results)
@@ -313,7 +371,12 @@ void validate_results(const std::vector<LevelResult> &results)
     }
     for (const LevelResult &result : results)
     {
-        if (result.maximum_absolute_v > 1.0e-10 || result.continuity_relative_residual > 1.0e-10 ||
+        if (!result.converged)
+        {
+            throw std::runtime_error("Poiseuille SIMPLE solve did not converge.");
+        }
+        if (result.maximum_absolute_v > 1.0e-10 ||
+            result.continuity_relative_residual > corrected_continuity_tolerance ||
             result.maximum_mass_imbalance > 1.0e-12 || result.relative_mass_flow_mismatch > 1.0e-10)
         {
             throw std::runtime_error("Poiseuille velocity or continuity diagnostics exceed their tolerances.");
@@ -363,6 +426,19 @@ void print_results(const std::vector<LevelResult> &results)
               << "\nFinal velocity relative change: " << finest.velocity_relative_change << '\n';
 }
 
+void print_cold_start_result(const LevelResult &result)
+{
+    std::cout << "\nCold-start coupled solve (" << cold_start_grid.x_cell_count << 'x' << cold_start_grid.y_cell_count
+              << ", " << result.cell_count << " cells)\n"
+              << std::scientific << std::setprecision(6) << "  iterations: " << result.simple_iterations
+              << ", r_U: " << result.velocity_relative_change
+              << ", r_cont(provisional): " << result.provisional_continuity_relative_residual
+              << ", r_cont(corrected): " << result.continuity_relative_residual
+              << "\n  p_error: " << result.normalized_pressure_error << ", max|v|: " << result.maximum_absolute_v
+              << ", max|Rm|: " << result.maximum_mass_imbalance
+              << ", flow mismatch: " << result.relative_mass_flow_mismatch << '\n';
+}
+
 } // namespace
 
 int main()
@@ -383,6 +459,11 @@ int main()
         }
         validate_results(results);
         print_results(results);
+
+        const cfd::IncompressibleSimpleOptions options{cold_start_options()};
+        const LevelResult cold_start_result{solve_level(cold_start_grid, options, false)};
+        print_cold_start_result(cold_start_result);
+        validate_cold_start_result(cold_start_result, options);
         return 0;
     }
     catch (const std::exception &error)
