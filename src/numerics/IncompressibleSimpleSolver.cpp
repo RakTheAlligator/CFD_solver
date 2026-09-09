@@ -26,6 +26,53 @@ namespace cfd
 namespace
 {
 
+void require_connected_cell_domain(const Mesh &mesh)
+{
+    const Index cell_count{mesh.cell_count()};
+    if (cell_count == 0)
+    {
+        throw std::invalid_argument("SIMPLE v1 requires a single connected cell domain.");
+    }
+
+    std::vector<bool> reached(cell_count);
+    std::vector<Index> pending_cells;
+    pending_cells.reserve(cell_count);
+    reached[0] = true;
+    pending_cells.push_back(0);
+
+    Index reached_cell_count{};
+    const auto cell_offsets{mesh.cell_node_offsets()};
+    const auto cell_faces{mesh.cell_faces()};
+    const auto face_adjacencies{mesh.face_adjacencies()};
+    while (!pending_cells.empty())
+    {
+        const Index cell_id{pending_cells.back()};
+        pending_cells.pop_back();
+        ++reached_cell_count;
+
+        for (Index position = cell_offsets[cell_id]; position < cell_offsets[cell_id + 1]; ++position)
+        {
+            const FaceAdjacency &adjacency{face_adjacencies[cell_faces[position]]};
+            if (adjacency.is_boundary())
+            {
+                continue;
+            }
+
+            const Index adjacent_cell{adjacency.owner == cell_id ? adjacency.neighbor : adjacency.owner};
+            if (!reached[adjacent_cell])
+            {
+                reached[adjacent_cell] = true;
+                pending_cells.push_back(adjacent_cell);
+            }
+        }
+    }
+
+    if (reached_cell_count != cell_count)
+    {
+        throw std::invalid_argument("SIMPLE v1 requires a single connected cell domain.");
+    }
+}
+
 [[nodiscard]]
 double validate_positive_physical_coefficient(const double value, const char *const name)
 {
@@ -296,6 +343,7 @@ IncompressibleSimpleSolver::IncompressibleSimpleSolver(const Mesh &mesh, const d
       pressure_correction_(mesh.cell_count()), mass_imbalance_(mesh.cell_count()), u_momentum_system_(mesh),
       v_momentum_system_(mesh), pressure_correction_system_(mesh)
 {
+    require_connected_cell_domain(mesh);
 }
 
 IncompressibleSimpleResult IncompressibleSimpleSolver::solve(

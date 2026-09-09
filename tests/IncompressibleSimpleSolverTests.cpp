@@ -29,6 +29,7 @@ namespace
 
 using cfd::test::require;
 using cfd::test::require_throws;
+using cfd::test::require_throws_with_message;
 
 constexpr cfd::BoundaryId bottom_boundary_id{0};
 constexpr cfd::BoundaryId right_boundary_id{1};
@@ -98,6 +99,31 @@ cfd::RawMeshData make_channel_raw_mesh(const cfd::Index x_cell_count, const cfd:
     {
         raw_mesh.boundary_edges.push_back({{j * x_node_count, (j - 1) * x_node_count}, left_boundary_id});
     }
+    return raw_mesh;
+}
+
+[[nodiscard]]
+cfd::RawMeshData make_disconnected_two_cell_raw_mesh()
+{
+    constexpr cfd::BoundaryId wall_boundary_id{0};
+
+    cfd::RawMeshData raw_mesh;
+    raw_mesh.nodes = {
+        {0.0, 0.0}, {1.0, 0.0}, {1.0, 1.0}, {0.0, 1.0}, {2.0, 0.0}, {3.0, 0.0}, {3.0, 1.0}, {2.0, 1.0},
+    };
+    raw_mesh.cell_types = {
+        cfd::CellType::Quadrilateral,
+        cfd::CellType::Quadrilateral,
+    };
+    raw_mesh.cell_nodes = {
+        0, 1, 2, 3, 4, 5, 6, 7,
+    };
+    raw_mesh.cell_node_offsets = {0, 4, 8};
+    raw_mesh.boundary_groups = {{wall_boundary_id, "wall"}};
+    raw_mesh.boundary_edges = {
+        {{0, 1}, wall_boundary_id}, {{1, 2}, wall_boundary_id}, {{2, 3}, wall_boundary_id}, {{3, 0}, wall_boundary_id},
+        {{4, 5}, wall_boundary_id}, {{5, 6}, wall_boundary_id}, {{6, 7}, wall_boundary_id}, {{7, 4}, wall_boundary_id},
+    };
     return raw_mesh;
 }
 
@@ -230,6 +256,20 @@ void test_constructor_and_options_validation()
             },
             "SIMPLE accepted an invalid continuity tolerance.");
     }
+}
+
+void test_rejects_disconnected_cell_domain()
+{
+    cfd::MeshBuildResult build_result{cfd::build_mesh(make_disconnected_two_cell_raw_mesh())};
+    const cfd::Mesh &mesh{build_result.mesh};
+
+    require(mesh.cell_count() == 2, "Disconnected SIMPLE fixture did not build both valid cells.");
+    require_throws_with_message<std::invalid_argument>(
+        [&mesh]() {
+            const cfd::IncompressibleSimpleSolver solver{mesh, 1.0, 0.1, cfd::ScalarConvectionScheme::Linear,
+                                                         test_options()};
+        },
+        "single connected cell domain", "SIMPLE accepted a disconnected cell domain.");
 }
 
 void test_pressure_boundary_semantic_consistency()
@@ -609,6 +649,8 @@ int main()
 
     failure_count +=
         cfd::test::run_test("SIMPLE constructor and options validation", test_constructor_and_options_validation);
+    failure_count +=
+        cfd::test::run_test("SIMPLE connected cell-domain precondition", test_rejects_disconnected_cell_domain);
     failure_count +=
         cfd::test::run_test("SIMPLE pressure boundary semantics", test_pressure_boundary_semantic_consistency);
     failure_count += cfd::test::run_test("SIMPLE all-FixedMassFlux compatibility and gauge",
