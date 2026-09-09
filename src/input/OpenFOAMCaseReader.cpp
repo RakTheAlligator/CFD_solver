@@ -15,6 +15,7 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <system_error>
 #include <utility>
 #include <vector>
 
@@ -72,6 +73,36 @@ class CaseParser
         : file_path_(std::move(file_path)), source_(read_file(file_path_))
     {
         advance();
+    }
+
+    [[nodiscard]]
+    ControlInput parse_control_dict()
+    {
+        static_cast<void>(parse_foam_header("dictionary", "controlDict"));
+
+        bool monitoring_seen{};
+        std::optional<bool> live_convergence;
+        while (current_.kind != TokenKind::End)
+        {
+            const Token key{take_key("controlDict")};
+            if (key.text != "monitoring")
+            {
+                skip_control_entry(key);
+                continue;
+            }
+
+            if (monitoring_seen)
+            {
+                fail(key.line, "Duplicate monitoring dictionary.");
+            }
+            monitoring_seen = true;
+
+            expect(TokenKind::LeftBrace, "'{'");
+            live_convergence = parse_monitoring();
+            expect(TokenKind::RightBrace, "'}'");
+        }
+
+        return {.live_convergence = live_convergence.value_or(true)};
     }
 
     [[nodiscard]]
@@ -558,6 +589,87 @@ class CaseParser
         return take_number("a finite scalar value").number;
     }
 
+    void skip_control_dictionary(const Token &key)
+    {
+        std::size_t brace_depth{};
+        while (true)
+        {
+            if (current_.kind == TokenKind::End)
+            {
+                fail(key.line, "Unterminated controlDict dictionary '" + std::string(key.text) + "'.");
+            }
+            if (current_.kind == TokenKind::LeftBrace)
+            {
+                ++brace_depth;
+            }
+            else if (current_.kind == TokenKind::RightBrace)
+            {
+                --brace_depth;
+            }
+            advance();
+            if (brace_depth == 0)
+            {
+                return;
+            }
+        }
+    }
+
+    void skip_control_entry(const Token &key)
+    {
+        if (current_.kind == TokenKind::LeftBrace)
+        {
+            skip_control_dictionary(key);
+            return;
+        }
+
+        while (current_.kind != TokenKind::Semicolon)
+        {
+            if (current_.kind == TokenKind::End || current_.kind == TokenKind::RightBrace)
+            {
+                fail(key.line, "Missing ';' after controlDict entry '" + std::string(key.text) + "'.");
+            }
+            if (current_.kind == TokenKind::LeftBrace ||
+                (current_.kind == TokenKind::Word && current_.text == "monitoring"))
+            {
+                fail_current("Malformed controlDict entry '" + std::string(key.text) + "'.");
+            }
+            advance();
+        }
+        expect(TokenKind::Semicolon, "';'");
+    }
+
+    [[nodiscard]]
+    std::optional<bool> parse_monitoring()
+    {
+        std::optional<bool> live_convergence;
+        while (current_.kind != TokenKind::RightBrace)
+        {
+            if (current_.kind == TokenKind::End)
+            {
+                fail_current("Expected a monitoring entry or '}'.");
+            }
+
+            const Token key{take_key("monitoring")};
+            if (key.text != "liveConvergence")
+            {
+                fail(key.line, "Unsupported monitoring entry '" + std::string(key.text) + "'.");
+            }
+            if (live_convergence.has_value())
+            {
+                fail(key.line, "Duplicate liveConvergence entry.");
+            }
+            if (current_.kind != TokenKind::Word || (current_.text != "true" && current_.text != "false"))
+            {
+                fail_current("liveConvergence must be exactly 'true' or 'false'.");
+            }
+
+            live_convergence = current_.text == "true";
+            advance();
+            expect(TokenKind::Semicolon, "';'");
+        }
+        return live_convergence;
+    }
+
     [[nodiscard]]
     std::string parse_foam_header(const std::string_view expected_class, const std::string_view expected_object)
     {
@@ -898,6 +1010,23 @@ class CaseParser
 };
 
 } // namespace
+
+ControlInput read_control_dict(const std::filesystem::path &file_path)
+{
+    std::error_code filesystem_error;
+    const bool file_exists{std::filesystem::exists(file_path, filesystem_error)};
+    if (filesystem_error)
+    {
+        throw std::runtime_error(file_path.string() + ": Unable to inspect input file: " + filesystem_error.message());
+    }
+    if (!file_exists)
+    {
+        return {};
+    }
+
+    CaseParser parser{file_path};
+    return parser.parse_control_dict();
+}
 
 MeshInput read_mesh_dict(const std::filesystem::path &file_path)
 {

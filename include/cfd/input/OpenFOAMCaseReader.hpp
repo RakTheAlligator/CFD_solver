@@ -19,6 +19,12 @@ class Mesh;
 namespace cfd::input
 {
 
+/// Application control settings read from `system/controlDict`.
+struct ControlInput
+{
+    bool live_convergence{true};
+};
+
 /// Rectangle and mesh-generation settings read from `system/meshDict`.
 struct MeshInput
 {
@@ -44,6 +50,16 @@ struct ScalarFieldInput
     double internal_value{};
     std::vector<NamedScalarBoundaryCondition> boundary_conditions;
 };
+
+/// Reads the supported CFD_solver `controlDict` subset.
+///
+/// A missing file returns the default control settings. Live convergence is
+/// enabled when its monitoring entry is absent.
+///
+/// @throws std::runtime_error If an existing file cannot be read or does not
+///         conform to the supported syntax.
+[[nodiscard]]
+ControlInput read_control_dict(const std::filesystem::path &file_path);
 
 /// Reads the supported CFD_solver `meshDict` subset.
 ///

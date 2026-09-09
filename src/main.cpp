@@ -1,3 +1,5 @@
+#include "app/LiveConvergenceLauncher.hpp"
+
 #include "cfd/field/CellScalarField.hpp"
 #include "cfd/field/CellVelocityField.hpp"
 #include "cfd/field/FaceFluxField.hpp"
@@ -165,6 +167,8 @@ int main(const int argc, char *argv[])
     try
     {
         const std::filesystem::path case_directory{arguments[1]};
+        const cfd::input::ControlInput control_input{
+            cfd::input::read_control_dict(case_directory / "system" / "controlDict")};
         const cfd::input::MeshInput mesh_input{cfd::input::read_mesh_dict(case_directory / "system" / "meshDict")};
         const cfd::input::ScalarFieldInput u_input{cfd::input::read_scalar_field(case_directory / "0" / "u")};
         const cfd::input::ScalarFieldInput v_input{cfd::input::read_scalar_field(case_directory / "0" / "v")};
@@ -229,6 +233,10 @@ int main(const int argc, char *argv[])
         const std::filesystem::path convergence_output_file{output_directory / "convergence.csv"};
         const std::filesystem::path solution_output_file{output_directory / "solution.vtu"};
         std::filesystem::create_directories(output_directory);
+        if (control_input.live_convergence)
+        {
+            cfd::app::launch_live_convergence_plotter(convergence_output_file);
+        }
         cfd::SimpleConvergenceCsvWriter convergence_writer{convergence_output_file};
 
         const cfd::IncompressibleSimpleOptions simple_options{

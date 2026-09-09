@@ -112,6 +112,15 @@ cfd::input::ScalarFieldInput read_scalar_input(const std::string_view content)
 }
 
 [[nodiscard]]
+cfd::input::ControlInput read_control_input(const std::string_view content)
+{
+    const TemporaryDirectory temporary_directory;
+    const std::filesystem::path file_path{temporary_directory.path() / "controlDict"};
+    write_text_file(file_path, content);
+    return cfd::input::read_control_dict(file_path);
+}
+
+[[nodiscard]]
 cfd::Mesh make_named_boundary_mesh()
 {
     cfd::RawMeshData raw_mesh;
@@ -176,6 +185,130 @@ std::string make_scalar_dictionary(const std::string_view header_entries, const 
                << header_entries << "\n}\ndimensions [0 0 0 0 0 0 0];\ninternalField uniform 0;\nboundaryField\n{\n"
                << boundary_entries << "\n}\n";
     return dictionary.str();
+}
+
+[[nodiscard]]
+std::string make_control_dictionary(const std::string_view entries)
+{
+    std::ostringstream dictionary;
+    dictionary << R"(FoamFile
+{
+    version 2.0;
+    format ascii;
+    class dictionary;
+    object controlDict;
+}
+)" << entries << '\n';
+    return dictionary.str();
+}
+
+void test_missing_control_dict_enables_live_convergence()
+{
+    const TemporaryDirectory temporary_directory;
+    const std::filesystem::path file_path{temporary_directory.path() / "controlDict"};
+
+    const cfd::input::ControlInput input{cfd::input::read_control_dict(file_path)};
+
+    require(input.live_convergence, "A missing controlDict did not enable live convergence by default.");
+}
+
+void test_control_dict_without_monitoring_enables_live_convergence()
+{
+    const std::string content{make_control_dictionary(R"(application CFD_solver;
+futureSettings
+{
+    enabled true;
+})")};
+
+    const cfd::input::ControlInput input{read_control_input(content)};
+
+    require(input.live_convergence, "A controlDict without monitoring did not enable live convergence by default.");
+}
+
+void test_monitoring_without_live_convergence_enables_it()
+{
+    const std::string content{make_control_dictionary("monitoring {}")};
+
+    const cfd::input::ControlInput input{read_control_input(content)};
+
+    require(input.live_convergence, "An empty monitoring dictionary did not enable live convergence by default.");
+}
+
+void test_reads_enabled_live_convergence()
+{
+    const std::string content{make_control_dictionary("monitoring { liveConvergence true; }")};
+
+    const cfd::input::ControlInput input{read_control_input(content)};
+
+    require(input.live_convergence, "controlDict did not retain liveConvergence true.");
+}
+
+void test_reads_disabled_live_convergence()
+{
+    const std::string content{make_control_dictionary("monitoring { liveConvergence false; }")};
+
+    const cfd::input::ControlInput input{read_control_input(content)};
+
+    require(!input.live_convergence, "controlDict did not retain liveConvergence false.");
+}
+
+void test_control_dict_comments_are_ignored()
+{
+    const std::string content{make_control_dictionary(R"(
+// monitoring { liveConvergence false; }
+monitoring
+{
+    /* Keep visualization enabled for this case. */
+    liveConvergence true;
+}
+)")};
+
+    const cfd::input::ControlInput input{read_control_input(content)};
+
+    require(input.live_convergence, "Comments changed the parsed live-convergence setting.");
+}
+
+void test_rejects_duplicate_monitoring_dictionary()
+{
+    const std::string content{make_control_dictionary("monitoring {}\nmonitoring { liveConvergence true; }")};
+
+    require_throws_with_message<std::runtime_error>([&content]() { static_cast<void>(read_control_input(content)); },
+                                                    "Duplicate monitoring",
+                                                    "controlDict accepted duplicate monitoring dictionaries.");
+}
+
+void test_rejects_duplicate_live_convergence_entry()
+{
+    const std::string content{make_control_dictionary("monitoring { liveConvergence true; liveConvergence false; }")};
+
+    require_throws_with_message<std::runtime_error>([&content]() { static_cast<void>(read_control_input(content)); },
+                                                    "Duplicate liveConvergence",
+                                                    "controlDict accepted duplicate liveConvergence entries.");
+}
+
+void test_rejects_invalid_live_convergence_boolean()
+{
+    const std::string content{make_control_dictionary("monitoring { liveConvergence yes; }")};
+
+    require_throws_with_message<std::runtime_error>([&content]() { static_cast<void>(read_control_input(content)); },
+                                                    "exactly 'true' or 'false'",
+                                                    "controlDict accepted an invalid liveConvergence value.");
+}
+
+void test_rejects_missing_live_convergence_semicolon()
+{
+    const std::string content{make_control_dictionary("monitoring { liveConvergence true }")};
+
+    require_throws<std::runtime_error>([&content]() { static_cast<void>(read_control_input(content)); },
+                                       "controlDict accepted liveConvergence without a semicolon.");
+}
+
+void test_rejects_malformed_control_dict_braces()
+{
+    const std::string content{make_control_dictionary("monitoring { liveConvergence true;")};
+
+    require_throws<std::runtime_error>([&content]() { static_cast<void>(read_control_input(content)); },
+                                       "controlDict accepted unbalanced monitoring braces.");
 }
 
 void test_reads_valid_quadrilateral_mesh_dict()
@@ -757,6 +890,24 @@ int main()
 {
     int failure_count{};
 
+    failure_count += cfd::test::run_test("default missing controlDict live convergence",
+                                         test_missing_control_dict_enables_live_convergence);
+    failure_count += cfd::test::run_test("default controlDict live convergence",
+                                         test_control_dict_without_monitoring_enables_live_convergence);
+    failure_count += cfd::test::run_test("default empty monitoring live convergence",
+                                         test_monitoring_without_live_convergence_enables_it);
+    failure_count += cfd::test::run_test("read enabled live convergence", test_reads_enabled_live_convergence);
+    failure_count += cfd::test::run_test("read disabled live convergence", test_reads_disabled_live_convergence);
+    failure_count += cfd::test::run_test("ignore controlDict comments", test_control_dict_comments_are_ignored);
+    failure_count += cfd::test::run_test("reject duplicate monitoring", test_rejects_duplicate_monitoring_dictionary);
+    failure_count +=
+        cfd::test::run_test("reject duplicate live convergence", test_rejects_duplicate_live_convergence_entry);
+    failure_count +=
+        cfd::test::run_test("reject invalid live convergence boolean", test_rejects_invalid_live_convergence_boolean);
+    failure_count += cfd::test::run_test("reject missing live convergence semicolon",
+                                         test_rejects_missing_live_convergence_semicolon);
+    failure_count +=
+        cfd::test::run_test("reject malformed controlDict braces", test_rejects_malformed_control_dict_braces);
     failure_count += cfd::test::run_test("read valid quadrilateral meshDict", test_reads_valid_quadrilateral_mesh_dict);
     failure_count += cfd::test::run_test("read triangle meshDict", test_reads_triangle_mesh_dict);
     failure_count += cfd::test::run_test("accept reordered FoamFile entries", test_accepts_reordered_foam_file_entries);

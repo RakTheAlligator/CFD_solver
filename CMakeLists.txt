@@ -130,6 +130,13 @@ cfd_enable_warnings(cfd_core)
 add_executable(
     CFD_solver
     src/main.cpp
+    src/app/LiveConvergenceLauncher.cpp
+)
+
+target_include_directories(
+    CFD_solver
+    PRIVATE
+        ${PROJECT_SOURCE_DIR}/src
 )
 
 target_link_libraries(
