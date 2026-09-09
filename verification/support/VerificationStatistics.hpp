@@ -23,7 +23,7 @@ struct ErrorStatistics
     double linf_error{};
 };
 
-/// Accumulates cellwise errors without changing their summation order.
+/// Accumulates signed cellwise errors without changing their summation order.
 struct ErrorAccumulator
 {
     Index cell_count{};
@@ -31,12 +31,13 @@ struct ErrorAccumulator
     double area_weighted_squared_error{};
     double linf_error{};
 
-    void add(const double cell_area, const double error_magnitude) noexcept
+    void add(const double cell_area, const double error) noexcept
     {
+        const double absolute_error{std::abs(error)};
         ++cell_count;
         total_area += cell_area;
-        area_weighted_squared_error += cell_area * error_magnitude * error_magnitude;
-        linf_error = std::max(linf_error, error_magnitude);
+        area_weighted_squared_error += cell_area * error * error;
+        linf_error = std::max(linf_error, absolute_error);
     }
 
     [[nodiscard]]

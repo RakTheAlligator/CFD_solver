@@ -411,4 +411,16 @@ if(BUILD_TESTING)
         vtk_writer
         tests/VtkWriterTests.cpp
     )
+
+    cfd_add_test(
+        cfd_verification_statistics_tests
+        verification_statistics
+        tests/VerificationStatisticsTests.cpp
+    )
+
+    target_include_directories(
+        cfd_verification_statistics_tests
+        PRIVATE
+            ${PROJECT_SOURCE_DIR}/verification
+    )
 endif()
