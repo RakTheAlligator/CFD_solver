@@ -452,7 +452,7 @@ void test_input_validation_precedes_iterations()
 cfd::IncompressibleSimpleResult solve_pressure_driven_channel(
     const cfd::Mesh &mesh, cfd::IncompressibleSimpleOptions options, cfd::CellVelocityField &velocity,
     cfd::CellScalarField &pressure, cfd::FaceFluxField &mass_flux, const bool initialize_exact_pressure = true,
-    cfd::SimpleIterationCallback iteration_callback = {})
+    const cfd::SimpleIterationCallback &iteration_callback = {})
 {
     constexpr double length{2.0};
     constexpr double inlet_pressure{0.02};
@@ -472,7 +472,7 @@ cfd::IncompressibleSimpleResult solve_pressure_driven_channel(
         channel_pressure_correction_conditions(mesh)};
     cfd::IncompressibleSimpleSolver solver{mesh, 1.0, 0.1, cfd::ScalarConvectionScheme::Linear, options};
     return solver.solve(velocity_conditions, velocity_conditions, pressure_conditions, pressure_correction_conditions,
-                        velocity, pressure, mass_flux, std::move(iteration_callback));
+                        velocity, pressure, mass_flux, iteration_callback);
 }
 
 struct OneIterationFluxResult
