@@ -560,9 +560,45 @@ void test_maximum_iteration_nonconvergence_and_channel_convergence()
                 "Converged channel exceeds the velocity-change tolerance.");
         require(result.continuity_relative_residual <= test_options().continuity_relative_tolerance,
                 "Converged channel exceeds the continuity tolerance.");
+        require(result.provisional_continuity_relative_residual <= test_options().continuity_relative_tolerance,
+                "Converged channel exceeds the provisional continuity tolerance.");
         require(result.maximum_mass_imbalance < 1.0e-12,
                 "Converged channel retains excessive absolute mass imbalance.");
     }
+}
+
+void test_does_not_converge_while_pressure_correction_remains_large()
+{
+    cfd::MeshBuildResult build_result{cfd::build_mesh(make_channel_raw_mesh(1, 1, 1.0, 1.0))};
+    const cfd::Mesh &mesh{build_result.mesh};
+    const cfd::ScalarBoundaryConditions velocity_conditions{channel_velocity_conditions(mesh)};
+    const cfd::ScalarBoundaryConditions pressure_conditions{channel_pressure_conditions(mesh, 1.0, 0.0)};
+    const cfd::PressureCorrectionBoundaryConditions pressure_correction_conditions{
+        channel_pressure_correction_conditions(mesh)};
+    cfd::CellVelocityField velocity{mesh.cell_count()};
+    cfd::CellScalarField pressure{mesh.cell_count()};
+    cfd::FaceFluxField mass_flux{mesh.face_count()};
+    cfd::IncompressibleSimpleOptions options{test_options()};
+    options.maximum_iterations = 2;
+    options.pressure_relaxation_factor = 0.3;
+    options.rhie_chow_flux_relaxation_factor = 1.0;
+    options.velocity_relative_tolerance = 1.0e-12;
+    options.continuity_relative_tolerance = 1.0e-12;
+    cfd::IncompressibleSimpleSolver solver{mesh, 1.0, 1.0, cfd::ScalarConvectionScheme::Linear, options};
+
+    const cfd::IncompressibleSimpleResult result{solver.solve(velocity_conditions, velocity_conditions,
+                                                              pressure_conditions, pressure_correction_conditions,
+                                                              velocity, pressure, mass_flux)};
+
+    require(result.velocity_relative_change <= options.velocity_relative_tolerance,
+            "False-convergence fixture does not satisfy the old velocity-change criterion.");
+    require(result.continuity_relative_residual <= options.continuity_relative_tolerance,
+            "False-convergence fixture does not satisfy the old corrected-continuity criterion.");
+    require(result.provisional_continuity_relative_residual > options.continuity_relative_tolerance,
+            "False-convergence fixture does not retain a significant provisional continuity residual.");
+    require(result.maximum_pressure_correction > 0.1,
+            "False-convergence fixture no longer retains a substantial pressure correction.");
+    require(!result.converged, "SIMPLE reported convergence while pressure correction remains substantial.");
 }
 
 } // namespace
@@ -585,6 +621,8 @@ int main()
     failure_count += cfd::test::run_test("SIMPLE Rhie-Chow flux relaxation", test_rhie_chow_flux_relaxation_path);
     failure_count += cfd::test::run_test("SIMPLE channel convergence",
                                          test_maximum_iteration_nonconvergence_and_channel_convergence);
+    failure_count += cfd::test::run_test("SIMPLE rejects convergence with a large pressure correction",
+                                         test_does_not_converge_while_pressure_correction_remains_large);
 
     return cfd::test::finish_tests(failure_count, "incompressible SIMPLE solver");
 }

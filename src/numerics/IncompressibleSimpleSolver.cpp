@@ -15,6 +15,7 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <span>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -232,12 +233,12 @@ struct ContinuityDiagnostics
 };
 
 [[nodiscard]]
-ContinuityDiagnostics compute_continuity_diagnostics(const CellScalarField &mass_imbalance,
+ContinuityDiagnostics compute_continuity_diagnostics(const std::span<const double> mass_imbalance,
                                                      const FaceFluxField &mass_flux)
 {
     double imbalance_sum{};
     double maximum_imbalance{};
-    for (const double imbalance : mass_imbalance.values())
+    for (const double imbalance : mass_imbalance)
     {
         const double magnitude{std::abs(imbalance)};
         imbalance_sum += magnitude;
@@ -376,6 +377,8 @@ IncompressibleSimpleResult IncompressibleSimpleSolver::solve(
         pressure_correction_assembler_.add_boundary_provisional_flux_rhs(mass_flux, pressure_correction_system_);
         pressure_correction_assembler_.add_boundary_pressure_response(
             pressure_correction_boundary_conditions, face_pressure_response_, pressure_correction_system_);
+        const ContinuityDiagnostics provisional_continuity{
+            compute_continuity_diagnostics(pressure_correction_system_.rhs(), mass_flux)};
         if (!has_fixed_pressure)
         {
             apply_zero_pressure_correction_reference(0, pressure_correction_system_);
@@ -396,17 +399,18 @@ IncompressibleSimpleResult IncompressibleSimpleSolver::solve(
                                                       pressure);
         compute_cell_mass_imbalance(*mesh_, mass_flux, mass_imbalance_);
 
-        const ContinuityDiagnostics continuity{compute_continuity_diagnostics(mass_imbalance_, mass_flux)};
+        const ContinuityDiagnostics continuity{compute_continuity_diagnostics(mass_imbalance_.values(), mass_flux)};
         result = {
             false,
             iteration_count,
             relative_velocity_change(velocity, previous_velocity_),
+            provisional_continuity.relative_residual,
             continuity.relative_residual,
             continuity.maximum_imbalance,
             maximum_absolute_value(pressure_correction_),
         };
         if (result.velocity_relative_change <= options_.velocity_relative_tolerance &&
-            result.continuity_relative_residual <= options_.continuity_relative_tolerance)
+            result.provisional_continuity_relative_residual <= options_.continuity_relative_tolerance)
         {
             result.converged = true;
             return result;

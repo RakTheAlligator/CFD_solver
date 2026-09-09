@@ -39,6 +39,7 @@ struct IncompressibleSimpleOptions
     /// are unchanged. A value of one preserves the unrelaxed path.
     double rhie_chow_flux_relaxation_factor{1.0};
     double velocity_relative_tolerance{1.0e-8};
+    /// Tolerance for provisional continuity, which controls outer convergence.
     double continuity_relative_tolerance{1.0e-10};
     BiCGSTABOptions momentum_linear_solver{};
     ConjugateGradientOptions pressure_correction_linear_solver{};
@@ -50,6 +51,9 @@ struct IncompressibleSimpleResult
     bool converged{};
     Index iteration_count{};
     double velocity_relative_change{};
+    /// Relative continuity residual of the provisional flux before correction.
+    double provisional_continuity_relative_residual{};
+    /// Relative continuity residual of the corrected final flux.
     double continuity_relative_residual{};
     double maximum_mass_imbalance{};
     double maximum_pressure_correction{};
@@ -94,7 +98,8 @@ class IncompressibleSimpleSolver
 
     ~IncompressibleSimpleSolver() = default;
 
-    /// Iterates until velocity change and continuity satisfy their tolerances.
+    /// Iterates until velocity change and provisional continuity satisfy their
+    /// tolerances. Corrected continuity remains available as a diagnostic.
     ///
     /// `FixedPressure` pressure-correction conditions must correspond to
     /// physical pressure Dirichlet conditions. `FixedMassFlux` conditions must
