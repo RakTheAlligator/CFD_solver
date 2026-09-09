@@ -375,7 +375,7 @@ IncompressibleSimpleResult IncompressibleSimpleSolver::solve(
     const ScalarBoundaryConditions &u_boundary_conditions, const ScalarBoundaryConditions &v_boundary_conditions,
     const ScalarBoundaryConditions &pressure_boundary_conditions,
     const PressureCorrectionBoundaryConditions &pressure_correction_boundary_conditions, CellVelocityField &velocity,
-    CellScalarField &pressure, FaceFluxField &mass_flux, SimpleIterationCallback iteration_callback)
+    CellScalarField &pressure, FaceFluxField &mass_flux, const SimpleIterationCallback &iteration_callback)
 {
     validate_field_cardinalities(*mesh_, velocity, pressure, mass_flux);
     validate_boundary_cardinalities(*mesh_, u_boundary_conditions, v_boundary_conditions, pressure_boundary_conditions,

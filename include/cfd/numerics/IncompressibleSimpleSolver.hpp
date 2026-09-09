@@ -156,7 +156,7 @@ class IncompressibleSimpleSolver
         const ScalarBoundaryConditions &pressure_boundary_conditions,
         const PressureCorrectionBoundaryConditions &pressure_correction_boundary_conditions,
         CellVelocityField &velocity, CellScalarField &pressure, FaceFluxField &mass_flux,
-        SimpleIterationCallback iteration_callback = {});
+        const SimpleIterationCallback &iteration_callback = {});
 
   private:
     const Mesh *mesh_;
