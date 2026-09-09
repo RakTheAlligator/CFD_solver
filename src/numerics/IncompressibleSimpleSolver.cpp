@@ -350,7 +350,7 @@ IncompressibleSimpleResult IncompressibleSimpleSolver::solve(
     const ScalarBoundaryConditions &u_boundary_conditions, const ScalarBoundaryConditions &v_boundary_conditions,
     const ScalarBoundaryConditions &pressure_boundary_conditions,
     const PressureCorrectionBoundaryConditions &pressure_correction_boundary_conditions, CellVelocityField &velocity,
-    CellScalarField &pressure, FaceFluxField &mass_flux)
+    CellScalarField &pressure, FaceFluxField &mass_flux, SimpleIterationCallback iteration_callback)
 {
     validate_field_cardinalities(*mesh_, velocity, pressure, mass_flux);
     validate_boundary_cardinalities(*mesh_, u_boundary_conditions, v_boundary_conditions, pressure_boundary_conditions,
@@ -380,9 +380,11 @@ IncompressibleSimpleResult IncompressibleSimpleSolver::solve(
                                      u_boundary_conditions, v_boundary_conditions, mass_flux,
                                      options_.momentum_relaxation_factor, u_momentum_system_, v_momentum_system_);
         u_momentum_solver_.compute_matrix(u_momentum_system_);
-        require_converged(u_momentum_solver_.solve(u_momentum_system_.rhs(), velocity.u().values()), "u-momentum");
+        const LinearSolveResult u_solve{u_momentum_solver_.solve(u_momentum_system_.rhs(), velocity.u().values())};
+        require_converged(u_solve, "u-momentum");
         v_momentum_solver_.compute_matrix(v_momentum_system_);
-        require_converged(v_momentum_solver_.solve(v_momentum_system_.rhs(), velocity.v().values()), "v-momentum");
+        const LinearSolveResult v_solve{v_momentum_solver_.solve(v_momentum_system_.rhs(), velocity.v().values())};
+        require_converged(v_solve, "v-momentum");
 
         compute_momentum_pressure_response(*mesh_, u_momentum_system_, v_momentum_system_, momentum_response_);
         const bool relax_rhie_chow_flux{options_.rhie_chow_flux_relaxation_factor != 1.0};
@@ -434,9 +436,9 @@ IncompressibleSimpleResult IncompressibleSimpleSolver::solve(
 
         std::fill(pressure_correction_.values().begin(), pressure_correction_.values().end(), 0.0);
         pressure_correction_solver_.compute_matrix(pressure_correction_system_);
-        require_converged(
-            pressure_correction_solver_.solve(pressure_correction_system_.rhs(), pressure_correction_.values()),
-            "pressure-correction");
+        const LinearSolveResult pressure_correction_solve{
+            pressure_correction_solver_.solve(pressure_correction_system_.rhs(), pressure_correction_.values())};
+        require_converged(pressure_correction_solve, "pressure-correction");
         compute_least_squares_gradient(*mesh_, pressure_correction_, pressure_correction_gradient_boundary_conditions,
                                        pressure_correction_gradient_);
 
@@ -457,10 +459,24 @@ IncompressibleSimpleResult IncompressibleSimpleSolver::solve(
             continuity.maximum_imbalance,
             maximum_absolute_value(pressure_correction_),
         };
-        if (result.velocity_relative_change <= options_.velocity_relative_tolerance &&
-            result.provisional_continuity_relative_residual <= options_.continuity_relative_tolerance)
+        result.converged = result.velocity_relative_change <= options_.velocity_relative_tolerance &&
+                           result.provisional_continuity_relative_residual <= options_.continuity_relative_tolerance;
+        const SimpleIterationInfo iteration_info{
+            .iteration = iteration_count,
+            .u_solve = u_solve,
+            .v_solve = v_solve,
+            .pressure_correction_solve = pressure_correction_solve,
+            .velocity_relative_change = result.velocity_relative_change,
+            .provisional_continuity_relative_residual = result.provisional_continuity_relative_residual,
+            .corrected_continuity_relative_residual = result.continuity_relative_residual,
+            .maximum_pressure_correction = result.maximum_pressure_correction,
+        };
+        if (iteration_callback)
         {
-            result.converged = true;
+            iteration_callback(iteration_info);
+        }
+        if (result.converged)
+        {
             return result;
         }
     }

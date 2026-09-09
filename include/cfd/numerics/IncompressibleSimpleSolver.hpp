@@ -17,6 +17,8 @@
 #include "cfd/numerics/RhieChowInternalFaceInterpolation.hpp"
 #include "cfd/numerics/ScalarConvectionOperator.hpp"
 
+#include <functional>
+
 namespace cfd
 {
 
@@ -44,6 +46,22 @@ struct IncompressibleSimpleOptions
     BiCGSTABOptions momentum_linear_solver{};
     ConjugateGradientOptions pressure_correction_linear_solver{};
 };
+
+/// Linear-solve outcomes and nonlinear diagnostics for one completed SIMPLE iteration.
+struct SimpleIterationInfo
+{
+    Index iteration{};
+    LinearSolveResult u_solve{};
+    LinearSolveResult v_solve{};
+    LinearSolveResult pressure_correction_solve{};
+    double velocity_relative_change{};
+    double provisional_continuity_relative_residual{};
+    double corrected_continuity_relative_residual{};
+    double maximum_pressure_correction{};
+};
+
+/// Observer invoked after each fully completed SIMPLE outer iteration.
+using SimpleIterationCallback = std::function<void(const SimpleIterationInfo &)>;
 
 /// Outcome and final diagnostics of one steady SIMPLE solve.
 struct IncompressibleSimpleResult
@@ -113,6 +131,10 @@ class IncompressibleSimpleSolver
     ///
     /// @return Final diagnostics. Reaching the outer iteration limit returns
     ///         `converged == false`.
+    /// @param iteration_callback Optional observer called after convergence is
+    ///        evaluated for every successfully completed outer iteration,
+    ///        including the final one. An iteration interrupted by an inner
+    ///        linear-solver failure is not reported.
     /// @throws std::invalid_argument If a cardinality, initial field value, or
     ///         boundary-condition pairing is invalid.
     /// @throws std::runtime_error If imposed all-`FixedMassFlux` boundary flow
@@ -123,7 +145,8 @@ class IncompressibleSimpleSolver
         const ScalarBoundaryConditions &u_boundary_conditions, const ScalarBoundaryConditions &v_boundary_conditions,
         const ScalarBoundaryConditions &pressure_boundary_conditions,
         const PressureCorrectionBoundaryConditions &pressure_correction_boundary_conditions,
-        CellVelocityField &velocity, CellScalarField &pressure, FaceFluxField &mass_flux);
+        CellVelocityField &velocity, CellScalarField &pressure, FaceFluxField &mass_flux,
+        SimpleIterationCallback iteration_callback = {});
 
   private:
     const Mesh *mesh_;

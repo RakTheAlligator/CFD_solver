@@ -451,7 +451,8 @@ void test_input_validation_precedes_iterations()
 [[nodiscard]]
 cfd::IncompressibleSimpleResult solve_pressure_driven_channel(
     const cfd::Mesh &mesh, cfd::IncompressibleSimpleOptions options, cfd::CellVelocityField &velocity,
-    cfd::CellScalarField &pressure, cfd::FaceFluxField &mass_flux, const bool initialize_exact_pressure = true)
+    cfd::CellScalarField &pressure, cfd::FaceFluxField &mass_flux, const bool initialize_exact_pressure = true,
+    cfd::SimpleIterationCallback iteration_callback = {})
 {
     constexpr double length{2.0};
     constexpr double inlet_pressure{0.02};
@@ -471,7 +472,7 @@ cfd::IncompressibleSimpleResult solve_pressure_driven_channel(
         channel_pressure_correction_conditions(mesh)};
     cfd::IncompressibleSimpleSolver solver{mesh, 1.0, 0.1, cfd::ScalarConvectionScheme::Linear, options};
     return solver.solve(velocity_conditions, velocity_conditions, pressure_conditions, pressure_correction_conditions,
-                        velocity, pressure, mass_flux);
+                        velocity, pressure, mass_flux, std::move(iteration_callback));
 }
 
 struct OneIterationFluxResult
@@ -495,6 +496,51 @@ OneIterationFluxResult run_one_iteration_with_flux_relaxation(const cfd::Mesh &m
     const cfd::IncompressibleSimpleResult result{
         solve_pressure_driven_channel(mesh, options, velocity, pressure, mass_flux)};
     return {result, {mass_flux.values().begin(), mass_flux.values().end()}};
+}
+
+void test_reports_each_completed_iteration()
+{
+    cfd::MeshBuildResult build_result{cfd::build_mesh(make_channel_raw_mesh(2, 2))};
+    const cfd::Mesh &mesh{build_result.mesh};
+    cfd::CellVelocityField velocity{mesh.cell_count()};
+    cfd::CellScalarField pressure{mesh.cell_count()};
+    cfd::FaceFluxField mass_flux{mesh.face_count()};
+    cfd::IncompressibleSimpleOptions options{test_options()};
+    options.maximum_iterations = 10;
+    std::vector<cfd::SimpleIterationInfo> iteration_infos;
+    iteration_infos.reserve(options.maximum_iterations);
+
+    const cfd::IncompressibleSimpleResult result{solve_pressure_driven_channel(
+        mesh, options, velocity, pressure, mass_flux, true,
+        [&iteration_infos](const cfd::SimpleIterationInfo &info) { iteration_infos.push_back(info); })};
+
+    require(result.converged, "SIMPLE callback fixture did not reach its converged final iteration.");
+    require(iteration_infos.size() == result.iteration_count,
+            "SIMPLE callback count differs from the completed outer-iteration count.");
+    require(iteration_infos.size() > 1, "SIMPLE callback fixture did not complete multiple outer iterations.");
+    for (std::size_t index = 0; index < iteration_infos.size(); ++index)
+    {
+        const cfd::SimpleIterationInfo &info{iteration_infos[index]};
+        require(info.iteration == index + 1, "SIMPLE callback iteration numbers are not consecutive and 1-based.");
+        require(info.u_solve.converged && info.v_solve.converged && info.pressure_correction_solve.converged,
+                "SIMPLE callback reported a non-converged inner linear solve.");
+        require(std::isfinite(info.u_solve.estimated_relative_error) &&
+                    std::isfinite(info.v_solve.estimated_relative_error) &&
+                    std::isfinite(info.pressure_correction_solve.estimated_relative_error),
+                "SIMPLE callback reported a non-finite inner linear-solve error.");
+    }
+
+    const cfd::SimpleIterationInfo &final_info{iteration_infos.back()};
+    require(final_info.iteration == result.iteration_count,
+            "Final SIMPLE callback iteration differs from the returned iteration count.");
+    require(final_info.velocity_relative_change == result.velocity_relative_change,
+            "Final SIMPLE callback velocity diagnostic differs from the returned result.");
+    require(final_info.provisional_continuity_relative_residual == result.provisional_continuity_relative_residual,
+            "Final SIMPLE callback provisional-continuity diagnostic differs from the returned result.");
+    require(final_info.corrected_continuity_relative_residual == result.continuity_relative_residual,
+            "Final SIMPLE callback corrected-continuity diagnostic differs from the returned result.");
+    require(final_info.maximum_pressure_correction == result.maximum_pressure_correction,
+            "Final SIMPLE callback pressure-correction diagnostic differs from the returned result.");
 }
 
 void test_rhie_chow_flux_relaxation_path()
@@ -660,6 +706,7 @@ int main()
     failure_count += cfd::test::run_test("SIMPLE solve input validation", test_input_validation_precedes_iterations);
     failure_count += cfd::test::run_test("SIMPLE p-prime gradient boundary mapping",
                                          test_pressure_correction_gradient_boundary_mapping);
+    failure_count += cfd::test::run_test("SIMPLE completed-iteration callback", test_reports_each_completed_iteration);
     failure_count += cfd::test::run_test("SIMPLE Rhie-Chow flux relaxation", test_rhie_chow_flux_relaxation_path);
     failure_count += cfd::test::run_test("SIMPLE channel convergence",
                                          test_maximum_iteration_nonconvergence_and_channel_convergence);
