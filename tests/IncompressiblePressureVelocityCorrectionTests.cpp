@@ -98,6 +98,29 @@ cfd::RawMeshData make_three_cell_strip_raw_mesh()
 }
 
 [[nodiscard]]
+cfd::RawMeshData make_single_oblique_triangle_raw_mesh()
+{
+    constexpr cfd::BoundaryId wall_boundary_id{0};
+
+    cfd::RawMeshData raw_mesh;
+    raw_mesh.nodes = {
+        {0.0, 0.0},
+        {2.0, 0.0},
+        {0.0, 1.0},
+    };
+    raw_mesh.cell_types = {cfd::CellType::Triangle};
+    raw_mesh.cell_nodes = {0, 1, 2};
+    raw_mesh.cell_node_offsets = {0, 3};
+    raw_mesh.boundary_groups = {{wall_boundary_id, "wall"}};
+    raw_mesh.boundary_edges = {
+        {{0, 1}, wall_boundary_id},
+        {{1, 2}, wall_boundary_id},
+        {{2, 0}, wall_boundary_id},
+    };
+    return raw_mesh;
+}
+
+[[nodiscard]]
 cfd::Index internal_face_id(const cfd::Mesh &mesh)
 {
     for (cfd::Index face_id = 0; face_id < mesh.face_count(); ++face_id)
@@ -122,7 +145,7 @@ std::array<cfd::Index, 2> internal_face_ids(const cfd::Mesh &mesh)
             continue;
         }
         require(count < result.size(), "Three-cell correction fixture has too many internal faces.");
-        result.at(count) = face_id;
+        result[count] = face_id;
         ++count;
     }
     require(count == result.size(), "Three-cell correction fixture must have two internal faces.");
@@ -140,6 +163,20 @@ cfd::Index boundary_face_id(const cfd::Mesh &mesh, const cfd::BoundaryId boundar
         }
     }
     throw std::runtime_error("Pressure-velocity correction fixture has no requested boundary face.");
+}
+
+[[nodiscard]]
+cfd::Index oblique_boundary_face_id(const cfd::Mesh &mesh)
+{
+    for (cfd::Index face_id = 0; face_id < mesh.face_count(); ++face_id)
+    {
+        const cfd::Vector2 &area_vector{mesh.face_area_vectors()[face_id]};
+        if (mesh.face_adjacencies()[face_id].is_boundary() && area_vector.x != 0.0 && area_vector.y != 0.0)
+        {
+            return face_id;
+        }
+    }
+    throw std::runtime_error("Pressure-velocity correction fixture has no oblique boundary face.");
 }
 
 [[nodiscard]]
@@ -505,6 +542,47 @@ void test_velocity_correction_is_componentwise_and_unrelaxed()
     require_near(velocity.v()[1], 1.0, 0.0, "Cell 1 v correction is incorrect.");
 }
 
+void test_fixed_mass_flux_is_independent_of_anisotropic_cell_velocity_correction()
+{
+    cfd::MeshBuildResult build_result{cfd::build_mesh(make_single_oblique_triangle_raw_mesh())};
+    const cfd::Mesh &mesh{build_result.mesh};
+    const cfd::Index face_id{oblique_boundary_face_id(mesh)};
+    const cfd::Vector2 &area_vector{mesh.face_area_vectors()[face_id]};
+    const cfd::Vector2 pressure_correction_gradient{-area_vector.y, area_vector.x};
+
+    // This is the gradient of a linear p' satisfying homogeneous scalar
+    // Neumann data on the oblique face, but an anisotropic D_P does not map it
+    // to a zero normal velocity response.
+    require_near(pressure_correction_gradient.x * area_vector.x + pressure_correction_gradient.y * area_vector.y, 0.0,
+                 test_tolerance, "The discriminating gradient is not tangent to the oblique boundary.");
+
+    cfd::CellVectorField gradient{mesh.cell_count(), pressure_correction_gradient};
+    cfd::CellMomentumPressureResponse momentum_response{mesh.cell_count()};
+    momentum_response.u()[0] = 2.0;
+    momentum_response.v()[0] = 3.0;
+    const double response_flux{momentum_response.u()[0] * pressure_correction_gradient.x * area_vector.x +
+                               momentum_response.v()[0] * pressure_correction_gradient.y * area_vector.y};
+    require(std::abs(response_flux) > 1.0,
+            "Anisotropic momentum response did not distinguish the two boundary constraints.");
+
+    const cfd::IncompressiblePressureVelocityCorrection corrector{mesh};
+    cfd::CellVelocityField velocity{mesh.cell_count()};
+    corrector.correct_velocity(gradient, momentum_response, velocity);
+    require_near(velocity.u()[0] * area_vector.x + velocity.v()[0] * area_vector.y, -response_flux, test_tolerance,
+                 "Cell velocity correction does not match the anisotropic response flux.");
+
+    const cfd::PressureCorrectionBoundaryConditions boundary_conditions{
+        make_uniform_boundary_conditions(mesh, cfd::PressureCorrectionBoundaryConditionType::FixedMassFlux)};
+    const cfd::CellScalarField pressure_correction{mesh.cell_count(), 7.0};
+    const cfd::FacePressureResponseField face_pressure_response{mesh.face_count(),
+                                                                std::numeric_limits<double>::quiet_NaN()};
+    cfd::FaceFluxField mass_flux{mesh.face_count()};
+    seed_flux(mass_flux);
+    corrector.correct_face_mass_flux(pressure_correction, boundary_conditions, face_pressure_response, mass_flux);
+    require_seeded_flux_unchanged(mass_flux,
+                                  "FixedMassFlux face correction depended on the anisotropic corrected cell velocity.");
+}
+
 void test_velocity_correction_validation_is_transactional()
 {
     cfd::MeshBuildResult build_result{cfd::build_mesh(make_two_cell_rectangle_raw_mesh())};
@@ -650,6 +728,8 @@ int main()
         cfd::test::run_test("pressure correction validation", test_pressure_correction_validation_is_transactional);
     failure_count +=
         cfd::test::run_test("velocity correction update", test_velocity_correction_is_componentwise_and_unrelaxed);
+    failure_count += cfd::test::run_test("FixedMassFlux anisotropic cell-response isolation",
+                                         test_fixed_mass_flux_is_independent_of_anisotropic_cell_velocity_correction);
     failure_count +=
         cfd::test::run_test("velocity correction validation", test_velocity_correction_validation_is_transactional);
     failure_count += cfd::test::run_test("solved pressure correction continuity",

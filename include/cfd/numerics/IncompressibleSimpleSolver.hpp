@@ -136,8 +136,11 @@ class IncompressibleSimpleSolver
     ///
     /// For reconstructing `grad(p')` only, `FixedPressure` maps to homogeneous
     /// scalar Dirichlet data and `FixedMassFlux` maps to homogeneous scalar
-    /// Neumann data. This reconstruction mapping does not replace the distinct
-    /// face-flux correction semantics.
+    /// Neumann data. The latter is a SIMPLE v1 reconstruction closure for the
+    /// cell velocity correction: with unequal Cartesian momentum responses it
+    /// does not generally imply `(D_P * grad(p')) . S_b = 0`. The discrete
+    /// `FixedMassFlux` face correction remains exactly zero independently and
+    /// is not recomputed from the corrected cell velocity.
     ///
     /// @return Final diagnostics. Reaching the outer iteration limit returns
     ///         `converged == false`.

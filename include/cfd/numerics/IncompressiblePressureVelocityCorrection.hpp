@@ -41,8 +41,10 @@ class IncompressiblePressureVelocityCorrection
     /// `Dp_f * (p'_P - p'_N)`. A `FixedPressure` boundary receives
     /// `Dp_b * p'_P`, because `p'_b = 0`. `FixedMassFlux` entries remain
     /// exactly unchanged, and their pressure-response values are neither read
-    /// nor validated. Pressure relaxation does not apply to face-flux
-    /// correction.
+    /// nor validated. This boundary-flux invariant is enforced directly; it
+    /// does not depend on the separately reconstructed cell pressure-correction
+    /// gradient or corrected cell velocity. Pressure relaxation does not apply
+    /// to face-flux correction.
     ///
     /// All used inputs and computed corrected fluxes are validated before any
     /// face value is modified.
