@@ -323,6 +323,30 @@ void require_converged(const LinearSolveResult &result, const char *const system
     }
 }
 
+[[nodiscard]]
+double normalized_equation_imbalance(const ScalarLinearSystem &system, const std::span<const double> values,
+                                     const std::span<double> matrix_product_workspace)
+{
+    system.apply_matrix(values, matrix_product_workspace);
+
+    long double imbalance_sum{};
+    long double normalization_sum{};
+    const auto rhs{system.rhs()};
+    for (Index cell_id = 0; cell_id < system.cell_count(); ++cell_id)
+    {
+        const long double rhs_value{rhs[cell_id]};
+        const long double matrix_product{matrix_product_workspace[cell_id]};
+        imbalance_sum += std::abs(rhs_value - matrix_product);
+        normalization_sum += std::abs(rhs_value) + std::abs(matrix_product);
+    }
+
+    if (normalization_sum == 0.0L)
+    {
+        return 0.0;
+    }
+    return static_cast<double>(imbalance_sum / normalization_sum);
+}
+
 } // namespace
 
 IncompressibleSimpleSolver::IncompressibleSimpleSolver(const Mesh &mesh, const double density,
@@ -340,8 +364,9 @@ IncompressibleSimpleSolver::IncompressibleSimpleSolver(const Mesh &mesh, const d
       previous_mass_flux_(mesh.face_count()), u_gradient_(mesh.cell_count()), v_gradient_(mesh.cell_count()),
       pressure_gradient_(mesh.cell_count()), pressure_correction_gradient_(mesh.cell_count()),
       momentum_response_(mesh.cell_count()), face_pressure_response_(mesh.face_count()),
-      pressure_correction_(mesh.cell_count()), mass_imbalance_(mesh.cell_count()), u_momentum_system_(mesh),
-      v_momentum_system_(mesh), pressure_correction_system_(mesh)
+      pressure_correction_(mesh.cell_count()), mass_imbalance_(mesh.cell_count()),
+      momentum_matrix_product_workspace_(mesh.cell_count()), u_momentum_system_(mesh), v_momentum_system_(mesh),
+      pressure_correction_system_(mesh)
 {
     require_connected_cell_domain(mesh);
 }
@@ -379,6 +404,10 @@ IncompressibleSimpleResult IncompressibleSimpleSolver::solve(
         momentum_assembler_.assemble(previous_velocity_, u_gradient_, v_gradient_, pressure_gradient_,
                                      u_boundary_conditions, v_boundary_conditions, mass_flux,
                                      options_.momentum_relaxation_factor, u_momentum_system_, v_momentum_system_);
+        const double x_velocity_equation_residual{normalized_equation_imbalance(
+            u_momentum_system_, previous_velocity_.u().values(), momentum_matrix_product_workspace_)};
+        const double y_velocity_equation_residual{normalized_equation_imbalance(
+            v_momentum_system_, previous_velocity_.v().values(), momentum_matrix_product_workspace_)};
         u_momentum_solver_.compute_matrix(u_momentum_system_);
         const LinearSolveResult u_solve{u_momentum_solver_.solve(u_momentum_system_.rhs(), velocity.u().values())};
         require_converged(u_solve, "u-momentum");
@@ -466,6 +495,8 @@ IncompressibleSimpleResult IncompressibleSimpleSolver::solve(
             .u_solve = u_solve,
             .v_solve = v_solve,
             .pressure_correction_solve = pressure_correction_solve,
+            .x_velocity_equation_residual = x_velocity_equation_residual,
+            .y_velocity_equation_residual = y_velocity_equation_residual,
             .velocity_relative_change = result.velocity_relative_change,
             .provisional_continuity_relative_residual = result.provisional_continuity_relative_residual,
             .corrected_continuity_relative_residual = result.continuity_relative_residual,

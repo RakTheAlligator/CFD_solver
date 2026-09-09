@@ -70,6 +70,7 @@ add_library(
     src/input/OpenFOAMCaseReader.cpp
 
     src/io/MeshReport.cpp
+    src/io/SimpleConvergenceCsvWriter.cpp
     src/io/VtkWriter.cpp
 
     src/linear_algebra/EigenBiCGSTABSolver.cpp
@@ -410,6 +411,12 @@ if(BUILD_TESTING)
         cfd_vtk_writer_tests
         vtk_writer
         tests/VtkWriterTests.cpp
+    )
+
+    cfd_add_test(
+        cfd_simple_convergence_csv_writer_tests
+        simple_convergence_csv_writer
+        tests/SimpleConvergenceCsvWriterTests.cpp
     )
 
     cfd_add_test(

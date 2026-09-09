@@ -5,6 +5,7 @@
 #include "cfd/field/ScalarBoundaryConditions.hpp"
 #include "cfd/input/OpenFOAMCaseReader.hpp"
 #include "cfd/io/MeshReport.hpp"
+#include "cfd/io/SimpleConvergenceCsvWriter.hpp"
 #include "cfd/io/VtkWriter.hpp"
 #include "cfd/math/Vector2.hpp"
 #include "cfd/mesh/Boundary.hpp"
@@ -224,6 +225,12 @@ int main(const int argc, char *argv[])
         initialize_fixed_mass_flux_boundaries(mesh, density, u_boundary_conditions, v_boundary_conditions,
                                               pressure_correction_boundary_conditions, mass_flux);
 
+        const std::filesystem::path output_directory{case_directory / "results"};
+        const std::filesystem::path convergence_output_file{output_directory / "convergence.csv"};
+        const std::filesystem::path solution_output_file{output_directory / "solution.vtu"};
+        std::filesystem::create_directories(output_directory);
+        cfd::SimpleConvergenceCsvWriter convergence_writer{convergence_output_file};
+
         const cfd::IncompressibleSimpleOptions simple_options{
             .maximum_iterations = 2000,
             .momentum_relaxation_factor = 1.0,
@@ -236,9 +243,10 @@ int main(const int argc, char *argv[])
         };
         cfd::IncompressibleSimpleSolver solver{mesh, density, dynamic_viscosity, cfd::ScalarConvectionScheme::Linear,
                                                simple_options};
-        const cfd::IncompressibleSimpleResult simple_result{
-            solver.solve(u_boundary_conditions, v_boundary_conditions, pressure_boundary_conditions,
-                         pressure_correction_boundary_conditions, velocity, pressure, mass_flux)};
+        const cfd::IncompressibleSimpleResult simple_result{solver.solve(
+            u_boundary_conditions, v_boundary_conditions, pressure_boundary_conditions,
+            pressure_correction_boundary_conditions, velocity, pressure, mass_flux,
+            [&convergence_writer](const cfd::SimpleIterationInfo &info) { convergence_writer.write(info); })};
         if (!simple_result.converged)
         {
             throw std::runtime_error("SIMPLE did not converge within " + std::to_string(simple_result.iteration_count) +
@@ -247,11 +255,6 @@ int main(const int argc, char *argv[])
 
         cfd::CellScalarField mass_imbalance{mesh.cell_count()};
         cfd::compute_cell_mass_imbalance(mesh, mass_flux, mass_imbalance);
-
-        const std::filesystem::path output_directory{case_directory / "results"};
-        const std::filesystem::path solution_output_file{output_directory / "solution.vtu"};
-
-        std::filesystem::create_directories(output_directory);
 
         const std::array<cfd::VtkCellScalarData, 2> scalar_data{
             cfd::VtkCellScalarData{"p", pressure.values()},
@@ -275,7 +278,8 @@ int main(const int argc, char *argv[])
                   << "  Max pressure corr.: " << simple_result.maximum_pressure_correction << '\n';
 
         std::cout << "\n[Output]\n"
-                  << "  Solution          : " << solution_output_file.string() << '\n';
+                  << "  Solution          : " << solution_output_file.string() << '\n'
+                  << "  Convergence       : " << convergence_output_file.string() << '\n';
 
         std::cout << "\n============================================================\n"
                   << " Steady SIMPLE solution complete\n"

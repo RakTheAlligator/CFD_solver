@@ -518,6 +518,7 @@ void test_reports_each_completed_iteration()
     require(iteration_infos.size() == result.iteration_count,
             "SIMPLE callback count differs from the completed outer-iteration count.");
     require(iteration_infos.size() > 1, "SIMPLE callback fixture did not complete multiple outer iterations.");
+    constexpr double residual_upper_bound{1.0 + 64.0 * std::numeric_limits<double>::epsilon()};
     for (std::size_t index = 0; index < iteration_infos.size(); ++index)
     {
         const cfd::SimpleIterationInfo &info{iteration_infos[index]};
@@ -528,6 +529,12 @@ void test_reports_each_completed_iteration()
                     std::isfinite(info.v_solve.estimated_relative_error) &&
                     std::isfinite(info.pressure_correction_solve.estimated_relative_error),
                 "SIMPLE callback reported a non-finite inner linear-solve error.");
+        require(std::isfinite(info.x_velocity_equation_residual) && info.x_velocity_equation_residual >= 0.0 &&
+                    info.x_velocity_equation_residual <= residual_upper_bound,
+                "SIMPLE callback reported an invalid x-velocity equation residual.");
+        require(std::isfinite(info.y_velocity_equation_residual) && info.y_velocity_equation_residual >= 0.0 &&
+                    info.y_velocity_equation_residual <= residual_upper_bound,
+                "SIMPLE callback reported an invalid y-velocity equation residual.");
     }
 
     const cfd::SimpleIterationInfo &final_info{iteration_infos.back()};

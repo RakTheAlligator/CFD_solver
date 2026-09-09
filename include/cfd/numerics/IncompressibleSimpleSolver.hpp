@@ -18,6 +18,7 @@
 #include "cfd/numerics/ScalarConvectionOperator.hpp"
 
 #include <functional>
+#include <vector>
 
 namespace cfd
 {
@@ -48,13 +49,22 @@ struct IncompressibleSimpleOptions
 };
 
 /// Linear-solve outcomes and nonlinear diagnostics for one completed SIMPLE iteration.
+///
+/// The x- and y-velocity equation residuals are normalized assembled-momentum
+/// imbalances `sum(|b - A*x|) / (sum(|b|) + sum(|A*x|))`, evaluated with the
+/// iteration-start velocity before the corresponding linear solve. They are
+/// Fluent-like outer monitoring quantities, not Eigen inner-solver residuals
+/// and not a reproduction of another solver's exact residual scaling.
 struct SimpleIterationInfo
 {
     Index iteration{};
     LinearSolveResult u_solve{};
     LinearSolveResult v_solve{};
     LinearSolveResult pressure_correction_solve{};
+    double x_velocity_equation_residual{};
+    double y_velocity_equation_residual{};
     double velocity_relative_change{};
+    /// Default continuity monitor: provisional continuity before pressure correction.
     double provisional_continuity_relative_residual{};
     double corrected_continuity_relative_residual{};
     double maximum_pressure_correction{};
@@ -173,6 +183,7 @@ class IncompressibleSimpleSolver
     FacePressureResponseField face_pressure_response_;
     CellScalarField pressure_correction_;
     CellScalarField mass_imbalance_;
+    std::vector<double> momentum_matrix_product_workspace_;
 
     ScalarLinearSystem u_momentum_system_;
     ScalarLinearSystem v_momentum_system_;
