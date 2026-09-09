@@ -8,10 +8,14 @@
 
 #include "support/TestUtils.hpp"
 
+#include <Eigen/SparseCore>
+
 #include <array>
 #include <cmath>
 #include <limits>
 #include <stdexcept>
+#include <type_traits>
+#include <utility>
 
 namespace
 {
@@ -19,6 +23,27 @@ namespace
 using cfd::test::require;
 using cfd::test::require_near;
 using cfd::test::require_throws;
+
+using DefaultEigenSparseMatrix = Eigen::SparseMatrix<double>;
+using EigenSparseStorageIndex = DefaultEigenSparseMatrix::StorageIndex;
+
+static_assert(std::is_signed_v<EigenSparseStorageIndex>);
+static_assert(std::numeric_limits<EigenSparseStorageIndex>::digits <= std::numeric_limits<Eigen::Index>::digits);
+
+void test_distinguishes_iteration_and_sparse_storage_index_ranges()
+{
+    if constexpr (std::numeric_limits<EigenSparseStorageIndex>::digits < std::numeric_limits<Eigen::Index>::digits &&
+                  std::numeric_limits<EigenSparseStorageIndex>::digits < std::numeric_limits<cfd::Index>::digits)
+    {
+        constexpr cfd::Index first_unsupported_sparse_index{
+            static_cast<cfd::Index>(std::numeric_limits<EigenSparseStorageIndex>::max()) + 1};
+        static_assert(!std::in_range<EigenSparseStorageIndex>(first_unsupported_sparse_index));
+        static_assert(std::in_range<Eigen::Index>(first_unsupported_sparse_index));
+
+        const cfd::EigenConjugateGradientSolver solver{{1.0e-10, first_unsupported_sparse_index}};
+        static_cast<void>(solver);
+    }
+}
 
 [[nodiscard]]
 cfd::RawMeshData make_two_cell_mesh()
@@ -172,6 +197,8 @@ int main()
 {
     int failure_count{};
 
+    failure_count += cfd::test::run_test("Eigen conjugate gradient iteration and sparse storage index distinction",
+                                         test_distinguishes_iteration_and_sparse_storage_index_ranges);
     failure_count += cfd::test::run_test("Eigen conjugate gradient known SPD systems",
                                          test_solves_known_spd_system_and_reuses_preparation);
     failure_count += cfd::test::run_test("Eigen conjugate gradient non-convergence reporting",

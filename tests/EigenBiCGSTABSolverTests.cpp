@@ -8,6 +8,8 @@
 
 #include "support/TestUtils.hpp"
 
+#include <Eigen/SparseCore>
+
 #include <array>
 #include <cmath>
 #include <cstddef>
@@ -15,6 +17,7 @@
 #include <span>
 #include <stdexcept>
 #include <type_traits>
+#include <utility>
 
 namespace
 {
@@ -27,6 +30,27 @@ static_assert(!std::is_copy_constructible_v<cfd::EigenBiCGSTABSolver>);
 static_assert(!std::is_copy_assignable_v<cfd::EigenBiCGSTABSolver>);
 static_assert(!std::is_move_constructible_v<cfd::EigenBiCGSTABSolver>);
 static_assert(!std::is_move_assignable_v<cfd::EigenBiCGSTABSolver>);
+
+using DefaultEigenSparseMatrix = Eigen::SparseMatrix<double>;
+using EigenSparseStorageIndex = DefaultEigenSparseMatrix::StorageIndex;
+
+static_assert(std::is_signed_v<EigenSparseStorageIndex>);
+static_assert(std::numeric_limits<EigenSparseStorageIndex>::digits <= std::numeric_limits<Eigen::Index>::digits);
+
+void test_distinguishes_iteration_and_sparse_storage_index_ranges()
+{
+    if constexpr (std::numeric_limits<EigenSparseStorageIndex>::digits < std::numeric_limits<Eigen::Index>::digits &&
+                  std::numeric_limits<EigenSparseStorageIndex>::digits < std::numeric_limits<cfd::Index>::digits)
+    {
+        constexpr cfd::Index first_unsupported_sparse_index{
+            static_cast<cfd::Index>(std::numeric_limits<EigenSparseStorageIndex>::max()) + 1};
+        static_assert(!std::in_range<EigenSparseStorageIndex>(first_unsupported_sparse_index));
+        static_assert(std::in_range<Eigen::Index>(first_unsupported_sparse_index));
+
+        const cfd::EigenBiCGSTABSolver solver{{1.0e-10, first_unsupported_sparse_index}};
+        static_cast<void>(solver);
+    }
+}
 
 [[nodiscard]]
 cfd::RawMeshData make_three_cell_mesh()
@@ -313,6 +337,8 @@ int main()
 {
     int failure_count{};
 
+    failure_count += cfd::test::run_test("Eigen BiCGSTAB iteration and sparse storage index distinction",
+                                         test_distinguishes_iteration_and_sparse_storage_index_ranges);
     failure_count += cfd::test::run_test("Eigen BiCGSTAB known nonsymmetric systems and matrix reuse",
                                          test_solves_known_nonsymmetric_system_and_reuses_matrix);
     failure_count += cfd::test::run_test("Eigen BiCGSTAB caller initial guess", test_uses_caller_initial_guess);

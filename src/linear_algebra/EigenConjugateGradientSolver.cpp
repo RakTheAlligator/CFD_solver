@@ -8,6 +8,7 @@
 #include <functional>
 #include <limits>
 #include <stdexcept>
+#include <utility>
 #include <vector>
 
 namespace cfd
@@ -54,6 +55,24 @@ Eigen::Index to_eigen_index(const Index value)
     return static_cast<Eigen::Index>(value);
 }
 
+template <typename StorageIndex>
+[[nodiscard]]
+Index checked_sparse_entry_count(const Index cell_count, const Index internal_face_count)
+{
+    constexpr auto maximum_storage_index{std::numeric_limits<StorageIndex>::max()};
+    static_assert(std::in_range<Index>(maximum_storage_index));
+    constexpr Index maximum_sparse_entry_count{static_cast<Index>(maximum_storage_index)};
+    if (cell_count > maximum_sparse_entry_count)
+    {
+        throw std::invalid_argument("Scalar linear system cardinality exceeds the Eigen sparse storage index range.");
+    }
+    if (internal_face_count > (maximum_sparse_entry_count - cell_count) / 2)
+    {
+        throw std::invalid_argument("Scalar linear system entry count exceeds the Eigen sparse storage index range.");
+    }
+    return cell_count + 2 * internal_face_count;
+}
+
 } // namespace
 
 EigenConjugateGradientSolver::EigenConjugateGradientSolver(const ConjugateGradientOptions options) : options_(options)
@@ -75,6 +94,9 @@ EigenConjugateGradientSolver::EigenConjugateGradientSolver(const ConjugateGradie
 
 void EigenConjugateGradientSolver::compute_matrix(const ScalarLinearSystem &system)
 {
+    using StorageIndex = SparseMatrix::StorageIndex;
+    using Triplet = Eigen::Triplet<double, StorageIndex>;
+
     matrix_is_prepared_ = false;
     require_finite(system.diagonal(), "Scalar linear system diagonal must contain only finite values.");
     require_finite(system.owner_neighbor_coefficients(),
@@ -88,12 +110,14 @@ void EigenConjugateGradientSolver::compute_matrix(const ScalarLinearSystem &syst
     {
         internal_face_count += static_cast<Index>(!adjacency.is_boundary());
     }
+    const Index sparse_entry_count{checked_sparse_entry_count<StorageIndex>(system.cell_count(), internal_face_count)};
 
-    std::vector<Eigen::Triplet<double>> entries;
-    entries.reserve(system.cell_count() + 2 * internal_face_count);
+    std::vector<Triplet> entries;
+    entries.reserve(sparse_entry_count);
     for (Index cell_id = 0; cell_id < system.cell_count(); ++cell_id)
     {
-        entries.emplace_back(to_eigen_index(cell_id), to_eigen_index(cell_id), system.diagonal()[cell_id]);
+        const StorageIndex sparse_cell_id{static_cast<StorageIndex>(cell_id)};
+        entries.emplace_back(sparse_cell_id, sparse_cell_id, system.diagonal()[cell_id]);
     }
 
     const auto face_adjacencies{system.mesh().face_adjacencies()};
@@ -105,9 +129,9 @@ void EigenConjugateGradientSolver::compute_matrix(const ScalarLinearSystem &syst
             continue;
         }
 
-        entries.emplace_back(to_eigen_index(adjacency.owner), to_eigen_index(adjacency.neighbor),
+        entries.emplace_back(static_cast<StorageIndex>(adjacency.owner), static_cast<StorageIndex>(adjacency.neighbor),
                              system.owner_neighbor_coefficients()[face_id]);
-        entries.emplace_back(to_eigen_index(adjacency.neighbor), to_eigen_index(adjacency.owner),
+        entries.emplace_back(static_cast<StorageIndex>(adjacency.neighbor), static_cast<StorageIndex>(adjacency.owner),
                              system.neighbor_owner_coefficients()[face_id]);
     }
 
