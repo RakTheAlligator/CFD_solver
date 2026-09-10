@@ -40,6 +40,7 @@ static_assert(!std::is_copy_constructible_v<cfd::IncompressibleSimpleSolver>);
 static_assert(!std::is_copy_assignable_v<cfd::IncompressibleSimpleSolver>);
 static_assert(!std::is_move_constructible_v<cfd::IncompressibleSimpleSolver>);
 static_assert(!std::is_move_assignable_v<cfd::IncompressibleSimpleSolver>);
+static_assert(std::is_trivially_copyable_v<cfd::SimpleTimingBreakdown>);
 
 [[nodiscard]]
 cfd::RawMeshData make_channel_raw_mesh(const cfd::Index x_cell_count, const cfd::Index y_cell_count,
@@ -548,6 +549,32 @@ void test_reports_each_completed_iteration()
             "Final SIMPLE callback corrected-continuity diagnostic differs from the returned result.");
     require(final_info.maximum_pressure_correction == result.maximum_pressure_correction,
             "Final SIMPLE callback pressure-correction diagnostic differs from the returned result.");
+
+    const cfd::SimpleTimingBreakdown &timings{result.timings};
+    const std::array phase_durations{
+        timings.velocity_gradient_reconstruction_seconds,
+        timings.pressure_gradient_reconstruction_seconds,
+        timings.momentum_assembly_seconds,
+        timings.momentum_residual_diagnostics_seconds,
+        timings.momentum_matrix_preparation_seconds,
+        timings.u_momentum_linear_solve_seconds,
+        timings.v_momentum_linear_solve_seconds,
+        timings.momentum_pressure_response_seconds,
+        timings.rhie_chow_interpolation_seconds,
+        timings.pressure_correction_assembly_seconds,
+        timings.provisional_continuity_diagnostics_seconds,
+        timings.pressure_correction_matrix_preparation_seconds,
+        timings.pressure_correction_linear_solve_seconds,
+        timings.pressure_correction_gradient_reconstruction_seconds,
+        timings.field_correction_seconds,
+        timings.convergence_diagnostics_seconds,
+    };
+    for (const double duration : phase_durations)
+    {
+        require(std::isfinite(duration) && duration >= 0.0, "SIMPLE returned an invalid cumulative phase duration.");
+    }
+    require(std::isfinite(timings.total_seconds) && timings.total_seconds > 0.0,
+            "SIMPLE returned an invalid total solve duration.");
 }
 
 void test_rhie_chow_flux_relaxation_path()

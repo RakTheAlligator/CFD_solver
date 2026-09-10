@@ -13,6 +13,7 @@
 #include "cfd/numerics/PressureCorrectionReference.hpp"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <limits>
 #include <span>
@@ -25,6 +26,14 @@ namespace cfd
 {
 namespace
 {
+
+using SimpleClock = std::chrono::steady_clock;
+
+[[nodiscard]]
+double elapsed_seconds_since(const SimpleClock::time_point start) noexcept
+{
+    return std::chrono::duration<double>(SimpleClock::now() - start).count();
+}
 
 void require_connected_cell_domain(const Mesh &mesh)
 {
@@ -377,6 +386,9 @@ IncompressibleSimpleResult IncompressibleSimpleSolver::solve(
     const PressureCorrectionBoundaryConditions &pressure_correction_boundary_conditions, CellVelocityField &velocity,
     CellScalarField &pressure, FaceFluxField &mass_flux, const SimpleIterationCallback &iteration_callback)
 {
+    const SimpleClock::time_point solve_start{SimpleClock::now()};
+    SimpleTimingBreakdown timings;
+
     validate_field_cardinalities(*mesh_, velocity, pressure, mass_flux);
     validate_boundary_cardinalities(*mesh_, u_boundary_conditions, v_boundary_conditions, pressure_boundary_conditions,
                                     pressure_correction_boundary_conditions);
@@ -397,27 +409,52 @@ IncompressibleSimpleResult IncompressibleSimpleSolver::solve(
         std::copy(velocity.u().values().begin(), velocity.u().values().end(), previous_velocity_.u().values().begin());
         std::copy(velocity.v().values().begin(), velocity.v().values().end(), previous_velocity_.v().values().begin());
 
+        const SimpleClock::time_point velocity_gradient_start{SimpleClock::now()};
         compute_least_squares_gradient(*mesh_, previous_velocity_.u(), u_boundary_conditions, u_gradient_);
         compute_least_squares_gradient(*mesh_, previous_velocity_.v(), v_boundary_conditions, v_gradient_);
-        compute_least_squares_gradient(*mesh_, pressure, pressure_boundary_conditions, pressure_gradient_);
+        timings.velocity_gradient_reconstruction_seconds += elapsed_seconds_since(velocity_gradient_start);
 
+        const SimpleClock::time_point pressure_gradient_start{SimpleClock::now()};
+        compute_least_squares_gradient(*mesh_, pressure, pressure_boundary_conditions, pressure_gradient_);
+        timings.pressure_gradient_reconstruction_seconds += elapsed_seconds_since(pressure_gradient_start);
+
+        const SimpleClock::time_point momentum_assembly_start{SimpleClock::now()};
         momentum_assembler_.assemble(previous_velocity_, u_gradient_, v_gradient_, pressure_gradient_,
                                      u_boundary_conditions, v_boundary_conditions, mass_flux,
                                      options_.momentum_relaxation_factor, u_momentum_system_, v_momentum_system_);
+        timings.momentum_assembly_seconds += elapsed_seconds_since(momentum_assembly_start);
+
+        const SimpleClock::time_point momentum_residual_start{SimpleClock::now()};
         const double x_velocity_equation_residual{normalized_equation_imbalance(
             u_momentum_system_, previous_velocity_.u().values(), momentum_matrix_product_workspace_)};
         const double y_velocity_equation_residual{normalized_equation_imbalance(
             v_momentum_system_, previous_velocity_.v().values(), momentum_matrix_product_workspace_)};
+        timings.momentum_residual_diagnostics_seconds += elapsed_seconds_since(momentum_residual_start);
+
+        const SimpleClock::time_point u_matrix_preparation_start{SimpleClock::now()};
         u_momentum_solver_.compute_matrix(u_momentum_system_);
+        timings.momentum_matrix_preparation_seconds += elapsed_seconds_since(u_matrix_preparation_start);
+
+        const SimpleClock::time_point u_solve_start{SimpleClock::now()};
         const LinearSolveResult u_solve{u_momentum_solver_.solve(u_momentum_system_.rhs(), velocity.u().values())};
+        timings.u_momentum_linear_solve_seconds += elapsed_seconds_since(u_solve_start);
         require_converged(u_solve, "u-momentum");
+
+        const SimpleClock::time_point v_matrix_preparation_start{SimpleClock::now()};
         v_momentum_solver_.compute_matrix(v_momentum_system_);
+        timings.momentum_matrix_preparation_seconds += elapsed_seconds_since(v_matrix_preparation_start);
+
+        const SimpleClock::time_point v_solve_start{SimpleClock::now()};
         const LinearSolveResult v_solve{v_momentum_solver_.solve(v_momentum_system_.rhs(), velocity.v().values())};
+        timings.v_momentum_linear_solve_seconds += elapsed_seconds_since(v_solve_start);
         require_converged(v_solve, "v-momentum");
 
+        const SimpleClock::time_point momentum_response_start{SimpleClock::now()};
         compute_momentum_pressure_response(*mesh_, u_momentum_system_, v_momentum_system_, momentum_response_);
+        timings.momentum_pressure_response_seconds += elapsed_seconds_since(momentum_response_start);
         const bool relax_rhie_chow_flux{options_.rhie_chow_flux_relaxation_factor != 1.0};
 
+        const SimpleClock::time_point rhie_chow_start{SimpleClock::now()};
         if (relax_rhie_chow_flux)
         {
             std::copy(mass_flux.values().begin(), mass_flux.values().end(), previous_mass_flux_.values().begin());
@@ -449,29 +486,49 @@ IncompressibleSimpleResult IncompressibleSimpleSolver::solve(
                     relaxation_factor * mass_flux[face_id] + (1.0 - relaxation_factor) * previous_mass_flux_[face_id];
             }
         }
+        timings.rhie_chow_interpolation_seconds += elapsed_seconds_since(rhie_chow_start);
 
+        const SimpleClock::time_point pressure_assembly_start{SimpleClock::now()};
         pressure_correction_assembler_.assemble(mass_flux, pressure_correction_boundary_conditions,
                                                 face_pressure_response_, pressure_correction_system_);
+        timings.pressure_correction_assembly_seconds += elapsed_seconds_since(pressure_assembly_start);
+
+        const SimpleClock::time_point provisional_continuity_start{SimpleClock::now()};
         const ContinuityDiagnostics provisional_continuity{
             compute_continuity_diagnostics(pressure_correction_system_.rhs(), mass_flux)};
+        timings.provisional_continuity_diagnostics_seconds += elapsed_seconds_since(provisional_continuity_start);
         if (!has_fixed_pressure)
         {
             apply_zero_pressure_correction_reference(0, pressure_correction_system_);
         }
 
         std::fill(pressure_correction_.values().begin(), pressure_correction_.values().end(), 0.0);
+        const SimpleClock::time_point pressure_matrix_preparation_start{SimpleClock::now()};
         pressure_correction_solver_.compute_matrix(pressure_correction_system_);
+        timings.pressure_correction_matrix_preparation_seconds +=
+            elapsed_seconds_since(pressure_matrix_preparation_start);
+
+        const SimpleClock::time_point pressure_solve_start{SimpleClock::now()};
         const LinearSolveResult pressure_correction_solve{
             pressure_correction_solver_.solve(pressure_correction_system_.rhs(), pressure_correction_.values())};
+        timings.pressure_correction_linear_solve_seconds += elapsed_seconds_since(pressure_solve_start);
         require_converged(pressure_correction_solve, "pressure-correction");
+
+        const SimpleClock::time_point pressure_correction_gradient_start{SimpleClock::now()};
         compute_least_squares_gradient(*mesh_, pressure_correction_, pressure_correction_gradient_boundary_conditions,
                                        pressure_correction_gradient_);
+        timings.pressure_correction_gradient_reconstruction_seconds +=
+            elapsed_seconds_since(pressure_correction_gradient_start);
 
+        const SimpleClock::time_point field_correction_start{SimpleClock::now()};
         pressure_velocity_corrector_.correct_face_mass_flux(
             pressure_correction_, pressure_correction_boundary_conditions, face_pressure_response_, mass_flux);
         pressure_velocity_corrector_.correct_velocity(pressure_correction_gradient_, momentum_response_, velocity);
         pressure_velocity_corrector_.correct_pressure(pressure_correction_, options_.pressure_relaxation_factor,
                                                       pressure);
+        timings.field_correction_seconds += elapsed_seconds_since(field_correction_start);
+
+        const SimpleClock::time_point convergence_diagnostics_start{SimpleClock::now()};
         compute_cell_mass_imbalance(*mesh_, mass_flux, mass_imbalance_);
 
         const ContinuityDiagnostics continuity{compute_continuity_diagnostics(mass_imbalance_.values(), mass_flux)};
@@ -483,9 +540,11 @@ IncompressibleSimpleResult IncompressibleSimpleSolver::solve(
             continuity.relative_residual,
             continuity.maximum_imbalance,
             maximum_absolute_value(pressure_correction_),
+            timings,
         };
         result.converged = result.velocity_relative_change <= options_.velocity_relative_tolerance &&
                            result.provisional_continuity_relative_residual <= options_.continuity_relative_tolerance;
+        timings.convergence_diagnostics_seconds += elapsed_seconds_since(convergence_diagnostics_start);
         const SimpleIterationInfo iteration_info{
             .iteration = iteration_count,
             .u_solve = u_solve,
@@ -504,9 +563,13 @@ IncompressibleSimpleResult IncompressibleSimpleSolver::solve(
         }
         if (result.converged)
         {
+            timings.total_seconds = elapsed_seconds_since(solve_start);
+            result.timings = timings;
             return result;
         }
     }
+    timings.total_seconds = elapsed_seconds_since(solve_start);
+    result.timings = timings;
     return result;
 }
 

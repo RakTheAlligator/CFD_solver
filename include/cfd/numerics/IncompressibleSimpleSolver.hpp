@@ -73,6 +73,35 @@ struct SimpleIterationInfo
 /// Observer invoked after each fully completed SIMPLE outer iteration.
 using SimpleIterationCallback = std::function<void(const SimpleIterationInfo &)>;
 
+/// Cumulative wall-clock timings for one steady SIMPLE solve.
+///
+/// Durations are measured with a monotonic clock and reported in seconds.
+/// Matrix preparation covers sparse reconstruction and Eigen `compute()`;
+/// linear-solve timings cover only the subsequent iterative `solve()` calls.
+/// `total_seconds` covers the complete `solve()` execution, including optional
+/// iteration-callback execution and orchestration not represented by the
+/// individual phase counters.
+struct SimpleTimingBreakdown
+{
+    double velocity_gradient_reconstruction_seconds{};
+    double pressure_gradient_reconstruction_seconds{};
+    double momentum_assembly_seconds{};
+    double momentum_residual_diagnostics_seconds{};
+    double momentum_matrix_preparation_seconds{};
+    double u_momentum_linear_solve_seconds{};
+    double v_momentum_linear_solve_seconds{};
+    double momentum_pressure_response_seconds{};
+    double rhie_chow_interpolation_seconds{};
+    double pressure_correction_assembly_seconds{};
+    double provisional_continuity_diagnostics_seconds{};
+    double pressure_correction_matrix_preparation_seconds{};
+    double pressure_correction_linear_solve_seconds{};
+    double pressure_correction_gradient_reconstruction_seconds{};
+    double field_correction_seconds{};
+    double convergence_diagnostics_seconds{};
+    double total_seconds{};
+};
+
 /// Outcome and final diagnostics of one steady SIMPLE solve.
 struct IncompressibleSimpleResult
 {
@@ -85,6 +114,7 @@ struct IncompressibleSimpleResult
     double continuity_relative_residual{};
     double maximum_mass_imbalance{};
     double maximum_pressure_correction{};
+    SimpleTimingBreakdown timings{};
 };
 
 /// Reusable steady incompressible SIMPLE v1 solver.
