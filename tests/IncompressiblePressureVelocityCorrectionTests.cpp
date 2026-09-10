@@ -145,7 +145,7 @@ std::array<cfd::Index, 2> internal_face_ids(const cfd::Mesh &mesh)
             continue;
         }
         require(count < result.size(), "Three-cell correction fixture has too many internal faces.");
-        result[count] = face_id;
+        result.at(count) = face_id;
         ++count;
     }
     require(count == result.size(), "Three-cell correction fixture must have two internal faces.");
