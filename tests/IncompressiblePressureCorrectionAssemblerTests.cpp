@@ -231,6 +231,25 @@ void require_seeded_rhs_and_off_diagonal_coefficients_unchanged(const cfd::Scala
     }
 }
 
+void require_systems_equal(const cfd::ScalarLinearSystem &actual, const cfd::ScalarLinearSystem &expected,
+                           const std::string &context)
+{
+    require(actual.cell_count() == expected.cell_count(), context + " cell count differs.");
+    require(actual.face_count() == expected.face_count(), context + " face count differs.");
+    for (cfd::Index cell_id = 0; cell_id < actual.cell_count(); ++cell_id)
+    {
+        require(actual.diagonal()[cell_id] == expected.diagonal()[cell_id], context + " diagonal differs.");
+        require(actual.rhs()[cell_id] == expected.rhs()[cell_id], context + " RHS differs.");
+    }
+    for (cfd::Index face_id = 0; face_id < actual.face_count(); ++face_id)
+    {
+        require(actual.owner_neighbor_coefficients()[face_id] == expected.owner_neighbor_coefficients()[face_id],
+                context + " owner-neighbor coefficient differs.");
+        require(actual.neighbor_owner_coefficients()[face_id] == expected.neighbor_owner_coefficients()[face_id],
+                context + " neighbor-owner coefficient differs.");
+    }
+}
+
 template <typename Exception, typename Function>
 void require_rejected_without_mutation(Function &&function, const cfd::ScalarLinearSystem &system,
                                        const std::string &message)
@@ -269,6 +288,66 @@ void test_exact_internal_face_contributions_and_local_conservation()
                  "Internal-face RHS is not locally conservative.");
     require(system.owner_neighbor_coefficients()[face_id] == system.neighbor_owner_coefficients()[face_id],
             "Internal-face pressure-correction matrix is not symmetric.");
+}
+
+void test_complete_assembly_matches_primitives_and_resets_system()
+{
+    constexpr cfd::BoundaryId fixed_pressure_boundary_id{1};
+
+    cfd::MeshBuildResult build_result{cfd::build_mesh(make_four_boundary_group_two_triangle_raw_mesh())};
+    const cfd::Mesh &mesh{build_result.mesh};
+    const cfd::IncompressiblePressureCorrectionAssembler assembler{mesh};
+    std::vector<cfd::PressureCorrectionBoundaryConditionType> conditions(
+        mesh.boundary_groups().size(), cfd::PressureCorrectionBoundaryConditionType::FixedMassFlux);
+    conditions[fixed_pressure_boundary_id] = cfd::PressureCorrectionBoundaryConditionType::FixedPressure;
+    const cfd::PressureCorrectionBoundaryConditions boundary_conditions{mesh.boundary_groups().size(),
+                                                                        std::move(conditions)};
+    cfd::FaceFluxField provisional_mass_flux{mesh.face_count()};
+    cfd::FacePressureResponseField face_pressure_response{mesh.face_count(), std::numeric_limits<double>::quiet_NaN()};
+    for (cfd::Index face_id = 0; face_id < mesh.face_count(); ++face_id)
+    {
+        provisional_mass_flux[face_id] = 0.25 + static_cast<double>(face_id);
+        if (!mesh.face_adjacencies()[face_id].is_boundary())
+        {
+            face_pressure_response[face_id] = 2.0;
+        }
+        else if (mesh.face_boundary_ids()[face_id] == fixed_pressure_boundary_id)
+        {
+            face_pressure_response[face_id] = 3.0;
+        }
+    }
+
+    cfd::ScalarLinearSystem expected{mesh};
+    assembler.add_internal_face_contributions(provisional_mass_flux, face_pressure_response, expected);
+    assembler.add_boundary_provisional_flux_rhs(provisional_mass_flux, expected);
+    assembler.add_boundary_pressure_response(boundary_conditions, face_pressure_response, expected);
+
+    cfd::ScalarLinearSystem actual{mesh};
+    seed_system(actual);
+    assembler.assemble(provisional_mass_flux, boundary_conditions, face_pressure_response, actual);
+    require_systems_equal(actual, expected, "Complete pressure-correction assembly");
+
+    assembler.assemble(provisional_mass_flux, boundary_conditions, face_pressure_response, actual);
+    require_systems_equal(actual, expected, "Repeated complete pressure-correction assembly");
+}
+
+void test_complete_assembly_validates_before_resetting_system()
+{
+    cfd::MeshBuildResult build_result{cfd::build_mesh(make_two_triangle_raw_mesh())};
+    const cfd::Mesh &mesh{build_result.mesh};
+    const cfd::IncompressiblePressureCorrectionAssembler assembler{mesh};
+    const cfd::PressureCorrectionBoundaryConditions boundary_conditions{
+        make_uniform_pressure_correction_boundary_conditions(
+            mesh, cfd::PressureCorrectionBoundaryConditionType::FixedPressure)};
+    const cfd::FaceFluxField provisional_mass_flux{mesh.face_count()};
+    cfd::FacePressureResponseField face_pressure_response{mesh.face_count(), 1.0};
+    face_pressure_response[two_boundary_face_ids(mesh)[1]] = std::numeric_limits<double>::infinity();
+    cfd::ScalarLinearSystem system{mesh};
+    seed_system(system);
+
+    require_rejected_without_mutation<std::runtime_error>(
+        [&]() { assembler.assemble(provisional_mass_flux, boundary_conditions, face_pressure_response, system); },
+        system, "Complete pressure-correction assembly reset the system before validation completed.");
 }
 
 void test_negative_provisional_flux_reverses_rhs_contributions()
@@ -869,6 +948,10 @@ int main()
 
     failure_count += cfd::test::run_test("pressure-correction exact internal-face assembly",
                                          test_exact_internal_face_contributions_and_local_conservation);
+    failure_count += cfd::test::run_test("pressure-correction complete assembly",
+                                         test_complete_assembly_matches_primitives_and_resets_system);
+    failure_count += cfd::test::run_test("pressure-correction complete assembly transaction",
+                                         test_complete_assembly_validates_before_resetting_system);
     failure_count += cfd::test::run_test("pressure-correction negative provisional flux",
                                          test_negative_provisional_flux_reverses_rhs_contributions);
     failure_count += cfd::test::run_test("pressure-correction additive assembly", test_assembly_is_additive);

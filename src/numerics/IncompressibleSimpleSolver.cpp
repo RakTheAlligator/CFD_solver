@@ -450,12 +450,8 @@ IncompressibleSimpleResult IncompressibleSimpleSolver::solve(
             }
         }
 
-        pressure_correction_system_.clear();
-        pressure_correction_assembler_.add_internal_face_contributions(mass_flux, face_pressure_response_,
-                                                                       pressure_correction_system_);
-        pressure_correction_assembler_.add_boundary_provisional_flux_rhs(mass_flux, pressure_correction_system_);
-        pressure_correction_assembler_.add_boundary_pressure_response(
-            pressure_correction_boundary_conditions, face_pressure_response_, pressure_correction_system_);
+        pressure_correction_assembler_.assemble(mass_flux, pressure_correction_boundary_conditions,
+                                                face_pressure_response_, pressure_correction_system_);
         const ContinuityDiagnostics provisional_continuity{
             compute_continuity_diagnostics(pressure_correction_system_.rhs(), mass_flux)};
         if (!has_fixed_pressure)

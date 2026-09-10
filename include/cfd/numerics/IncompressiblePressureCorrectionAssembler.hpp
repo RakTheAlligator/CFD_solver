@@ -34,6 +34,26 @@ class IncompressiblePressureCorrectionAssembler
 
     ~IncompressiblePressureCorrectionAssembler() = default;
 
+    /// Assembles the complete pressure-correction system.
+    ///
+    /// All inputs and the target system are validated before the existing
+    /// matrix and right-hand side are cleared. The method then assembles the
+    /// internal-face matrix/RHS, provisional boundary-flux RHS, and
+    /// `FixedPressure` boundary-response contributions.
+    ///
+    /// This is the preferred production operation. The additive `add_*`
+    /// methods remain available as focused assembly primitives.
+    ///
+    /// @throws std::invalid_argument If a collection cardinality is
+    ///         incompatible, or `system` does not reference this assembler's
+    ///         exact Mesh with matching cardinalities.
+    /// @throws std::runtime_error If a used provisional mass flux is not
+    ///         finite, or a used pressure response is not finite or not
+    ///         strictly positive.
+    void assemble(const FaceFluxField &provisional_mass_flux,
+                  const PressureCorrectionBoundaryConditions &boundary_conditions,
+                  const FacePressureResponseField &face_pressure_response, ScalarLinearSystem &system) const;
+
     /// Adds all internal-face matrix and provisional-flux contributions.
     ///
     /// Each face additively contributes `Dp_f * [[1, -1], [-1, 1]]` to the

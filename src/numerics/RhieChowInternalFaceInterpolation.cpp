@@ -11,9 +11,9 @@
 #include "cfd/mesh/Face.hpp"
 #include "cfd/mesh/Mesh.hpp"
 #include "cfd/mesh/Types.hpp"
+#include "cfd/numerics/FiniteVolumeFaceGeometry.hpp"
 
 #include <cmath>
-#include <limits>
 #include <stdexcept>
 #include <string>
 
@@ -21,8 +21,6 @@ namespace cfd
 {
 namespace
 {
-
-constexpr double projection_safety_factor{64.0};
 
 struct InternalFaceResult
 {
@@ -70,8 +68,6 @@ RhieChowInternalFaceInterpolation::RhieChowInternalFaceInterpolation(const Mesh 
     const auto face_centers{mesh_->face_centers()};
     const auto face_lengths{mesh_->face_lengths()};
     const auto face_area_vectors{mesh_->face_area_vectors()};
-    constexpr double relative_projection_tolerance{projection_safety_factor * std::numeric_limits<double>::epsilon()};
-
     for (Index face_id = 0; face_id < mesh_->face_count(); ++face_id)
     {
         const FaceAdjacency &adjacency{face_adjacencies[face_id]};
@@ -84,45 +80,15 @@ RhieChowInternalFaceInterpolation::RhieChowInternalFaceInterpolation(const Mesh 
         const Point2 &neighbor_center{cell_centers[adjacency.neighbor]};
         const Point2 &face_center{face_centers[face_id]};
         const Vector2 &area_vector{face_area_vectors[face_id]};
-        const Vector2 center_displacement{
-            neighbor_center.x - owner_center.x,
-            neighbor_center.y - owner_center.y,
-        };
-        const Vector2 owner_to_face{
-            face_center.x - owner_center.x,
-            face_center.y - owner_center.y,
-        };
         const double face_length{face_lengths[face_id]};
-        const double center_distance{std::hypot(center_displacement.x, center_displacement.y)};
-        const double projection_scale{face_length * center_distance};
-        const double area_dot_displacement{dot(area_vector, center_displacement)};
-        const double minimum_projection{relative_projection_tolerance * projection_scale};
-
-        if (!std::isfinite(projection_scale) || !(projection_scale > 0.0) || !std::isfinite(area_dot_displacement) ||
-            !(area_dot_displacement > minimum_projection))
-        {
-            throw_unusable_face_geometry(face_id, "Sf dot d is not a usable positive projection.");
-        }
-
-        const double owner_to_face_projection{dot(area_vector, owner_to_face)};
-        const double owner_to_face_distance{std::hypot(owner_to_face.x, owner_to_face.y)};
-        const double intersection_tolerance{relative_projection_tolerance * face_length *
-                                            (center_distance + owner_to_face_distance)};
-        if (!std::isfinite(owner_to_face_projection) || !std::isfinite(intersection_tolerance) ||
-            owner_to_face_projection < -intersection_tolerance ||
-            owner_to_face_projection > area_dot_displacement + intersection_tolerance)
-        {
-            throw_unusable_face_geometry(face_id,
-                                         "the face-line intersection lies outside the owner-neighbor segment.");
-        }
-
-        const double interpolation_weight{owner_to_face_projection / area_dot_displacement};
-        const double inverse_area_dot_displacement{1.0 / area_dot_displacement};
-        if (!std::isfinite(interpolation_weight) || !std::isfinite(inverse_area_dot_displacement))
+        const InternalFaceInterpolationGeometry geometry{compute_internal_face_interpolation_geometry(
+            face_id, owner_center, neighbor_center, face_center, area_vector, face_length)};
+        const double inverse_area_dot_displacement{1.0 / geometry.area_dot_owner_to_neighbor};
+        if (!std::isfinite(inverse_area_dot_displacement))
         {
             throw_unusable_face_geometry(face_id, "the cached interpolation geometry is non-finite.");
         }
-        internal_face_geometry_[face_id] = {interpolation_weight, inverse_area_dot_displacement};
+        internal_face_geometry_[face_id] = {geometry.neighbor_weight, inverse_area_dot_displacement};
     }
 }
 

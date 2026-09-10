@@ -88,6 +88,7 @@ add_library(
     src/mesh_build/TopologyBuilder.cpp
     src/mesh_build/TopologyValidation.cpp
 
+    src/numerics/FiniteVolumeFaceGeometry.cpp
     src/numerics/IncompressibleMomentumAssembler.cpp
     src/numerics/IncompressiblePressureCorrectionAssembler.cpp
     src/numerics/IncompressiblePressureVelocityCorrection.cpp
@@ -321,6 +322,12 @@ if(BUILD_TESTING)
         cfd_rhie_chow_internal_face_interpolation_tests
         rhie_chow_internal_face_interpolation
         tests/RhieChowInternalFaceInterpolationTests.cpp
+    )
+
+    cfd_add_test(
+        cfd_finite_volume_face_geometry_tests
+        finite_volume_face_geometry
+        tests/FiniteVolumeFaceGeometryTests.cpp
     )
 
     cfd_add_test(

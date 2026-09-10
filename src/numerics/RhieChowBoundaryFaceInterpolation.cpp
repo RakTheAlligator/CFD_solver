@@ -13,9 +13,9 @@
 #include "cfd/mesh/Face.hpp"
 #include "cfd/mesh/Mesh.hpp"
 #include "cfd/mesh/Types.hpp"
+#include "cfd/numerics/FiniteVolumeFaceGeometry.hpp"
 
 #include <cmath>
-#include <limits>
 #include <stdexcept>
 #include <string>
 
@@ -24,20 +24,11 @@ namespace cfd
 namespace
 {
 
-constexpr double projection_safety_factor{64.0};
-
 struct BoundaryFaceResult
 {
     double mass_flux{};
     double pressure_response{};
 };
-
-[[noreturn]]
-void throw_unusable_boundary_geometry(const Index face_id, const std::string &reason)
-{
-    throw std::runtime_error("Boundary Rhie-Chow interpolation rejected face " + std::to_string(face_id) + ": " +
-                             reason);
-}
 
 [[noreturn]]
 void throw_invalid_boundary_cell_value(const Index cell_id, const std::string &reason)
@@ -126,8 +117,6 @@ void RhieChowBoundaryFaceInterpolation::update_fixed_pressure_boundaries(
     const auto face_centers{mesh_->face_centers()};
     const auto face_lengths{mesh_->face_lengths()};
     const auto area_vectors{mesh_->face_area_vectors()};
-    constexpr double relative_projection_tolerance{projection_safety_factor * std::numeric_limits<double>::epsilon()};
-
     const auto evaluate_fixed_pressure_face = [&](const Index face_id) {
         const FaceAdjacency &adjacency{face_adjacencies[face_id]};
         const Index owner_id{adjacency.owner};
@@ -172,20 +161,11 @@ void RhieChowBoundaryFaceInterpolation::update_fixed_pressure_boundaries(
         const Point2 &owner_center{cell_centers[owner_id]};
         const Point2 &face_center{face_centers[face_id]};
         const Vector2 &area_vector{area_vectors[face_id]};
-        const Vector2 displacement{
-            face_center.x - owner_center.x,
-            face_center.y - owner_center.y,
-        };
         const double face_length{face_lengths[face_id]};
-        const double displacement_norm{std::hypot(displacement.x, displacement.y)};
-        const double projection_scale{face_length * displacement_norm};
-        const double area_dot_displacement{dot(area_vector, displacement)};
-        const double minimum_projection{relative_projection_tolerance * projection_scale};
-        if (!std::isfinite(projection_scale) || !(projection_scale > 0.0) || !std::isfinite(area_dot_displacement) ||
-            !(area_dot_displacement > minimum_projection))
-        {
-            throw_unusable_boundary_geometry(face_id, "Sf dot d is not a usable positive projection.");
-        }
+        const FaceProjectionGeometry geometry{
+            compute_face_projection_geometry(face_id, owner_center, face_center, area_vector, face_length)};
+        const Vector2 &displacement{geometry.displacement};
+        const double area_dot_displacement{geometry.area_dot_displacement};
 
         const Vector2 response_area_vector{
             owner_u_response * area_vector.x,
