@@ -16,7 +16,7 @@ One successfully completed SIMPLE iteration performs the following sequence:
 8. Apply a zero pressure-correction reference only when no `FixedPressure` boundary anchors the system.
 9. Solve the pressure-correction system with Eigen conjugate gradient and reconstruct `grad(p')`.
 10. Correct face mass flux, cell velocity, and physical pressure.
-11. Evaluate corrected continuity, velocity change, and final iteration diagnostics; report the completed iteration and test outer convergence.
+11. Evaluate corrected continuity, velocity change, the Rhie-Chow flux fixed-point residual when applicable, and final iteration diagnostics; report the completed iteration and test outer convergence.
 
 An inner linear-solver failure interrupts the iteration before it is reported as completed.
 
@@ -93,14 +93,38 @@ sum_P |R_P| / sum_f |F_f|
 
 If the flux denominator is zero, the relative residual is zero when the corresponding imbalance sum is also zero and infinity otherwise.
 
-Outer SIMPLE convergence requires both:
+When provisional Rhie-Chow face-flux relaxation is enabled, the solver also
+monitors the fixed-point residual of the computed face flux:
+
+```text
+max_f |F_RhieChow,f - F_previous,f|
+-----------------------------------
+max_f max(|F_RhieChow,f|, |F_previous,f|)
+```
+
+The maximum is evaluated over internal and `FixedPressure` faces, i.e. the
+faces on which provisional Rhie-Chow flux relaxation is applied.
+`FixedMassFlux` boundaries are excluded because their imposed flux is not
+relaxed.
+
+When `alpha_rc == 1`, this diagnostic is defined as zero and does not constrain
+convergence.
+
+Outer SIMPLE convergence therefore requires:
 
 ```text
 velocity_relative_change <= velocity_relative_tolerance
+rhie_chow_flux_relative_residual <= rhie_chow_flux_relative_tolerance
 provisional_continuity_relative_residual <= continuity_relative_tolerance
 ```
 
-Corrected continuity and maximum cell mass imbalance remain diagnostics. Corrected continuity is not the outer stopping criterion because pressure correction can make it nearly zero while the provisional state is still far from the coupled fixed point.
+The Rhie-Chow flux criterion prevents convergence from being reported while a
+relaxed divergence-free face flux is still moving toward its fixed point.
+
+Corrected continuity and maximum cell mass imbalance remain diagnostics.
+Corrected continuity is not the outer stopping criterion because pressure
+correction can make it nearly zero while the provisional state is still far
+from the coupled fixed point.
 
 ## Pressure-correction boundaries
 

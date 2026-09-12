@@ -13,7 +13,8 @@ namespace
 {
 
 constexpr auto csv_header =
-    "iteration,continuity,x_velocity,y_velocity,velocity_change,corrected_continuity,u_linear_residual,"
+    "iteration,continuity,x_velocity,y_velocity,velocity_change,rhie_chow_flux_residual,corrected_continuity,u_linear_"
+    "residual,"
     "u_linear_iterations,v_linear_residual,v_linear_iterations,pressure_correction_linear_residual,"
     "pressure_correction_linear_iterations,maximum_pressure_correction";
 
@@ -44,10 +45,10 @@ void SimpleConvergenceCsvWriter::write(const SimpleIterationInfo &info)
 {
     output_ << info.iteration << ',' << info.provisional_continuity_relative_residual << ','
             << info.x_velocity_equation_residual << ',' << info.y_velocity_equation_residual << ','
-            << info.velocity_relative_change << ',' << info.corrected_continuity_relative_residual << ','
-            << info.u_solve.estimated_relative_error << ',' << info.u_solve.iteration_count << ','
-            << info.v_solve.estimated_relative_error << ',' << info.v_solve.iteration_count << ','
-            << info.pressure_correction_solve.estimated_relative_error << ','
+            << info.velocity_relative_change << ',' << info.rhie_chow_flux_relative_residual << ','
+            << info.corrected_continuity_relative_residual << ',' << info.u_solve.estimated_relative_error << ','
+            << info.u_solve.iteration_count << ',' << info.v_solve.estimated_relative_error << ','
+            << info.v_solve.iteration_count << ',' << info.pressure_correction_solve.estimated_relative_error << ','
             << info.pressure_correction_solve.iteration_count << ',' << info.maximum_pressure_correction << '\n';
     if (!output_)
     {

@@ -120,6 +120,11 @@ IncompressibleSimpleOptions validate_options(IncompressibleSimpleOptions options
     {
         throw std::invalid_argument("SIMPLE velocity relative tolerance must be finite and in (0, 1).");
     }
+    if (!std::isfinite(options.rhie_chow_flux_relative_tolerance) ||
+        !(options.rhie_chow_flux_relative_tolerance > 0.0) || !(options.rhie_chow_flux_relative_tolerance < 1.0))
+    {
+        throw std::invalid_argument("SIMPLE Rhie-Chow flux relative tolerance must be finite and in (0, 1).");
+    }
     if (!std::isfinite(options.continuity_relative_tolerance) || !(options.continuity_relative_tolerance > 0.0) ||
         !(options.continuity_relative_tolerance < 1.0))
     {
@@ -464,11 +469,16 @@ IncompressibleSimpleResult IncompressibleSimpleSolver::solve(
         boundary_face_interpolation_.update_fixed_pressure_boundaries(
             velocity, pressure, pressure_gradient_, momentum_response_, pressure_boundary_conditions,
             pressure_correction_boundary_conditions, mass_flux, face_pressure_response_);
+        double rhie_chow_flux_relative_residual{};
         if (relax_rhie_chow_flux)
         {
             const double relaxation_factor{options_.rhie_chow_flux_relaxation_factor};
             const auto face_adjacencies{mesh_->face_adjacencies()};
             const auto face_boundary_ids{mesh_->face_boundary_ids()};
+
+            double maximum_flux_change{};
+            double flux_scale{};
+
             for (Index face_id = 0; face_id < mesh_->face_count(); ++face_id)
             {
                 if (face_adjacencies[face_id].is_boundary())
@@ -482,8 +492,25 @@ IncompressibleSimpleResult IncompressibleSimpleSolver::solve(
                         break;
                     }
                 }
-                mass_flux[face_id] =
-                    relaxation_factor * mass_flux[face_id] + (1.0 - relaxation_factor) * previous_mass_flux_[face_id];
+
+                const double unrelaxed_flux{mass_flux[face_id]};
+                const double previous_flux{previous_mass_flux_[face_id]};
+
+                maximum_flux_change = std::max(maximum_flux_change, std::abs(unrelaxed_flux - previous_flux));
+
+                flux_scale = std::max({flux_scale, std::abs(unrelaxed_flux), std::abs(previous_flux)});
+
+                mass_flux[face_id] = relaxation_factor * unrelaxed_flux + (1.0 - relaxation_factor) * previous_flux;
+            }
+
+            if (flux_scale == 0.0)
+            {
+                rhie_chow_flux_relative_residual =
+                    maximum_flux_change == 0.0 ? 0.0 : std::numeric_limits<double>::infinity();
+            }
+            else
+            {
+                rhie_chow_flux_relative_residual = maximum_flux_change / flux_scale;
             }
         }
         timings.rhie_chow_interpolation_seconds += elapsed_seconds_since(rhie_chow_start);
@@ -536,6 +563,7 @@ IncompressibleSimpleResult IncompressibleSimpleSolver::solve(
             false,
             iteration_count,
             relative_velocity_change(velocity, previous_velocity_),
+            rhie_chow_flux_relative_residual,
             provisional_continuity.relative_residual,
             continuity.relative_residual,
             continuity.maximum_imbalance,
@@ -543,6 +571,7 @@ IncompressibleSimpleResult IncompressibleSimpleSolver::solve(
             timings,
         };
         result.converged = result.velocity_relative_change <= options_.velocity_relative_tolerance &&
+                           result.rhie_chow_flux_relative_residual <= options_.rhie_chow_flux_relative_tolerance &&
                            result.provisional_continuity_relative_residual <= options_.continuity_relative_tolerance;
         timings.convergence_diagnostics_seconds += elapsed_seconds_since(convergence_diagnostics_start);
         const SimpleIterationInfo iteration_info{
@@ -553,6 +582,7 @@ IncompressibleSimpleResult IncompressibleSimpleSolver::solve(
             .x_velocity_equation_residual = x_velocity_equation_residual,
             .y_velocity_equation_residual = y_velocity_equation_residual,
             .velocity_relative_change = result.velocity_relative_change,
+            .rhie_chow_flux_relative_residual = result.rhie_chow_flux_relative_residual,
             .provisional_continuity_relative_residual = result.provisional_continuity_relative_residual,
             .corrected_continuity_relative_residual = result.continuity_relative_residual,
             .maximum_pressure_correction = result.maximum_pressure_correction,

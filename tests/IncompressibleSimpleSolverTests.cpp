@@ -256,6 +256,13 @@ void test_constructor_and_options_validation()
                 cfd::IncompressibleSimpleSolver solver{mesh, 1.0, 0.1, cfd::ScalarConvectionScheme::Linear, options};
             },
             "SIMPLE accepted an invalid continuity tolerance.");
+        options = test_options();
+        options.rhie_chow_flux_relative_tolerance = invalid_tolerance;
+        require_throws<std::invalid_argument>(
+            [&]() {
+                cfd::IncompressibleSimpleSolver solver{mesh, 1.0, 0.1, cfd::ScalarConvectionScheme::Linear, options};
+            },
+            "SIMPLE accepted an invalid Rhie-Chow flux relative tolerance.");
     }
 }
 
@@ -536,6 +543,8 @@ void test_reports_each_completed_iteration()
         require(std::isfinite(info.y_velocity_equation_residual) && info.y_velocity_equation_residual >= 0.0 &&
                     info.y_velocity_equation_residual <= residual_upper_bound,
                 "SIMPLE callback reported an invalid y-velocity equation residual.");
+        require(std::isfinite(info.rhie_chow_flux_relative_residual) && info.rhie_chow_flux_relative_residual >= 0.0,
+                "SIMPLE callback reported an invalid Rhie-Chow flux residual.");
     }
 
     const cfd::SimpleIterationInfo &final_info{iteration_infos.back()};
@@ -549,7 +558,8 @@ void test_reports_each_completed_iteration()
             "Final SIMPLE callback corrected-continuity diagnostic differs from the returned result.");
     require(final_info.maximum_pressure_correction == result.maximum_pressure_correction,
             "Final SIMPLE callback pressure-correction diagnostic differs from the returned result.");
-
+    require(final_info.rhie_chow_flux_relative_residual == result.rhie_chow_flux_relative_residual,
+            "Final SIMPLE callback Rhie-Chow flux diagnostic differs from the returned result.");
     const cfd::SimpleTimingBreakdown &timings{result.timings};
     const std::array phase_durations{
         timings.velocity_gradient_reconstruction_seconds,
@@ -687,6 +697,47 @@ void test_maximum_iteration_nonconvergence_and_channel_convergence()
     }
 }
 
+void test_does_not_converge_while_relaxed_face_flux_is_still_changing()
+{
+    cfd::MeshBuildResult build_result{cfd::build_mesh(make_channel_raw_mesh(1, 1, 1.0, 1.0))};
+    const cfd::Mesh &mesh{build_result.mesh};
+
+    const cfd::ScalarBoundaryConditions velocity_conditions{channel_velocity_conditions(mesh)};
+    const cfd::ScalarBoundaryConditions pressure_conditions{channel_pressure_conditions(mesh, 1.0, 0.0)};
+    const cfd::PressureCorrectionBoundaryConditions pressure_correction_conditions{
+        channel_pressure_correction_conditions(mesh)};
+
+    cfd::CellVelocityField velocity{mesh.cell_count()};
+    cfd::CellScalarField pressure{mesh.cell_count(), 0.5};
+    cfd::FaceFluxField mass_flux{mesh.face_count()};
+
+    cfd::IncompressibleSimpleOptions options{test_options()};
+    options.maximum_iterations = 2;
+    options.pressure_relaxation_factor = 0.3;
+    options.rhie_chow_flux_relaxation_factor = 0.3;
+    options.velocity_relative_tolerance = 1.0e-12;
+    options.rhie_chow_flux_relative_tolerance = 1.0e-12;
+    options.continuity_relative_tolerance = 1.0e-12;
+
+    cfd::IncompressibleSimpleSolver solver{
+        mesh, 1.0, 1.0, cfd::ScalarConvectionScheme::Linear, options,
+    };
+
+    const cfd::IncompressibleSimpleResult result{solver.solve(velocity_conditions, velocity_conditions,
+                                                              pressure_conditions, pressure_correction_conditions,
+                                                              velocity, pressure, mass_flux)};
+
+    require(result.velocity_relative_change <= options.velocity_relative_tolerance,
+            "Relaxed-flux false-convergence fixture does not satisfy the velocity-change criterion.");
+
+    require(result.provisional_continuity_relative_residual <= options.continuity_relative_tolerance,
+            "Relaxed-flux false-convergence fixture does not satisfy the provisional-continuity criterion.");
+    require(result.rhie_chow_flux_relative_residual > options.rhie_chow_flux_relative_tolerance,
+            "Relaxed-flux false-convergence fixture does not retain a significant "
+            "Rhie-Chow flux fixed-point residual.");
+    require(!result.converged, "SIMPLE reported convergence while the relaxed face flux was still changing.");
+}
+
 void test_does_not_converge_while_pressure_correction_remains_large()
 {
     cfd::MeshBuildResult build_result{cfd::build_mesh(make_channel_raw_mesh(1, 1, 1.0, 1.0))};
@@ -744,8 +795,9 @@ int main()
     failure_count += cfd::test::run_test("SIMPLE Rhie-Chow flux relaxation", test_rhie_chow_flux_relaxation_path);
     failure_count += cfd::test::run_test("SIMPLE channel convergence",
                                          test_maximum_iteration_nonconvergence_and_channel_convergence);
+    failure_count += cfd::test::run_test("SIMPLE rejects convergence while relaxed face flux is changing",
+                                         test_does_not_converge_while_relaxed_face_flux_is_still_changing);
     failure_count += cfd::test::run_test("SIMPLE rejects convergence with a large pressure correction",
                                          test_does_not_converge_while_pressure_correction_remains_large);
-
     return cfd::test::finish_tests(failure_count, "incompressible SIMPLE solver");
 }

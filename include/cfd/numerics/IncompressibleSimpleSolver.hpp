@@ -42,6 +42,8 @@ struct IncompressibleSimpleOptions
     /// are unchanged. A value of one preserves the unrelaxed path.
     double rhie_chow_flux_relaxation_factor{1.0};
     double velocity_relative_tolerance{1.0e-8};
+    /// Relative tolerance for the Rhie-Chow face-flux fixed-point residual.
+    double rhie_chow_flux_relative_tolerance{1.0e-8};
     /// Tolerance for provisional continuity, which controls outer convergence.
     double continuity_relative_tolerance{1.0e-10};
     BiCGSTABOptions momentum_linear_solver{};
@@ -64,6 +66,9 @@ struct SimpleIterationInfo
     double x_velocity_equation_residual{};
     double y_velocity_equation_residual{};
     double velocity_relative_change{};
+    /// Relative fixed-point residual of the Rhie-Chow face flux.
+    /// Zero when Rhie-Chow flux relaxation is disabled.
+    double rhie_chow_flux_relative_residual{};
     /// Default continuity monitor: provisional continuity before pressure correction.
     double provisional_continuity_relative_residual{};
     double corrected_continuity_relative_residual{};
@@ -108,6 +113,9 @@ struct IncompressibleSimpleResult
     bool converged{};
     Index iteration_count{};
     double velocity_relative_change{};
+    /// Relative fixed-point residual of the Rhie-Chow face flux.
+    /// Zero when Rhie-Chow flux relaxation is disabled.
+    double rhie_chow_flux_relative_residual{};
     /// Relative continuity residual of the provisional flux before correction.
     double provisional_continuity_relative_residual{};
     /// Relative continuity residual of the corrected final flux.
@@ -157,7 +165,9 @@ class IncompressibleSimpleSolver
     ~IncompressibleSimpleSolver() = default;
 
     /// Iterates until velocity change and provisional continuity satisfy their
-    /// tolerances. Corrected continuity remains available as a diagnostic.
+    /// tolerances and, when Rhie-Chow flux relaxation is enabled, the computed
+    /// face flux has reached its fixed-point tolerance.
+    /// Corrected continuity remains available as a diagnostic.
     ///
     /// `FixedPressure` pressure-correction conditions must correspond to
     /// physical pressure Dirichlet conditions. `FixedMassFlux` conditions must
