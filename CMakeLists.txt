@@ -215,6 +215,11 @@ if(BUILD_VERIFICATION)
     )
 
     cfd_add_verification(
+        cfd_incompressible_simple_rotated_poiseuille
+        verification/IncompressibleSimpleRotatedPoiseuille.cpp
+    )
+    
+    cfd_add_verification(
         cfd_incompressible_simple_gmsh_poiseuille
         verification/IncompressibleSimpleGmshPoiseuille.cpp
     )
