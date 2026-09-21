@@ -19,6 +19,7 @@
 #include "cfd/numerics/ScalarConvectionOperator.hpp"
 #include "cfd/numerics/ScalarDiffusionOperator.hpp"
 
+#include "support/KovasznayAnalytical.hpp"
 #include "support/VerificationStatistics.hpp"
 
 #include <algorithm>
@@ -27,7 +28,6 @@
 #include <iomanip>
 #include <iostream>
 #include <limits>
-#include <numbers>
 #include <optional>
 #include <span>
 #include <sstream>
@@ -43,15 +43,19 @@ namespace
 using cfd::verification::ErrorAccumulator;
 using cfd::verification::ErrorStatistics;
 using cfd::verification::observed_order;
-
-constexpr double domain_length{1.0};
-constexpr double domain_height{1.0};
-constexpr double density{1.0};
-constexpr double reynolds_number{40.0};
-constexpr double dynamic_viscosity{1.0 / reynolds_number};
-constexpr double wave_number{2.0 * std::numbers::pi_v<double>};
-const double kovasznay_lambda{reynolds_number / 2.0 -
-                              std::sqrt(reynolds_number * reynolds_number / 4.0 + wave_number * wave_number)};
+using cfd::verification::kovasznay::analytical_pressure;
+using cfd::verification::kovasznay::analytical_pressure_gradient;
+using cfd::verification::kovasznay::analytical_u;
+using cfd::verification::kovasznay::analytical_u_gradient;
+using cfd::verification::kovasznay::analytical_v;
+using cfd::verification::kovasznay::analytical_v_gradient;
+using cfd::verification::kovasznay::density;
+using cfd::verification::kovasznay::domain_height;
+using cfd::verification::kovasznay::domain_length;
+using cfd::verification::kovasznay::dynamic_viscosity;
+using cfd::verification::kovasznay::lambda;
+using cfd::verification::kovasznay::verify_analytical_solution;
+using cfd::verification::kovasznay::wave_number;
 
 constexpr double algebraic_residual_tolerance{1.0e-10};
 constexpr double full_residual_tolerance{1.0e-8};
@@ -106,104 +110,6 @@ struct FixedPointResult
     double maximum_u_difference{};
     double maximum_v_difference{};
 };
-
-[[nodiscard]]
-double analytical_u(const cfd::Point2 &point) noexcept
-{
-    return 1.0 - std::exp(kovasznay_lambda * point.x) * std::cos(wave_number * point.y);
-}
-
-[[nodiscard]]
-double analytical_v(const cfd::Point2 &point) noexcept
-{
-    return kovasznay_lambda / wave_number * std::exp(kovasznay_lambda * point.x) * std::sin(wave_number * point.y);
-}
-
-[[nodiscard]]
-double analytical_pressure(const cfd::Point2 &point) noexcept
-{
-    return 0.5 * (1.0 - std::exp(2.0 * kovasznay_lambda * point.x));
-}
-
-[[nodiscard]]
-cfd::Vector2 analytical_u_gradient(const cfd::Point2 &point) noexcept
-{
-    const double exponential{std::exp(kovasznay_lambda * point.x)};
-    return {
-        -kovasznay_lambda * exponential * std::cos(wave_number * point.y),
-        wave_number * exponential * std::sin(wave_number * point.y),
-    };
-}
-
-[[nodiscard]]
-cfd::Vector2 analytical_v_gradient(const cfd::Point2 &point) noexcept
-{
-    const double exponential{std::exp(kovasznay_lambda * point.x)};
-    return {
-        kovasznay_lambda * kovasznay_lambda / wave_number * exponential * std::sin(wave_number * point.y),
-        kovasznay_lambda * exponential * std::cos(wave_number * point.y),
-    };
-}
-
-[[nodiscard]]
-cfd::Vector2 analytical_pressure_gradient(const cfd::Point2 &point) noexcept
-{
-    return {
-        -kovasznay_lambda * std::exp(2.0 * kovasznay_lambda * point.x),
-        0.0,
-    };
-}
-
-[[nodiscard]]
-double analytical_u_laplacian(const cfd::Point2 &point) noexcept
-{
-    return (wave_number * wave_number - kovasznay_lambda * kovasznay_lambda) * std::exp(kovasznay_lambda * point.x) *
-           std::cos(wave_number * point.y);
-}
-
-[[nodiscard]]
-double analytical_v_laplacian(const cfd::Point2 &point) noexcept
-{
-    return kovasznay_lambda * (kovasznay_lambda * kovasznay_lambda / wave_number - wave_number) *
-           std::exp(kovasznay_lambda * point.x) * std::sin(wave_number * point.y);
-}
-
-void verify_analytical_solution()
-{
-    constexpr std::array sample_points{
-        cfd::Point2{0.15, 0.17},
-        cfd::Point2{0.48, 0.39},
-        cfd::Point2{0.83, 0.71},
-    };
-    constexpr double identity_tolerance{1.0e-12};
-    constexpr double derivative_step{1.0e-6};
-    constexpr double derivative_tolerance{1.0e-8};
-
-    for (const cfd::Point2 &point : sample_points)
-    {
-        const double u{analytical_u(point)};
-        const double v{analytical_v(point)};
-        const cfd::Vector2 u_gradient{analytical_u_gradient(point)};
-        const cfd::Vector2 v_gradient{analytical_v_gradient(point)};
-        const cfd::Vector2 pressure_gradient{analytical_pressure_gradient(point)};
-        const double continuity_residual{u_gradient.x + v_gradient.y};
-        const double u_momentum_residual{density * (u * u_gradient.x + v * u_gradient.y) -
-                                         dynamic_viscosity * analytical_u_laplacian(point) + pressure_gradient.x};
-        const double v_momentum_residual{density * (u * v_gradient.x + v * v_gradient.y) -
-                                         dynamic_viscosity * analytical_v_laplacian(point) + pressure_gradient.y};
-        const cfd::Point2 point_before{point.x - derivative_step, point.y};
-        const cfd::Point2 point_after{point.x + derivative_step, point.y};
-        const double centered_pressure_derivative{
-            (analytical_pressure(point_after) - analytical_pressure(point_before)) / (2.0 * derivative_step)};
-
-        if (std::abs(continuity_residual) > identity_tolerance || std::abs(u_momentum_residual) > identity_tolerance ||
-            std::abs(v_momentum_residual) > identity_tolerance ||
-            std::abs(centered_pressure_derivative - pressure_gradient.x) > derivative_tolerance)
-        {
-            throw std::runtime_error("The analytical Kovasznay formulas failed their independent identity check.");
-        }
-    }
-}
 
 [[nodiscard]]
 cfd::Index node_id(const cfd::Index i, const cfd::Index j, const cfd::Index nx) noexcept
@@ -324,13 +230,13 @@ std::pair<cfd::ScalarBoundaryConditions, cfd::ScalarBoundaryConditions> make_vel
 [[nodiscard]]
 double vertical_flux_antiderivative(const double x, const double y) noexcept
 {
-    return y - std::exp(kovasznay_lambda * x) * std::sin(wave_number * y) / wave_number;
+    return y - std::exp(lambda * x) * std::sin(wave_number * y) / wave_number;
 }
 
 [[nodiscard]]
 double horizontal_flux_antiderivative(const double x, const double y) noexcept
 {
-    return std::exp(kovasznay_lambda * x) * std::sin(wave_number * y) / wave_number;
+    return std::exp(lambda * x) * std::sin(wave_number * y) / wave_number;
 }
 
 [[nodiscard]]
