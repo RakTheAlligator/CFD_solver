@@ -110,7 +110,7 @@ class CaseParser
     {
         static_cast<void>(parse_foam_header("dictionary", "meshDict"));
 
-        const RectangleGeometry geometry{parse_geometry()};
+        GeometryInput geometry{parse_geometry()};
         const MeshGenerationOptions generation_options{parse_mesh_options()};
 
         expect(TokenKind::End, "end of file");
@@ -770,7 +770,7 @@ class CaseParser
     }
 
     [[nodiscard]]
-    RectangleGeometry parse_geometry()
+    GeometryInput parse_geometry()
     {
         expect_keyword("geometry");
         expect(TokenKind::LeftBrace, "'{'");
@@ -778,6 +778,10 @@ class CaseParser
         std::optional<Token> type;
         std::optional<Token> length;
         std::optional<Token> height;
+        std::optional<Token> upstream_length;
+        std::optional<Token> downstream_length;
+        std::optional<Token> channel_height;
+        std::optional<Token> step_height;
 
         while (current_.kind != TokenKind::RightBrace)
         {
@@ -810,6 +814,42 @@ class CaseParser
 
                 height = take_number("a finite rectangle height");
             }
+            else if (key.text == "upstreamLength")
+            {
+                if (upstream_length.has_value())
+                {
+                    fail(key.line, "Duplicate geometry upstreamLength entry.");
+                }
+
+                upstream_length = take_number("a finite backward-facing-step upstream length");
+            }
+            else if (key.text == "downstreamLength")
+            {
+                if (downstream_length.has_value())
+                {
+                    fail(key.line, "Duplicate geometry downstreamLength entry.");
+                }
+
+                downstream_length = take_number("a finite backward-facing-step downstream length");
+            }
+            else if (key.text == "channelHeight")
+            {
+                if (channel_height.has_value())
+                {
+                    fail(key.line, "Duplicate geometry channelHeight entry.");
+                }
+
+                channel_height = take_number("a finite backward-facing-step channel height");
+            }
+            else if (key.text == "stepHeight")
+            {
+                if (step_height.has_value())
+                {
+                    fail(key.line, "Duplicate geometry stepHeight entry.");
+                }
+
+                step_height = take_number("a finite backward-facing-step step height");
+            }
             else
             {
                 fail(key.line, "Unsupported geometry entry '" + std::string(key.text) + "'.");
@@ -820,30 +860,81 @@ class CaseParser
 
         expect(TokenKind::RightBrace, "'}'");
 
-        if (!type.has_value() || !length.has_value() || !height.has_value())
+        if (!type.has_value())
         {
-            fail_current("geometry requires type, length, and height entries.");
+            fail_current("geometry requires a type entry.");
         }
 
-        if (type->text != "rectangle")
+        if (type->text == "rectangle")
         {
-            fail(type->line, "Only rectangle geometry is supported.");
+            if (upstream_length.has_value() || downstream_length.has_value() || channel_height.has_value() ||
+                step_height.has_value())
+            {
+                const Token &invalid_entry{upstream_length.has_value()     ? *upstream_length
+                                           : downstream_length.has_value() ? *downstream_length
+                                           : channel_height.has_value()    ? *channel_height
+                                                                           : *step_height};
+                fail(invalid_entry.line, "Backward-facing-step entries are invalid for rectangle geometry.");
+            }
+            if (!length.has_value() || !height.has_value())
+            {
+                fail_current("Rectangle geometry requires length and height entries.");
+            }
+            if (length->number <= 0.0)
+            {
+                fail(length->line, "Rectangle length must be finite and positive.");
+            }
+            if (height->number <= 0.0)
+            {
+                fail(height->line, "Rectangle height must be finite and positive.");
+            }
+
+            return RectangleGeometry{
+                .length = length->number,
+                .height = height->number,
+            };
         }
 
-        if (length->number <= 0.0)
+        if (type->text == "backwardFacingStep")
         {
-            fail(length->line, "Rectangle length must be finite and positive.");
+            if (length.has_value() || height.has_value())
+            {
+                const Token &invalid_entry{length.has_value() ? *length : *height};
+                fail(invalid_entry.line, "Rectangle entries are invalid for backwardFacingStep geometry.");
+            }
+            if (!upstream_length.has_value() || !downstream_length.has_value() || !channel_height.has_value() ||
+                !step_height.has_value())
+            {
+                fail_current("backwardFacingStep geometry requires upstreamLength, downstreamLength, channelHeight, "
+                             "and stepHeight entries.");
+            }
+            if (upstream_length->number <= 0.0)
+            {
+                fail(upstream_length->line, "Backward-facing-step upstreamLength must be finite and positive.");
+            }
+            if (downstream_length->number <= 0.0)
+            {
+                fail(downstream_length->line, "Backward-facing-step downstreamLength must be finite and positive.");
+            }
+            if (channel_height->number <= 0.0)
+            {
+                fail(channel_height->line, "Backward-facing-step channelHeight must be finite and positive.");
+            }
+            if (step_height->number <= 0.0 || !(step_height->number < channel_height->number))
+            {
+                fail(step_height->line,
+                     "Backward-facing-step stepHeight must be finite, positive, and less than channelHeight.");
+            }
+
+            return BackwardFacingStepGeometry{
+                .upstream_length = upstream_length->number,
+                .downstream_length = downstream_length->number,
+                .channel_height = channel_height->number,
+                .step_height = step_height->number,
+            };
         }
 
-        if (height->number <= 0.0)
-        {
-            fail(height->line, "Rectangle height must be finite and positive.");
-        }
-
-        return {
-            .length = length->number,
-            .height = height->number,
-        };
+        fail(type->line, "Unsupported geometry type '" + std::string{type->text} + "'.");
     }
 
     [[nodiscard]]

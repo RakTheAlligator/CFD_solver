@@ -5,6 +5,7 @@
 #include <gmsh.h>
 #include <stdexcept>
 #include <unordered_map>
+#include <variant>
 #include <vector>
 
 namespace cfd
@@ -45,7 +46,7 @@ class GmshSession
     GmshSession &operator=(GmshSession &&) = delete;
 };
 
-struct RectangleModelTags
+struct ModelTags
 {
     int surface_tag{};
     int inlet_group_tag{};
@@ -83,7 +84,18 @@ CellExtractionSpec cell_extraction_spec(const CellType cell_type)
     throw std::invalid_argument("Unsupported cell type.");
 }
 
-void validate_mesh_generation_inputs(const RectangleGeometry &geometry, const MeshGenerationOptions &options)
+void validate_mesh_generation_options(const MeshGenerationOptions &options)
+{
+    if (!std::isfinite(options.mesh_size) || !(options.mesh_size > 0.0))
+    {
+        throw std::invalid_argument("Mesh size must be finite and positive.");
+    }
+
+    // Validate the enum value through the same mapping used during extraction.
+    static_cast<void>(cell_extraction_spec(options.cell_type));
+}
+
+void validate_geometry(const RectangleGeometry &geometry)
 {
     if (!std::isfinite(geometry.length) || !(geometry.length > 0.0))
     {
@@ -94,17 +106,54 @@ void validate_mesh_generation_inputs(const RectangleGeometry &geometry, const Me
     {
         throw std::invalid_argument("Rectangle height must be finite and positive.");
     }
-
-    if (!std::isfinite(options.mesh_size) || !(options.mesh_size > 0.0))
-    {
-        throw std::invalid_argument("Mesh size must be finite and positive.");
-    }
-
-    // Validate the enum value through the same mapping used during extraction.
-    static_cast<void>(cell_extraction_spec(options.cell_type));
 }
 
-RectangleModelTags create_rectangle(const RectangleGeometry &geometry, const double mesh_size)
+void validate_geometry(const BackwardFacingStepGeometry &geometry)
+{
+    if (!std::isfinite(geometry.upstream_length) || !(geometry.upstream_length > 0.0))
+    {
+        throw std::invalid_argument("Backward-facing-step upstream length must be finite and positive.");
+    }
+    if (!std::isfinite(geometry.downstream_length) || !(geometry.downstream_length > 0.0))
+    {
+        throw std::invalid_argument("Backward-facing-step downstream length must be finite and positive.");
+    }
+    if (!std::isfinite(geometry.channel_height) || !(geometry.channel_height > 0.0))
+    {
+        throw std::invalid_argument("Backward-facing-step channel height must be finite and positive.");
+    }
+    if (!std::isfinite(geometry.step_height) || !(geometry.step_height > 0.0) ||
+        !(geometry.step_height < geometry.channel_height))
+    {
+        throw std::invalid_argument(
+            "Backward-facing-step step height must be finite, positive, and less than the channel height.");
+    }
+}
+
+[[nodiscard]]
+ModelTags add_physical_groups(const int surface_tag, const std::vector<int> &inlet_curve_tags,
+                              const std::vector<int> &wall_curve_tags, const std::vector<int> &outlet_curve_tags)
+{
+    // Entities created in the geometry kernel must be synchronized before they
+    // can be referenced by the model API, including physical groups.
+    gmsh::model::geo::synchronize();
+
+    const int inlet_group_tag{gmsh::model::addPhysicalGroup(1, inlet_curve_tags)};
+    gmsh::model::setPhysicalName(1, inlet_group_tag, "inlet");
+
+    const int wall_group_tag{gmsh::model::addPhysicalGroup(1, wall_curve_tags)};
+    gmsh::model::setPhysicalName(1, wall_group_tag, "wall");
+
+    const int outlet_group_tag{gmsh::model::addPhysicalGroup(1, outlet_curve_tags)};
+    gmsh::model::setPhysicalName(1, outlet_group_tag, "outlet");
+
+    const int fluid_group_tag{gmsh::model::addPhysicalGroup(2, {surface_tag})};
+    gmsh::model::setPhysicalName(2, fluid_group_tag, "fluid");
+
+    return {surface_tag, inlet_group_tag, wall_group_tag, outlet_group_tag};
+}
+
+ModelTags create_rectangle(const RectangleGeometry &geometry, const double mesh_size)
 {
     const int bottom_left_point_tag{gmsh::model::geo::addPoint(0.0, 0.0, 0.0, mesh_size)};
     const int bottom_right_point_tag{gmsh::model::geo::addPoint(geometry.length, 0.0, 0.0, mesh_size)};
@@ -125,31 +174,35 @@ RectangleModelTags create_rectangle(const RectangleGeometry &geometry, const dou
 
     const int surface_tag{gmsh::model::geo::addPlaneSurface({curve_loop_tag})};
 
-    // Entities created in the geometry kernel must be synchronized before they
-    // can be referenced by the model API, including physical groups.
-    gmsh::model::geo::synchronize();
+    return add_physical_groups(surface_tag, {left_curve_tag}, {bottom_curve_tag, top_curve_tag}, {right_curve_tag});
+}
 
-    const int inlet_group_tag{gmsh::model::addPhysicalGroup(1, {left_curve_tag})};
-    gmsh::model::setPhysicalName(1, inlet_group_tag, "inlet");
+ModelTags create_backward_facing_step(const BackwardFacingStepGeometry &geometry, const double mesh_size)
+{
+    const double outlet_x{geometry.upstream_length + geometry.downstream_length};
+    const int inlet_bottom_point_tag{gmsh::model::geo::addPoint(0.0, geometry.step_height, 0.0, mesh_size)};
+    const int step_corner_point_tag{
+        gmsh::model::geo::addPoint(geometry.upstream_length, geometry.step_height, 0.0, mesh_size)};
+    const int step_bottom_point_tag{gmsh::model::geo::addPoint(geometry.upstream_length, 0.0, 0.0, mesh_size)};
+    const int outlet_bottom_point_tag{gmsh::model::geo::addPoint(outlet_x, 0.0, 0.0, mesh_size)};
+    const int outlet_top_point_tag{gmsh::model::geo::addPoint(outlet_x, geometry.channel_height, 0.0, mesh_size)};
+    const int inlet_top_point_tag{gmsh::model::geo::addPoint(0.0, geometry.channel_height, 0.0, mesh_size)};
 
-    const int wall_group_tag{gmsh::model::addPhysicalGroup(1, {
-                                                                  bottom_curve_tag,
-                                                                  top_curve_tag,
-                                                              })};
-    gmsh::model::setPhysicalName(1, wall_group_tag, "wall");
+    const int upstream_bottom_curve_tag{gmsh::model::geo::addLine(inlet_bottom_point_tag, step_corner_point_tag)};
+    const int step_curve_tag{gmsh::model::geo::addLine(step_corner_point_tag, step_bottom_point_tag)};
+    const int downstream_bottom_curve_tag{gmsh::model::geo::addLine(step_bottom_point_tag, outlet_bottom_point_tag)};
+    const int outlet_curve_tag{gmsh::model::geo::addLine(outlet_bottom_point_tag, outlet_top_point_tag)};
+    const int top_curve_tag{gmsh::model::geo::addLine(outlet_top_point_tag, inlet_top_point_tag)};
+    const int inlet_curve_tag{gmsh::model::geo::addLine(inlet_top_point_tag, inlet_bottom_point_tag)};
 
-    const int outlet_group_tag{gmsh::model::addPhysicalGroup(1, {right_curve_tag})};
-    gmsh::model::setPhysicalName(1, outlet_group_tag, "outlet");
+    const int curve_loop_tag{
+        gmsh::model::geo::addCurveLoop({upstream_bottom_curve_tag, step_curve_tag, downstream_bottom_curve_tag,
+                                        outlet_curve_tag, top_curve_tag, inlet_curve_tag})};
+    const int surface_tag{gmsh::model::geo::addPlaneSurface({curve_loop_tag})};
 
-    const int fluid_group_tag{gmsh::model::addPhysicalGroup(2, {surface_tag})};
-    gmsh::model::setPhysicalName(2, fluid_group_tag, "fluid");
-
-    return {
-        surface_tag,
-        inlet_group_tag,
-        wall_group_tag,
-        outlet_group_tag,
-    };
+    return add_physical_groups(surface_tag, {inlet_curve_tag},
+                               {upstream_bottom_curve_tag, step_curve_tag, downstream_bottom_curve_tag, top_curve_tag},
+                               {outlet_curve_tag});
 }
 
 void configure_surface_mesh(const CellType cell_type, const int surface_tag)
@@ -333,23 +386,9 @@ void extract_boundary_edges(RawMeshData &raw_mesh, const std::unordered_map<std:
     }
 }
 
-} // namespace
-
-RawMeshData generate_mesh(const RectangleGeometry &geometry, const MeshGenerationOptions &options)
+[[nodiscard]]
+RawMeshData generate_and_extract_mesh(const ModelTags &tags, const MeshGenerationOptions &options)
 {
-    validate_mesh_generation_inputs(geometry, options);
-
-    // Scope Gmsh's initialization/finalization with this generation operation.
-    // Once construction succeeds, GmshSession guarantees finalization even if a
-    // later Gmsh call or extraction step throws.
-    GmshSession gmsh_session;
-
-    gmsh::option::setNumber("General.Terminal", 0);
-
-    gmsh::model::add("rectangle");
-
-    const RectangleModelTags tags{create_rectangle(geometry, options.mesh_size)};
-
     configure_surface_mesh(options.cell_type, tags.surface_tag);
 
     // Generate the two-dimensional mesh. Gmsh also creates the lower-dimensional
@@ -375,6 +414,38 @@ RawMeshData generate_mesh(const RectangleGeometry &geometry, const MeshGeneratio
     extract_boundary_edges(raw_mesh, node_id_by_gmsh_tag, tags.outlet_group_tag, outlet_boundary_id);
 
     return raw_mesh;
+}
+
+} // namespace
+
+RawMeshData generate_mesh(const RectangleGeometry &geometry, const MeshGenerationOptions &options)
+{
+    validate_geometry(geometry);
+    validate_mesh_generation_options(options);
+
+    GmshSession gmsh_session;
+    gmsh::option::setNumber("General.Terminal", 0);
+    gmsh::model::add("rectangle");
+
+    return generate_and_extract_mesh(create_rectangle(geometry, options.mesh_size), options);
+}
+
+RawMeshData generate_mesh(const BackwardFacingStepGeometry &geometry, const MeshGenerationOptions &options)
+{
+    validate_geometry(geometry);
+    validate_mesh_generation_options(options);
+
+    GmshSession gmsh_session;
+    gmsh::option::setNumber("General.Terminal", 0);
+    gmsh::model::add("backward_facing_step");
+
+    return generate_and_extract_mesh(create_backward_facing_step(geometry, options.mesh_size), options);
+}
+
+RawMeshData generate_mesh(const GeometryInput &geometry, const MeshGenerationOptions &options)
+{
+    return std::visit([&options](const auto &selected_geometry) { return generate_mesh(selected_geometry, options); },
+                      geometry);
 }
 
 } // namespace cfd

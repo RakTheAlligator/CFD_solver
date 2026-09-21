@@ -16,6 +16,8 @@
 #include "cfd/mesh/Mesh.hpp"
 #include "cfd/mesh/MeshBuilder.hpp"
 #include "cfd/mesh/MeshStatistics.hpp"
+#include "cfd/meshing/BackwardFacingStepGeometry.hpp"
+#include "cfd/meshing/GeometryInput.hpp"
 #include "cfd/meshing/GmshMesher.hpp"
 #include "cfd/meshing/RawMeshData.hpp"
 #include "cfd/meshing/RectangleGeometry.hpp"
@@ -35,6 +37,7 @@
 #include <string>
 #include <string_view>
 #include <utility>
+#include <variant>
 #include <vector>
 
 namespace
@@ -60,6 +63,23 @@ std::string_view cell_type_name(const cfd::CellType cell_type)
         return "unknown";
     }
 }
+
+struct GeometrySummaryWriter
+{
+    std::ostream *output;
+
+    void operator()(const cfd::RectangleGeometry &geometry) const
+    {
+        *output << "  Domain            : rectangle " << geometry.length << " x " << geometry.height << " m\n";
+    }
+
+    void operator()(const cfd::BackwardFacingStepGeometry &geometry) const
+    {
+        *output << "  Domain            : backward-facing step, upstream=" << geometry.upstream_length
+                << " m, downstream=" << geometry.downstream_length << " m, channel height=" << geometry.channel_height
+                << " m, step height=" << geometry.step_height << " m\n";
+    }
+};
 
 void require_field_metadata(const cfd::input::ScalarFieldInput &field_input,
                             const std::string_view expected_object_name,
@@ -180,7 +200,7 @@ int main(const int argc, char *argv[])
 
         require_field_metadata(pressure_input, "p", physical_pressure_dimensions, "[1 -1 -2 0 0 0 0]");
 
-        const cfd::RectangleGeometry &geometry{mesh_input.geometry};
+        const cfd::GeometryInput &geometry{mesh_input.geometry};
         const cfd::MeshGenerationOptions &options{mesh_input.generation_options};
 
         std::cout << "============================================================\n"
@@ -196,10 +216,9 @@ int main(const int argc, char *argv[])
         const auto mesh_generation_duration{
             std::chrono::duration<double, std::milli>(mesh_generation_end - mesh_generation_start)};
 
-        std::cout << "\n[Mesh generation]\n";
-        std::cout << std::fixed << std::setprecision(3) << "  Domain            : rectangle " << geometry.length
-                  << " x " << geometry.height << " m\n"
-                  << "  Target mesh size  : " << options.mesh_size << " m\n";
+        std::cout << "\n[Mesh generation]\n" << std::fixed << std::setprecision(3);
+        std::visit(GeometrySummaryWriter{&std::cout}, geometry);
+        std::cout << "  Target mesh size  : " << options.mesh_size << " m\n";
 
         std::cout << "  Cell type         : " << cell_type_name(options.cell_type) << '\n'
                   << "  Nodes             : " << raw_mesh.nodes.size() << '\n'

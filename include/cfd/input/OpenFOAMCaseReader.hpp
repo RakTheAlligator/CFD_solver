@@ -1,8 +1,8 @@
 #pragma once
 
 #include "cfd/field/ScalarBoundaryConditions.hpp"
+#include "cfd/meshing/GeometryInput.hpp"
 #include "cfd/meshing/GmshMesher.hpp"
-#include "cfd/meshing/RectangleGeometry.hpp"
 
 #include <array>
 #include <filesystem>
@@ -25,10 +25,10 @@ struct ControlInput
     bool live_convergence{true};
 };
 
-/// Rectangle and mesh-generation settings read from `system/meshDict`.
+/// Geometry and mesh-generation settings read from `system/meshDict`.
 struct MeshInput
 {
-    RectangleGeometry geometry;
+    GeometryInput geometry;
     MeshGenerationOptions generation_options;
 };
 

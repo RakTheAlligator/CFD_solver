@@ -1,6 +1,8 @@
 #pragma once
 
 #include "cfd/mesh/Cell.hpp"
+#include "cfd/meshing/BackwardFacingStepGeometry.hpp"
+#include "cfd/meshing/GeometryInput.hpp"
 #include "cfd/meshing/RawMeshData.hpp"
 #include "cfd/meshing/RectangleGeometry.hpp"
 
@@ -36,5 +38,20 @@ struct MeshGenerationOptions
 ///         the representation expected by the preprocessing pipeline.
 [[nodiscard]]
 RawMeshData generate_mesh(const RectangleGeometry &geometry, const MeshGenerationOptions &options);
+
+/// Generates a backward-facing-step mesh using Gmsh.
+///
+/// The logical boundary groups are `inlet` (upstream vertical face), `wall`
+/// (the four solid-wall segments), and `outlet` (downstream vertical face).
+///
+/// @throws std::invalid_argument If the geometry, mesh size, or requested cell
+///         type is invalid.
+/// @throws std::runtime_error If Gmsh returns an unsupported mesh.
+[[nodiscard]]
+RawMeshData generate_mesh(const BackwardFacingStepGeometry &geometry, const MeshGenerationOptions &options);
+
+/// Dispatches mesh generation for the selected closed geometry alternative.
+[[nodiscard]]
+RawMeshData generate_mesh(const GeometryInput &geometry, const MeshGenerationOptions &options);
 
 } // namespace cfd

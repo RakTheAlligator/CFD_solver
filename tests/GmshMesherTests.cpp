@@ -4,6 +4,8 @@
 #include "cfd/mesh/Mesh.hpp"
 #include "cfd/mesh/MeshBuilder.hpp"
 #include "cfd/mesh/Types.hpp"
+#include "cfd/meshing/BackwardFacingStepGeometry.hpp"
+#include "cfd/meshing/GeometryInput.hpp"
 #include "cfd/meshing/GmshMesher.hpp"
 #include "cfd/meshing/RawMeshData.hpp"
 #include "cfd/meshing/RawMeshValidation.hpp"
@@ -11,6 +13,7 @@
 
 #include "support/TestUtils.hpp"
 
+#include <array>
 #include <cmath>
 #include <limits>
 #include <stdexcept>
@@ -53,6 +56,46 @@ double compute_boundary_length(const cfd::Mesh &mesh, const cfd::BoundaryId boun
     }
 
     return total_length;
+}
+
+[[nodiscard]]
+cfd::BoundaryId find_raw_boundary_id(const cfd::RawMeshData &raw_mesh, const std::string_view name)
+{
+    for (const cfd::BoundaryGroup &group : raw_mesh.boundary_groups)
+    {
+        if (std::string_view{group.name} == name)
+        {
+            return group.id;
+        }
+    }
+    return cfd::invalid_boundary_id;
+}
+
+[[nodiscard]]
+bool contains_node(const cfd::RawMeshData &raw_mesh, const double x, const double y, const double tolerance)
+{
+    for (const cfd::Node &node : raw_mesh.nodes)
+    {
+        if (std::abs(node.x - x) <= tolerance && std::abs(node.y - y) <= tolerance)
+        {
+            return true;
+        }
+    }
+    return false;
+}
+
+[[nodiscard]]
+bool point_on_vertical_segment(const cfd::Node &point, const double x, const double y_min, const double y_max,
+                               const double tolerance)
+{
+    return std::abs(point.x - x) <= tolerance && point.y >= y_min - tolerance && point.y <= y_max + tolerance;
+}
+
+[[nodiscard]]
+bool point_on_horizontal_segment(const cfd::Node &point, const double y, const double x_min, const double x_max,
+                                 const double tolerance)
+{
+    return std::abs(point.y - y) <= tolerance && point.x >= x_min - tolerance && point.x <= x_max + tolerance;
 }
 
 void require_invalid_meshing_input(const cfd::RectangleGeometry &geometry, const cfd::MeshGenerationOptions &options,
@@ -148,6 +191,27 @@ void test_rejects_non_positive_mesh_size()
                                   },
                                   "Mesh size must be finite and positive.",
                                   "Gmsh mesher accepted a negative mesh size.");
+}
+
+void test_rejects_invalid_backward_facing_step_dimensions()
+{
+    const cfd::MeshGenerationOptions options{.mesh_size = 0.2, .cell_type = cfd::CellType::Triangle};
+    require_throws_with_message<std::invalid_argument>(
+        [&options]() {
+            static_cast<void>(cfd::generate_mesh(
+                cfd::BackwardFacingStepGeometry{
+                    .upstream_length = 0.0, .downstream_length = 4.0, .channel_height = 1.0, .step_height = 0.5},
+                options));
+        },
+        "upstream length", "Gmsh mesher accepted a zero backward-facing-step upstream length.");
+    require_throws_with_message<std::invalid_argument>(
+        [&options]() {
+            static_cast<void>(cfd::generate_mesh(
+                cfd::BackwardFacingStepGeometry{
+                    .upstream_length = 1.0, .downstream_length = 4.0, .channel_height = 1.0, .step_height = 1.0},
+                options));
+        },
+        "less than the channel height", "Gmsh mesher accepted an invalid backward-facing-step height.");
 }
 
 void test_generates_triangular_rectangle()
@@ -330,6 +394,122 @@ void test_rectangle_boundary_groups()
     require_near(compute_boundary_length(mesh, wall_id), 2.0 * length, tolerance, "Wall boundary length is incorrect.");
 }
 
+void verify_backward_facing_step_mesh(const cfd::CellType requested_cell_type, const bool use_variant_dispatch)
+{
+    constexpr cfd::BackwardFacingStepGeometry geometry{
+        .upstream_length = 1.0,
+        .downstream_length = 3.0,
+        .channel_height = 1.0,
+        .step_height = 0.5,
+    };
+    constexpr cfd::MeshGenerationOptions options{.mesh_size = 0.2, .cell_type = cfd::CellType::Triangle};
+    constexpr double tolerance{1.0e-10};
+    const cfd::MeshGenerationOptions selected_options{.mesh_size = options.mesh_size, .cell_type = requested_cell_type};
+    cfd::RawMeshData raw_mesh{use_variant_dispatch ? cfd::generate_mesh(cfd::GeometryInput{geometry}, selected_options)
+                                                   : cfd::generate_mesh(geometry, selected_options)};
+
+    cfd::validate_raw_mesh(raw_mesh);
+    require(!raw_mesh.cell_types.empty(), "Backward-facing-step mesh contains no cells.");
+    for (const cfd::CellType cell_type : raw_mesh.cell_types)
+    {
+        require(cell_type == requested_cell_type,
+                "Backward-facing-step mesh contains a cell of an unexpected topology.");
+    }
+
+    require(raw_mesh.boundary_groups.size() == 3,
+            "Backward-facing-step mesh does not contain exactly three boundary groups.");
+    for (cfd::BoundaryId boundary_id = 0; boundary_id < raw_mesh.boundary_groups.size(); ++boundary_id)
+    {
+        require(raw_mesh.boundary_groups[boundary_id].id == boundary_id,
+                "Backward-facing-step boundary IDs are not compact.");
+    }
+    const cfd::BoundaryId inlet_id{find_raw_boundary_id(raw_mesh, "inlet")};
+    const cfd::BoundaryId wall_id{find_raw_boundary_id(raw_mesh, "wall")};
+    const cfd::BoundaryId outlet_id{find_raw_boundary_id(raw_mesh, "outlet")};
+    require(inlet_id != cfd::invalid_boundary_id, "Backward-facing-step mesh has no inlet group.");
+    require(wall_id != cfd::invalid_boundary_id, "Backward-facing-step mesh has no wall group.");
+    require(outlet_id != cfd::invalid_boundary_id, "Backward-facing-step mesh has no outlet group.");
+
+    const double outlet_x{geometry.upstream_length + geometry.downstream_length};
+    for (const cfd::BoundaryEdge &edge : raw_mesh.boundary_edges)
+    {
+        const cfd::Node &first{raw_mesh.nodes[edge.node_ids[0]]};
+        const cfd::Node &second{raw_mesh.nodes[edge.node_ids[1]]};
+        if (edge.boundary_id == inlet_id)
+        {
+            require(
+                point_on_vertical_segment(first, 0.0, geometry.step_height, geometry.channel_height, tolerance) &&
+                    point_on_vertical_segment(second, 0.0, geometry.step_height, geometry.channel_height, tolerance),
+                "Backward-facing-step inlet edge is not on the inlet segment.");
+        }
+        else if (edge.boundary_id == outlet_id)
+        {
+            require(point_on_vertical_segment(first, outlet_x, 0.0, geometry.channel_height, tolerance) &&
+                        point_on_vertical_segment(second, outlet_x, 0.0, geometry.channel_height, tolerance),
+                    "Backward-facing-step outlet edge is not on the outlet segment.");
+        }
+        else
+        {
+            require(edge.boundary_id == wall_id, "Backward-facing-step edge has an unknown boundary ID.");
+            const bool on_top{point_on_horizontal_segment(first, geometry.channel_height, 0.0, outlet_x, tolerance) &&
+                              point_on_horizontal_segment(second, geometry.channel_height, 0.0, outlet_x, tolerance)};
+            const bool on_upstream_bottom{
+                point_on_horizontal_segment(first, geometry.step_height, 0.0, geometry.upstream_length, tolerance) &&
+                point_on_horizontal_segment(second, geometry.step_height, 0.0, geometry.upstream_length, tolerance)};
+            const bool on_step{
+                point_on_vertical_segment(first, geometry.upstream_length, 0.0, geometry.step_height, tolerance) &&
+                point_on_vertical_segment(second, geometry.upstream_length, 0.0, geometry.step_height, tolerance)};
+            const bool on_downstream_bottom{
+                point_on_horizontal_segment(first, 0.0, geometry.upstream_length, outlet_x, tolerance) &&
+                point_on_horizontal_segment(second, 0.0, geometry.upstream_length, outlet_x, tolerance)};
+            require(on_top || on_upstream_bottom || on_step || on_downstream_bottom,
+                    "Backward-facing-step wall edge is not on the exterior L-shaped contour.");
+        }
+    }
+
+    constexpr std::array characteristic_points{
+        cfd::Point2{0.0, geometry.step_height},
+        cfd::Point2{geometry.upstream_length, geometry.step_height},
+        cfd::Point2{geometry.upstream_length, 0.0},
+        cfd::Point2{geometry.upstream_length + geometry.downstream_length, 0.0},
+        cfd::Point2{geometry.upstream_length + geometry.downstream_length, geometry.channel_height},
+        cfd::Point2{0.0, geometry.channel_height},
+    };
+    for (const cfd::Point2 &point : characteristic_points)
+    {
+        require(contains_node(raw_mesh, point.x, point.y, tolerance),
+                "Backward-facing-step mesh is missing a characteristic contour point.");
+    }
+
+    cfd::MeshBuildResult build_result{cfd::build_mesh(std::move(raw_mesh))};
+    const cfd::Mesh &mesh{build_result.mesh};
+    double total_area{};
+    for (const double area : mesh.cell_areas())
+    {
+        total_area += area;
+    }
+    const double analytical_area{geometry.upstream_length * (geometry.channel_height - geometry.step_height) +
+                                 geometry.downstream_length * geometry.channel_height};
+    require_near(total_area, analytical_area, tolerance, "Backward-facing-step mesh has an incorrect total area.");
+    require_near(compute_boundary_length(mesh, inlet_id), geometry.channel_height - geometry.step_height, tolerance,
+                 "Backward-facing-step inlet length is incorrect.");
+    require_near(compute_boundary_length(mesh, outlet_id), geometry.channel_height, tolerance,
+                 "Backward-facing-step outlet length is incorrect.");
+    require_near(compute_boundary_length(mesh, wall_id),
+                 2.0 * (geometry.upstream_length + geometry.downstream_length) + geometry.step_height, tolerance,
+                 "Backward-facing-step wall length is incorrect.");
+}
+
+void test_generates_triangular_backward_facing_step()
+{
+    verify_backward_facing_step_mesh(cfd::CellType::Triangle, false);
+}
+
+void test_generates_quadrilateral_backward_facing_step()
+{
+    verify_backward_facing_step_mesh(cfd::CellType::Quadrilateral, true);
+}
+
 } // namespace
 
 int main()
@@ -342,11 +522,17 @@ int main()
     failure_count += cfd::test::run_test("reject non-finite mesh size", test_rejects_non_finite_mesh_size);
     failure_count += cfd::test::run_test("reject non-positive dimensions", test_rejects_non_positive_dimensions);
     failure_count += cfd::test::run_test("reject non-positive mesh size", test_rejects_non_positive_mesh_size);
+    failure_count += cfd::test::run_test("reject invalid backward-facing-step dimensions",
+                                         test_rejects_invalid_backward_facing_step_dimensions);
     failure_count += cfd::test::run_test("generate triangular rectangle", test_generates_triangular_rectangle);
     failure_count += cfd::test::run_test("generate quadrilateral rectangle", test_generates_quadrilateral_rectangle);
     failure_count +=
         cfd::test::run_test("build quadrilateral rectangle end-to-end", test_builds_quadrilateral_rectangle_end_to_end);
     failure_count += cfd::test::run_test("rectangle boundary groups", test_rectangle_boundary_groups);
+    failure_count +=
+        cfd::test::run_test("generate triangular backward-facing step", test_generates_triangular_backward_facing_step);
+    failure_count += cfd::test::run_test("generate quadrilateral backward-facing step",
+                                         test_generates_quadrilateral_backward_facing_step);
 
     return cfd::test::finish_tests(failure_count, "Gmsh mesher");
 }

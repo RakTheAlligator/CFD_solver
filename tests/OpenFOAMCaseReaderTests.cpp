@@ -3,7 +3,10 @@
 #include "cfd/mesh/Cell.hpp"
 #include "cfd/mesh/Mesh.hpp"
 #include "cfd/mesh/MeshBuilder.hpp"
+#include "cfd/meshing/BackwardFacingStepGeometry.hpp"
+#include "cfd/meshing/GeometryInput.hpp"
 #include "cfd/meshing/RawMeshData.hpp"
+#include "cfd/meshing/RectangleGeometry.hpp"
 
 #include "support/TestUtils.hpp"
 
@@ -17,6 +20,7 @@
 #include <string_view>
 #include <system_error>
 #include <utility>
+#include <variant>
 
 namespace
 {
@@ -118,6 +122,22 @@ cfd::input::ControlInput read_control_input(const std::string_view content)
     const std::filesystem::path file_path{temporary_directory.path() / "controlDict"};
     write_text_file(file_path, content);
     return cfd::input::read_control_dict(file_path);
+}
+
+[[nodiscard]]
+const cfd::RectangleGeometry &rectangle_geometry(const cfd::GeometryInput &geometry)
+{
+    const auto *const rectangle{std::get_if<cfd::RectangleGeometry>(&geometry)};
+    require(rectangle != nullptr, "meshDict geometry is not a rectangle.");
+    return *rectangle;
+}
+
+[[nodiscard]]
+const cfd::BackwardFacingStepGeometry &backward_facing_step_geometry(const cfd::GeometryInput &geometry)
+{
+    const auto *const step{std::get_if<cfd::BackwardFacingStepGeometry>(&geometry)};
+    require(step != nullptr, "meshDict geometry is not a backward-facing step.");
+    return *step;
 }
 
 [[nodiscard]]
@@ -337,9 +357,10 @@ mesh
 )"};
 
     const cfd::input::MeshInput input{read_mesh_input(content)};
+    const cfd::RectangleGeometry &geometry{rectangle_geometry(input.geometry)};
 
-    require_near(input.geometry.length, 5.0, 0.0, "meshDict rectangle length was parsed incorrectly.");
-    require_near(input.geometry.height, 1.0, 0.0, "meshDict rectangle height was parsed incorrectly.");
+    require_near(geometry.length, 5.0, 0.0, "meshDict rectangle length was parsed incorrectly.");
+    require_near(geometry.height, 1.0, 0.0, "meshDict rectangle height was parsed incorrectly.");
     require_near(input.generation_options.mesh_size, 0.2, 0.0, "meshDict mesh size was parsed incorrectly.");
     require(input.generation_options.cell_type == cfd::CellType::Quadrilateral,
             "meshDict quadrilateral cell type was parsed incorrectly.");
@@ -444,9 +465,139 @@ length 5;)",
 size 0.2;)")};
 
     const cfd::input::MeshInput input{read_mesh_input(content)};
+    const cfd::RectangleGeometry &geometry{rectangle_geometry(input.geometry)};
 
-    require_near(input.geometry.length, 5.0, 0.0, "Reordered geometry length was parsed incorrectly.");
-    require_near(input.geometry.height, 1.0, 0.0, "Reordered geometry height was parsed incorrectly.");
+    require_near(geometry.length, 5.0, 0.0, "Reordered geometry length was parsed incorrectly.");
+    require_near(geometry.height, 1.0, 0.0, "Reordered geometry height was parsed incorrectly.");
+}
+
+void test_reads_backward_facing_step_geometry()
+{
+    const std::string content{make_mesh_dictionary(
+        R"(version 2.0;
+format ascii;
+class dictionary;
+object meshDict;)",
+        R"(stepHeight 0.5;
+downstreamLength 4;
+type backwardFacingStep;
+channelHeight 1;
+upstreamLength 1;)",
+        R"(cellType triangle;
+size 0.2;)")};
+
+    const cfd::input::MeshInput input{read_mesh_input(content)};
+    const cfd::BackwardFacingStepGeometry &geometry{backward_facing_step_geometry(input.geometry)};
+
+    require_near(geometry.upstream_length, 1.0, 0.0, "Backward-facing-step upstream length was parsed incorrectly.");
+    require_near(geometry.downstream_length, 4.0, 0.0,
+                 "Backward-facing-step downstream length was parsed incorrectly.");
+    require_near(geometry.channel_height, 1.0, 0.0, "Backward-facing-step channel height was parsed incorrectly.");
+    require_near(geometry.step_height, 0.5, 0.0, "Backward-facing-step height was parsed incorrectly.");
+}
+
+void test_rejects_missing_backward_facing_step_parameter()
+{
+    const std::string content{make_mesh_dictionary(
+        R"(format ascii;
+class dictionary;
+object meshDict;)",
+        R"(type backwardFacingStep;
+upstreamLength 1;
+downstreamLength 4;
+channelHeight 1;)",
+        R"(cellType triangle;
+size 0.2;)")};
+
+    require_throws_with_message<std::runtime_error>(
+        [&content]() { static_cast<void>(read_mesh_input(content)); }, "requires upstreamLength",
+        "meshDict reader accepted a backward-facing step with a missing parameter.");
+}
+
+void test_rejects_invalid_backward_facing_step_parameters()
+{
+    const std::string zero_upstream{make_mesh_dictionary(
+        R"(format ascii;
+class dictionary;
+object meshDict;)",
+        R"(type backwardFacingStep;
+upstreamLength 0;
+downstreamLength 4;
+channelHeight 1;
+stepHeight 0.5;)",
+        R"(cellType triangle;
+size 0.2;)")};
+    require_throws_with_message<std::runtime_error>(
+        [&zero_upstream]() { static_cast<void>(read_mesh_input(zero_upstream)); }, "upstreamLength",
+        "meshDict reader accepted a zero backward-facing-step upstream length.");
+
+    const std::string oversized_step{make_mesh_dictionary(
+        R"(format ascii;
+class dictionary;
+object meshDict;)",
+        R"(type backwardFacingStep;
+upstreamLength 1;
+downstreamLength 4;
+channelHeight 1;
+stepHeight 1;)",
+        R"(cellType triangle;
+size 0.2;)")};
+    require_throws_with_message<std::runtime_error>(
+        [&oversized_step]() { static_cast<void>(read_mesh_input(oversized_step)); }, "less than channelHeight",
+        "meshDict reader accepted a step height equal to the channel height.");
+}
+
+void test_rejects_geometry_specific_field_mismatch()
+{
+    const std::string rectangle_with_step_field{make_mesh_dictionary(
+        R"(format ascii;
+class dictionary;
+object meshDict;)",
+        R"(type rectangle;
+length 5;
+height 1;
+stepHeight 0.5;)",
+        R"(cellType triangle;
+size 0.2;)")};
+    require_throws_with_message<std::runtime_error>(
+        [&rectangle_with_step_field]() { static_cast<void>(read_mesh_input(rectangle_with_step_field)); },
+        "invalid for rectangle geometry", "meshDict reader accepted a step-specific rectangle field.");
+
+    const std::string step_with_rectangle_field{make_mesh_dictionary(
+        R"(format ascii;
+class dictionary;
+object meshDict;)",
+        R"(type backwardFacingStep;
+upstreamLength 1;
+downstreamLength 4;
+channelHeight 1;
+stepHeight 0.5;
+length 5;)",
+        R"(cellType triangle;
+size 0.2;)")};
+    require_throws_with_message<std::runtime_error>(
+        [&step_with_rectangle_field]() { static_cast<void>(read_mesh_input(step_with_rectangle_field)); },
+        "invalid for backwardFacingStep geometry", "meshDict reader accepted a rectangle-specific step field.");
+}
+
+void test_rejects_duplicate_backward_facing_step_parameter()
+{
+    const std::string content{make_mesh_dictionary(
+        R"(format ascii;
+class dictionary;
+object meshDict;)",
+        R"(type backwardFacingStep;
+upstreamLength 1;
+upstreamLength 2;
+downstreamLength 4;
+channelHeight 1;
+stepHeight 0.5;)",
+        R"(cellType triangle;
+size 0.2;)")};
+
+    require_throws_with_message<std::runtime_error>(
+        [&content]() { static_cast<void>(read_mesh_input(content)); }, "Duplicate geometry upstreamLength entry",
+        "meshDict reader accepted a duplicate backward-facing-step parameter.");
 }
 
 void test_accepts_reordered_mesh_entries()
@@ -915,6 +1066,16 @@ int main()
         cfd::test::run_test("accept omitted optional FoamFile version", test_accepts_omitted_optional_version);
     failure_count += cfd::test::run_test("accept optional FoamFile location", test_accepts_optional_location);
     failure_count += cfd::test::run_test("accept reordered geometry entries", test_accepts_reordered_geometry_entries);
+    failure_count +=
+        cfd::test::run_test("read backward-facing-step geometry", test_reads_backward_facing_step_geometry);
+    failure_count += cfd::test::run_test("reject missing backward-facing-step parameter",
+                                         test_rejects_missing_backward_facing_step_parameter);
+    failure_count += cfd::test::run_test("reject invalid backward-facing-step parameters",
+                                         test_rejects_invalid_backward_facing_step_parameters);
+    failure_count +=
+        cfd::test::run_test("reject geometry-specific field mismatch", test_rejects_geometry_specific_field_mismatch);
+    failure_count += cfd::test::run_test("reject duplicate backward-facing-step parameter",
+                                         test_rejects_duplicate_backward_facing_step_parameter);
     failure_count += cfd::test::run_test("accept reordered mesh entries", test_accepts_reordered_mesh_entries);
     failure_count +=
         cfd::test::run_test("accept reordered fixedValue entries", test_accepts_reordered_fixed_value_entries);
