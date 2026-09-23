@@ -30,6 +30,8 @@ struct MeshInput
 {
     GeometryInput geometry;
     MeshGenerationOptions generation_options;
+    AutomaticMeshingOptions automatic_meshing;
+    BackwardFacingStepMeshingOptions backward_facing_step_meshing;
 };
 
 /// Scalar boundary condition associated with a user-facing boundary name.

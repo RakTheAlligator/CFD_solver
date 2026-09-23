@@ -148,6 +148,19 @@ target_link_libraries(
 
 cfd_enable_warnings(CFD_solver)
 
+add_executable(
+    cfd_mesh_preview
+    src/MeshPreview.cpp
+)
+
+target_link_libraries(
+    cfd_mesh_preview
+    PRIVATE
+        cfd_core
+)
+
+cfd_enable_warnings(cfd_mesh_preview)
+
 # -----------------------------------------------------------------------------
 # Numerical verification
 # -----------------------------------------------------------------------------

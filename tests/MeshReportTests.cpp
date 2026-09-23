@@ -16,6 +16,7 @@ namespace
 {
 
 using cfd::test::make_single_triangle_raw_mesh;
+using cfd::test::make_two_triangle_raw_mesh;
 using cfd::test::require;
 using cfd::test::require_contains;
 
@@ -60,8 +61,38 @@ void test_single_triangle_mesh_report()
     require_contains(report, "Cell area", "Mesh report does not contain cell-area statistics.");
     require_contains(report, "Cell size", "Mesh report does not contain cell-size statistics.");
     require_contains(report, "Face length", "Mesh report does not contain face-length statistics.");
+    require_contains(report, "Internal non-orth.",
+                     "Mesh report does not contain internal-face non-orthogonality statistics.");
+    require_contains(report, "Neighbor size ratio",
+                     "Mesh report does not contain neighboring-cell size-ratio statistics.");
     require_contains(report, "Cell quality", "Mesh report does not contain cell-quality statistics.");
     require_contains(report, "Worst cell        : cell 0", "Mesh report contains an incorrect worst-quality cell.");
+}
+
+void test_reports_maximum_neighbor_size_ratio_location()
+{
+    cfd::RawMeshData raw_mesh{make_two_triangle_raw_mesh()};
+    cfd::MeshBuildResult build_result{cfd::build_mesh(std::move(raw_mesh))};
+    const cfd::Mesh &mesh{build_result.mesh};
+    const cfd::MeshStatistics statistics{cfd::compute_mesh_statistics(mesh)};
+    const cfd::Index face_id{statistics.maximum_neighbor_cell_size_ratio_face_id};
+    require(face_id != cfd::invalid_index, "Two-cell mesh has no maximum neighboring-size-ratio face.");
+    const cfd::FaceAdjacency &adjacency{mesh.face_adjacencies()[face_id]};
+
+    std::ostringstream output;
+    cfd::write_mesh_report(output, mesh, statistics, {});
+    const std::string report{output.str()};
+
+    require_contains(report, "Max size-ratio face: face " + std::to_string(face_id),
+                     "Mesh report does not identify the maximum neighboring-size-ratio face.");
+    require_contains(report,
+                     "Owner / neighbor : cell " + std::to_string(adjacency.owner) + " / cell " +
+                         std::to_string(adjacency.neighbor),
+                     "Mesh report does not identify the cells adjacent to the maximum size-ratio face.");
+    require_contains(report, "Ratio            : 1",
+                     "Mesh report does not show the maximum neighboring-cell size ratio.");
+    require_contains(report, "Face center      : (0.5, 0.5) m",
+                     "Mesh report does not locate the maximum neighboring-size-ratio face center.");
 }
 
 } // namespace
@@ -71,6 +102,8 @@ int main()
     int failure_count{};
 
     failure_count += cfd::test::run_test("single triangle mesh report", test_single_triangle_mesh_report);
+    failure_count +=
+        cfd::test::run_test("maximum neighbor size-ratio location", test_reports_maximum_neighbor_size_ratio_location);
 
     return cfd::test::finish_tests(failure_count, "mesh report");
 }

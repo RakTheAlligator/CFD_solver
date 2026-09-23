@@ -1,0 +1,31 @@
+FoamFile
+{
+    version 2.0;
+    format ascii;
+    class dictionary;
+    object meshDict;
+}
+
+geometry
+{
+    type backwardFacingStep;
+    upstreamLength 1.0;
+    downstreamLength 4.0;
+    channelHeight 1.0;
+    stepHeight 0.5;
+}
+
+mesh
+{
+    cellType quadrilateral;
+    size 0.2;
+
+    automaticMeshing true;
+    maximumGrowthRate 1.2;
+
+    wallRefinementFactor 0.5;
+    wallRefinementLayers 4;
+
+    stepRefinementFactor 0.5;
+    stepRefinementLayers 6;
+}

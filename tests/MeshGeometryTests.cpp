@@ -17,6 +17,7 @@
 #include <array>
 #include <cmath>
 #include <cstdint>
+#include <numbers>
 #include <numeric>
 #include <type_traits>
 #include <utility>
@@ -40,6 +41,36 @@ static_assert(std::is_nothrow_move_constructible_v<cfd::Mesh>);
 static_assert(std::is_nothrow_move_assignable_v<cfd::Mesh>);
 
 static_assert(std::is_same_v<cfd::Node, cfd::Point2>);
+
+[[nodiscard]]
+cfd::RawMeshData make_two_non_orthogonal_triangles_raw_mesh()
+{
+    constexpr cfd::BoundaryId boundary_id{0};
+
+    cfd::RawMeshData raw_mesh;
+    raw_mesh.nodes = {
+        {-1.0, 0.0},
+        {0.0, 0.0},
+        {0.0, 2.0},
+        {2.0, 2.0},
+    };
+    raw_mesh.cell_types = {
+        cfd::CellType::Triangle,
+        cfd::CellType::Triangle,
+    };
+    raw_mesh.cell_nodes = {
+        0, 1, 2, 2, 1, 3,
+    };
+    raw_mesh.cell_node_offsets = {0, 3, 6};
+    raw_mesh.boundary_groups = {{boundary_id, "wall"}};
+    raw_mesh.boundary_edges = {
+        {{0, 1}, boundary_id},
+        {{1, 3}, boundary_id},
+        {{3, 2}, boundary_id},
+        {{2, 0}, boundary_id},
+    };
+    return raw_mesh;
+}
 
 [[nodiscard]]
 double compute_single_closed_boundary_area(const cfd::RawMeshData &raw_mesh)
@@ -365,6 +396,49 @@ void test_single_triangle_statistics()
                  "Single-triangle maximum quality statistic is incorrect.");
 
     require(statistics.worst_quality_cell_id == 0, "Single triangle must be its own worst-quality cell.");
+    require(statistics.maximum_non_orthogonality_face_id == cfd::invalid_index,
+            "A mesh without internal faces must not report a maximum non-orthogonality face.");
+    require(statistics.maximum_neighbor_cell_size_ratio_face_id == cfd::invalid_index,
+            "A mesh without internal faces must not report a maximum neighboring-size-ratio face.");
+}
+
+void test_internal_face_finite_volume_statistics()
+{
+    cfd::RawMeshData raw_mesh{make_two_non_orthogonal_triangles_raw_mesh()};
+    cfd::MeshBuildResult build_result{cfd::build_mesh(std::move(raw_mesh))};
+    const cfd::Mesh &mesh{build_result.mesh};
+    const cfd::MeshStatistics statistics{cfd::compute_mesh_statistics(mesh)};
+
+    cfd::Index internal_face_id{cfd::invalid_index};
+    for (cfd::Index face_id = 0; face_id < mesh.face_count(); ++face_id)
+    {
+        if (!mesh.face_adjacencies()[face_id].is_boundary())
+        {
+            internal_face_id = face_id;
+            break;
+        }
+    }
+    require(internal_face_id != cfd::invalid_index, "Controlled mesh has no internal face.");
+
+    const double expected_non_orthogonality{std::atan(2.0 / 3.0) * 180.0 / std::acos(-1.0)};
+    require_near(statistics.internal_face_non_orthogonality_degrees.minimum, expected_non_orthogonality, test_tolerance,
+                 "Minimum internal-face non-orthogonality is incorrect.");
+    require_near(statistics.internal_face_non_orthogonality_degrees.mean, expected_non_orthogonality, test_tolerance,
+                 "Mean internal-face non-orthogonality is incorrect.");
+    require_near(statistics.internal_face_non_orthogonality_degrees.maximum, expected_non_orthogonality, test_tolerance,
+                 "Maximum internal-face non-orthogonality is incorrect.");
+    require(statistics.maximum_non_orthogonality_face_id == internal_face_id,
+            "Maximum non-orthogonality face ID is incorrect.");
+
+    constexpr double expected_size_ratio{std::numbers::sqrt2_v<double>};
+    require_near(statistics.internal_face_neighbor_cell_size_ratios.minimum, expected_size_ratio, test_tolerance,
+                 "Minimum neighboring-cell size ratio is incorrect.");
+    require_near(statistics.internal_face_neighbor_cell_size_ratios.mean, expected_size_ratio, test_tolerance,
+                 "Mean neighboring-cell size ratio is incorrect.");
+    require_near(statistics.internal_face_neighbor_cell_size_ratios.maximum, expected_size_ratio, test_tolerance,
+                 "Maximum neighboring-cell size ratio is incorrect.");
+    require(statistics.maximum_neighbor_cell_size_ratio_face_id == internal_face_id,
+            "Maximum neighboring-cell size-ratio face ID is incorrect.");
 }
 
 void test_small_translated_equilateral_triangle()
@@ -546,6 +620,8 @@ int main()
         cfd::test::run_test("small translated equilateral triangle", test_small_translated_equilateral_triangle);
     failure_count += cfd::test::run_test("reference rectangle preprocessing", test_reference_rectangle);
     failure_count += cfd::test::run_test("single triangle statistics", test_single_triangle_statistics);
+    failure_count +=
+        cfd::test::run_test("internal-face finite-volume statistics", test_internal_face_finite_volume_statistics);
     failure_count += cfd::test::run_test("single quadrilateral geometry", test_single_quadrilateral);
     failure_count += cfd::test::run_test("rectangular quadrilateral quality", test_rectangular_quadrilateral_quality);
     failure_count += cfd::test::run_test("clockwise quadrilateral geometry", test_clockwise_quadrilateral);

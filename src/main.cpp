@@ -209,7 +209,8 @@ int main(const int argc, char *argv[])
 
         const auto mesh_generation_start{std::chrono::steady_clock::now()};
 
-        cfd::RawMeshData raw_mesh{cfd::generate_mesh(geometry, options)};
+        cfd::RawMeshData raw_mesh{cfd::generate_mesh(geometry, options, mesh_input.automatic_meshing,
+                                                     mesh_input.backward_facing_step_meshing)};
 
         const auto mesh_generation_end{std::chrono::steady_clock::now()};
 

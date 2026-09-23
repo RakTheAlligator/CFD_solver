@@ -364,6 +364,16 @@ mesh
     require_near(input.generation_options.mesh_size, 0.2, 0.0, "meshDict mesh size was parsed incorrectly.");
     require(input.generation_options.cell_type == cfd::CellType::Quadrilateral,
             "meshDict quadrilateral cell type was parsed incorrectly.");
+    require(input.automatic_meshing.enabled, "Automatic meshing is not enabled by default.");
+    require_near(input.automatic_meshing.maximum_growth_rate, 1.2, 0.0,
+                 "Default maximum mesh growth rate is incorrect.");
+    require_near(input.automatic_meshing.wall_refinement_factor, 0.5, 0.0,
+                 "Default wall refinement factor is incorrect.");
+    require(input.automatic_meshing.wall_refinement_layers == 4, "Default wall refinement layer count is incorrect.");
+    require_near(input.backward_facing_step_meshing.step_refinement_factor, 0.5, 0.0,
+                 "Default step refinement factor is incorrect.");
+    require(input.backward_facing_step_meshing.step_refinement_layers == 6,
+            "Default step refinement layer count is incorrect.");
 }
 
 void test_reads_triangle_mesh_dict()
@@ -394,6 +404,140 @@ mesh
 
     require(input.generation_options.cell_type == cfd::CellType::Triangle,
             "meshDict triangle cell type was parsed incorrectly.");
+}
+
+void test_reads_disabled_automatic_meshing()
+{
+    const std::string content{make_mesh_dictionary(
+        R"(format ascii;
+class dictionary;
+object meshDict;)",
+        R"(type backwardFacingStep;
+upstreamLength 1;
+downstreamLength 4;
+channelHeight 1;
+stepHeight 0.5;)",
+        R"(cellType quadrilateral;
+size 0.1;
+automaticMeshing false;)")};
+
+    const cfd::input::MeshInput input{read_mesh_input(content)};
+    require(!input.automatic_meshing.enabled, "meshDict automaticMeshing false was not preserved.");
+}
+
+void test_reads_automatic_meshing_overrides()
+{
+    const std::string content{make_mesh_dictionary(
+        R"(format ascii;
+class dictionary;
+object meshDict;)",
+        R"(type backwardFacingStep;
+upstreamLength 1;
+downstreamLength 4;
+channelHeight 1;
+stepHeight 0.5;)",
+        R"(stepRefinementLayers 9;
+wallRefinementFactor 0.4;
+automaticMeshing true;
+cellType quadrilateral;
+maximumGrowthRate 1.15;
+stepRefinementFactor 0.3;
+size 0.1;
+wallRefinementLayers 7;)")};
+
+    const cfd::input::MeshInput input{read_mesh_input(content)};
+    require(input.automatic_meshing.enabled, "meshDict automaticMeshing true was not preserved.");
+    require_near(input.automatic_meshing.maximum_growth_rate, 1.15, 0.0,
+                 "maximumGrowthRate override was parsed incorrectly.");
+    require_near(input.automatic_meshing.wall_refinement_factor, 0.4, 0.0,
+                 "wallRefinementFactor override was parsed incorrectly.");
+    require(input.automatic_meshing.wall_refinement_layers == 7,
+            "wallRefinementLayers override was parsed incorrectly.");
+    require_near(input.backward_facing_step_meshing.step_refinement_factor, 0.3, 0.0,
+                 "stepRefinementFactor override was parsed incorrectly.");
+    require(input.backward_facing_step_meshing.step_refinement_layers == 9,
+            "stepRefinementLayers override was parsed incorrectly.");
+}
+
+void test_rejects_invalid_automatic_meshing_options()
+{
+    struct InvalidEntry
+    {
+        std::string_view entry;
+        std::string_view diagnostic;
+    };
+
+    constexpr std::array invalid_entries{
+        InvalidEntry{"maximumGrowthRate 1;", "maximumGrowthRate"},
+        InvalidEntry{"wallRefinementFactor 0;", "wallRefinementFactor"},
+        InvalidEntry{"wallRefinementLayers 0;", "wallRefinementLayers"},
+        InvalidEntry{"stepRefinementFactor 1.1;", "stepRefinementFactor"},
+        InvalidEntry{"stepRefinementLayers 2.5;", "stepRefinementLayers"},
+    };
+
+    for (const InvalidEntry &invalid : invalid_entries)
+    {
+        const std::string mesh_entries{"cellType quadrilateral;\nsize 0.1;\n" + std::string{invalid.entry}};
+        const std::string content{make_mesh_dictionary(
+            R"(format ascii;
+class dictionary;
+object meshDict;)",
+            R"(type backwardFacingStep;
+upstreamLength 1;
+downstreamLength 4;
+channelHeight 1;
+stepHeight 0.5;)",
+            mesh_entries)};
+        require_throws_with_message<std::runtime_error>(
+            [&content]() { static_cast<void>(read_mesh_input(content)); }, invalid.diagnostic,
+            "meshDict reader accepted an invalid automatic-meshing option.");
+    }
+}
+
+void test_rejects_duplicate_automatic_meshing_option()
+{
+    const std::string content{make_mesh_dictionary(
+        R"(format ascii;
+class dictionary;
+object meshDict;)",
+        R"(type backwardFacingStep;
+upstreamLength 1;
+downstreamLength 4;
+channelHeight 1;
+stepHeight 0.5;)",
+        R"(cellType quadrilateral;
+size 0.1;
+stepRefinementFactor 0.5;
+stepRefinementFactor 0.4;)")};
+
+    require_throws_with_message<std::runtime_error>([&content]() { static_cast<void>(read_mesh_input(content)); },
+                                                    "Duplicate mesh stepRefinementFactor entry",
+                                                    "meshDict reader accepted a duplicate automatic-meshing option.");
+}
+
+void test_rejects_step_refinement_options_for_rectangle()
+{
+    constexpr std::array step_entries{
+        std::string_view{"stepRefinementFactor 0.5;"},
+        std::string_view{"stepRefinementLayers 6;"},
+    };
+
+    for (const std::string_view step_entry : step_entries)
+    {
+        const std::string mesh_entries{"cellType quadrilateral;\nsize 0.1;\n" + std::string{step_entry}};
+        const std::string content{make_mesh_dictionary(
+            R"(format ascii;
+class dictionary;
+object meshDict;)",
+            R"(type rectangle;
+length 5;
+height 1;)",
+            mesh_entries)};
+
+        require_throws_with_message<std::runtime_error>(
+            [&content]() { static_cast<void>(read_mesh_input(content)); }, "only valid for backwardFacingStep",
+            "meshDict reader accepted a step-refinement option for rectangle geometry.");
+    }
 }
 
 void test_accepts_reordered_foam_file_entries()
@@ -1061,6 +1205,14 @@ int main()
         cfd::test::run_test("reject malformed controlDict braces", test_rejects_malformed_control_dict_braces);
     failure_count += cfd::test::run_test("read valid quadrilateral meshDict", test_reads_valid_quadrilateral_mesh_dict);
     failure_count += cfd::test::run_test("read triangle meshDict", test_reads_triangle_mesh_dict);
+    failure_count += cfd::test::run_test("read disabled automatic meshing", test_reads_disabled_automatic_meshing);
+    failure_count += cfd::test::run_test("read automatic meshing overrides", test_reads_automatic_meshing_overrides);
+    failure_count +=
+        cfd::test::run_test("reject invalid automatic meshing options", test_rejects_invalid_automatic_meshing_options);
+    failure_count += cfd::test::run_test("reject duplicate automatic meshing option",
+                                         test_rejects_duplicate_automatic_meshing_option);
+    failure_count += cfd::test::run_test("reject step refinement options for rectangle",
+                                         test_rejects_step_refinement_options_for_rectangle);
     failure_count += cfd::test::run_test("accept reordered FoamFile entries", test_accepts_reordered_foam_file_entries);
     failure_count +=
         cfd::test::run_test("accept omitted optional FoamFile version", test_accepts_omitted_optional_version);

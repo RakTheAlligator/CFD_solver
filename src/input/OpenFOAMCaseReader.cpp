@@ -10,6 +10,7 @@
 #include <cmath>
 #include <cstdint>
 #include <fstream>
+#include <limits>
 #include <optional>
 #include <sstream>
 #include <stdexcept>
@@ -17,6 +18,7 @@
 #include <string_view>
 #include <system_error>
 #include <utility>
+#include <variant>
 #include <vector>
 
 namespace cfd::input
@@ -43,6 +45,13 @@ struct Token
     std::string_view text;
     std::size_t line{1};
     double number{};
+};
+
+struct ParsedMeshOptions
+{
+    MeshGenerationOptions generation;
+    AutomaticMeshingOptions automatic;
+    BackwardFacingStepMeshingOptions backward_facing_step;
 };
 
 [[nodiscard]]
@@ -111,13 +120,16 @@ class CaseParser
         static_cast<void>(parse_foam_header("dictionary", "meshDict"));
 
         GeometryInput geometry{parse_geometry()};
-        const MeshGenerationOptions generation_options{parse_mesh_options()};
+        const ParsedMeshOptions mesh_options{
+            parse_mesh_options(std::holds_alternative<BackwardFacingStepGeometry>(geometry))};
 
         expect(TokenKind::End, "end of file");
 
         return {
             .geometry = geometry,
-            .generation_options = generation_options,
+            .generation_options = mesh_options.generation,
+            .automatic_meshing = mesh_options.automatic,
+            .backward_facing_step_meshing = mesh_options.backward_facing_step,
         };
     }
 
@@ -572,6 +584,31 @@ class CaseParser
     }
 
     [[nodiscard]]
+    Token take_boolean(const std::string_view entry_name)
+    {
+        if (current_.kind != TokenKind::Word || (current_.text != "true" && current_.text != "false"))
+        {
+            fail_current(std::string(entry_name) + " must be exactly 'true' or 'false'.");
+        }
+
+        const Token result{current_};
+        advance();
+        return result;
+    }
+
+    [[nodiscard]]
+    Index positive_index(const Token &token, const std::string_view entry_name)
+    {
+        if (token.number < 1.0 || std::trunc(token.number) != token.number ||
+            token.number >= static_cast<double>(std::numeric_limits<Index>::max()))
+        {
+            fail(token.line, std::string(entry_name) + " must be a positive integer.");
+        }
+
+        return static_cast<Index>(token.number);
+    }
+
+    [[nodiscard]]
     double parse_uniform_scalar(const std::string_view entry_name)
     {
         const Token distribution{take_word("'uniform'")};
@@ -658,13 +695,7 @@ class CaseParser
             {
                 fail(key.line, "Duplicate liveConvergence entry.");
             }
-            if (current_.kind != TokenKind::Word || (current_.text != "true" && current_.text != "false"))
-            {
-                fail_current("liveConvergence must be exactly 'true' or 'false'.");
-            }
-
-            live_convergence = current_.text == "true";
-            advance();
+            live_convergence = take_boolean("liveConvergence").text == "true";
             expect(TokenKind::Semicolon, "';'");
         }
         return live_convergence;
@@ -938,13 +969,19 @@ class CaseParser
     }
 
     [[nodiscard]]
-    MeshGenerationOptions parse_mesh_options()
+    ParsedMeshOptions parse_mesh_options(const bool is_backward_facing_step)
     {
         expect_keyword("mesh");
         expect(TokenKind::LeftBrace, "'{'");
 
         std::optional<Token> cell_type_name;
         std::optional<Token> mesh_size;
+        std::optional<Token> automatic_meshing;
+        std::optional<Token> maximum_growth_rate;
+        std::optional<Token> wall_refinement_factor;
+        std::optional<Token> wall_refinement_layers;
+        std::optional<Token> step_refinement_factor;
+        std::optional<Token> step_refinement_layers;
 
         while (current_.kind != TokenKind::RightBrace)
         {
@@ -967,6 +1004,68 @@ class CaseParser
                 }
 
                 mesh_size = take_number("a finite mesh size");
+            }
+            else if (key.text == "automaticMeshing")
+            {
+                if (automatic_meshing.has_value())
+                {
+                    fail(key.line, "Duplicate mesh automaticMeshing entry.");
+                }
+
+                automatic_meshing = take_boolean("automaticMeshing");
+            }
+            else if (key.text == "maximumGrowthRate")
+            {
+                if (maximum_growth_rate.has_value())
+                {
+                    fail(key.line, "Duplicate mesh maximumGrowthRate entry.");
+                }
+
+                maximum_growth_rate = take_number("a finite maximum growth rate");
+            }
+            else if (key.text == "wallRefinementFactor")
+            {
+                if (wall_refinement_factor.has_value())
+                {
+                    fail(key.line, "Duplicate mesh wallRefinementFactor entry.");
+                }
+
+                wall_refinement_factor = take_number("a finite wall refinement factor");
+            }
+            else if (key.text == "wallRefinementLayers")
+            {
+                if (wall_refinement_layers.has_value())
+                {
+                    fail(key.line, "Duplicate mesh wallRefinementLayers entry.");
+                }
+
+                wall_refinement_layers = take_number("a wall refinement layer count");
+            }
+            else if (key.text == "stepRefinementFactor")
+            {
+                if (!is_backward_facing_step)
+                {
+                    fail(key.line, "stepRefinementFactor is only valid for backwardFacingStep geometry.");
+                }
+                if (step_refinement_factor.has_value())
+                {
+                    fail(key.line, "Duplicate mesh stepRefinementFactor entry.");
+                }
+
+                step_refinement_factor = take_number("a finite step refinement factor");
+            }
+            else if (key.text == "stepRefinementLayers")
+            {
+                if (!is_backward_facing_step)
+                {
+                    fail(key.line, "stepRefinementLayers is only valid for backwardFacingStep geometry.");
+                }
+                if (step_refinement_layers.has_value())
+                {
+                    fail(key.line, "Duplicate mesh stepRefinementLayers entry.");
+                }
+
+                step_refinement_layers = take_number("a step refinement layer count");
             }
             else
             {
@@ -1002,9 +1101,54 @@ class CaseParser
             fail(mesh_size->line, "Mesh size must be finite and positive.");
         }
 
+        AutomaticMeshingOptions automatic_options;
+        if (automatic_meshing.has_value())
+        {
+            automatic_options.enabled = automatic_meshing->text == "true";
+        }
+        if (maximum_growth_rate.has_value())
+        {
+            if (!(maximum_growth_rate->number > 1.0))
+            {
+                fail(maximum_growth_rate->line, "maximumGrowthRate must be finite and greater than one.");
+            }
+            automatic_options.maximum_growth_rate = maximum_growth_rate->number;
+        }
+
+        BackwardFacingStepMeshingOptions step_options;
+        if (wall_refinement_factor.has_value())
+        {
+            if (!(wall_refinement_factor->number > 0.0) || wall_refinement_factor->number > 1.0)
+            {
+                fail(wall_refinement_factor->line, "wallRefinementFactor must be finite and in (0, 1].");
+            }
+            automatic_options.wall_refinement_factor = wall_refinement_factor->number;
+        }
+        if (wall_refinement_layers.has_value())
+        {
+            automatic_options.wall_refinement_layers = positive_index(*wall_refinement_layers, "wallRefinementLayers");
+        }
+        if (step_refinement_factor.has_value())
+        {
+            if (!(step_refinement_factor->number > 0.0) || step_refinement_factor->number > 1.0)
+            {
+                fail(step_refinement_factor->line, "stepRefinementFactor must be finite and in (0, 1].");
+            }
+            step_options.step_refinement_factor = step_refinement_factor->number;
+        }
+        if (step_refinement_layers.has_value())
+        {
+            step_options.step_refinement_layers = positive_index(*step_refinement_layers, "stepRefinementLayers");
+        }
+
         return {
-            .mesh_size = mesh_size->number,
-            .cell_type = cell_type,
+            .generation =
+                {
+                    .mesh_size = mesh_size->number,
+                    .cell_type = cell_type,
+                },
+            .automatic = automatic_options,
+            .backward_facing_step = step_options,
         };
     }
 

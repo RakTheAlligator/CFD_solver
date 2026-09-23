@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <numbers>
 
 namespace cfd
 {
@@ -57,16 +58,47 @@ MeshStatistics compute_mesh_statistics(const Mesh &mesh)
     ScalarAccumulator cell_size_accumulator;
     ScalarAccumulator face_length_accumulator;
     ScalarAccumulator cell_quality_accumulator;
+    ScalarAccumulator non_orthogonality_accumulator;
+    ScalarAccumulator neighbor_cell_size_ratio_accumulator;
 
-    for (const FaceAdjacency &adjacency : mesh.face_adjacencies())
+    double maximum_non_orthogonality{-std::numeric_limits<double>::infinity()};
+    double maximum_neighbor_cell_size_ratio{-std::numeric_limits<double>::infinity()};
+
+    for (Index face_id = 0; face_id < mesh.face_count(); ++face_id)
     {
+        const FaceAdjacency &adjacency{mesh.face_adjacencies()[face_id]};
         if (adjacency.is_boundary())
         {
             ++statistics.boundary_face_count;
+            continue;
         }
-        else
+
+        ++statistics.internal_face_count;
+
+        const Point2 &owner_center{mesh.cell_centers()[adjacency.owner]};
+        const Point2 &neighbor_center{mesh.cell_centers()[adjacency.neighbor]};
+        const double displacement_x{neighbor_center.x - owner_center.x};
+        const double displacement_y{neighbor_center.y - owner_center.y};
+        const Vector2 &area_vector{mesh.face_area_vectors()[face_id]};
+        const double cosine{std::clamp((displacement_x * area_vector.x + displacement_y * area_vector.y) /
+                                           (std::hypot(displacement_x, displacement_y) * mesh.face_lengths()[face_id]),
+                                       -1.0, 1.0)};
+        const double non_orthogonality{std::acos(cosine) * 180.0 / std::numbers::pi_v<double>};
+        add_value(non_orthogonality_accumulator, non_orthogonality);
+        if (non_orthogonality > maximum_non_orthogonality)
         {
-            ++statistics.internal_face_count;
+            maximum_non_orthogonality = non_orthogonality;
+            statistics.maximum_non_orthogonality_face_id = face_id;
+        }
+
+        const double owner_size{std::sqrt(mesh.cell_areas()[adjacency.owner])};
+        const double neighbor_size{std::sqrt(mesh.cell_areas()[adjacency.neighbor])};
+        const double neighbor_cell_size_ratio{std::max(owner_size / neighbor_size, neighbor_size / owner_size)};
+        add_value(neighbor_cell_size_ratio_accumulator, neighbor_cell_size_ratio);
+        if (neighbor_cell_size_ratio > maximum_neighbor_cell_size_ratio)
+        {
+            maximum_neighbor_cell_size_ratio = neighbor_cell_size_ratio;
+            statistics.maximum_neighbor_cell_size_ratio_face_id = face_id;
         }
     }
 
@@ -107,6 +139,8 @@ MeshStatistics compute_mesh_statistics(const Mesh &mesh)
     statistics.cell_sizes = finalize_statistics(cell_size_accumulator);
     statistics.face_lengths = finalize_statistics(face_length_accumulator);
     statistics.cell_quality = finalize_statistics(cell_quality_accumulator);
+    statistics.internal_face_non_orthogonality_degrees = finalize_statistics(non_orthogonality_accumulator);
+    statistics.internal_face_neighbor_cell_size_ratios = finalize_statistics(neighbor_cell_size_ratio_accumulator);
 
     return statistics;
 }
