@@ -236,7 +236,12 @@ if(BUILD_VERIFICATION)
         cfd_incompressible_simple_kovasznay
         verification/IncompressibleSimpleKovasznay.cpp
     )
-    
+
+    cfd_add_verification(
+        cfd_verify_backward_facing_step
+        verification/IncompressibleSimpleBackwardFacingStep.cpp
+    )
+
     cfd_add_verification(
         cfd_incompressible_simple_gmsh_poiseuille
         verification/IncompressibleSimpleGmshPoiseuille.cpp
@@ -472,8 +477,20 @@ if(BUILD_TESTING)
         tests/VerificationStatisticsTests.cpp
     )
 
+    cfd_add_test(
+        cfd_backward_facing_step_verification_tests
+        backward_facing_step_verification
+        tests/BackwardFacingStepVerificationTests.cpp
+    )
+
     target_include_directories(
         cfd_verification_statistics_tests
+        PRIVATE
+            ${PROJECT_SOURCE_DIR}/verification
+    )
+
+    target_include_directories(
+        cfd_backward_facing_step_verification_tests
         PRIVATE
             ${PROJECT_SOURCE_DIR}/verification
     )
