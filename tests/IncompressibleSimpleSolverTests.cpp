@@ -28,8 +28,10 @@ namespace
 {
 
 using cfd::test::require;
+using cfd::test::require_near;
 using cfd::test::require_throws;
 using cfd::test::require_throws_with_message;
+using cfd::test::test_tolerance;
 
 constexpr cfd::BoundaryId bottom_boundary_id{0};
 constexpr cfd::BoundaryId right_boundary_id{1};
@@ -216,13 +218,22 @@ void test_constructor_and_options_validation()
         "SIMPLE accepted zero outer iterations.");
     options = test_options();
     options.momentum_relaxation_factor = 0.7;
-    require_throws<std::invalid_argument>(
-        [&]() { cfd::IncompressibleSimpleSolver solver{mesh, 1.0, 0.1, cfd::ScalarConvectionScheme::Linear, options}; },
-        "SIMPLE v1 accepted momentum under-relaxation.");
+    const cfd::IncompressibleSimpleSolver momentum_relaxed_solver{mesh, 1.0, 0.1, cfd::ScalarConvectionScheme::Linear,
+                                                                  options};
+    static_cast<void>(momentum_relaxed_solver);
 
     for (const double invalid_factor :
-         {0.0, -1.0, 1.1, std::numeric_limits<double>::quiet_NaN(), std::numeric_limits<double>::infinity()})
+         {0.0, -1.0, 1.1, std::numeric_limits<double>::quiet_NaN(), std::numeric_limits<double>::infinity(),
+          -std::numeric_limits<double>::infinity()})
     {
+        options = test_options();
+        options.momentum_relaxation_factor = invalid_factor;
+        require_throws<std::invalid_argument>(
+            [&]() {
+                cfd::IncompressibleSimpleSolver solver{mesh, 1.0, 0.1, cfd::ScalarConvectionScheme::Linear, options};
+            },
+            "SIMPLE accepted an invalid momentum relaxation factor.");
+
         options = test_options();
         options.pressure_relaxation_factor = invalid_factor;
         require_throws<std::invalid_argument>(
@@ -491,7 +502,8 @@ struct OneIterationFluxResult
 
 [[nodiscard]]
 OneIterationFluxResult run_one_iteration_with_flux_relaxation(const cfd::Mesh &mesh, const double relaxation_factor,
-                                                              const std::vector<double> &initial_mass_flux)
+                                                              const std::vector<double> &initial_mass_flux,
+                                                              const double momentum_relaxation_factor = 1.0)
 {
     cfd::CellVelocityField velocity{mesh.cell_count()};
     cfd::CellScalarField pressure{mesh.cell_count()};
@@ -499,11 +511,96 @@ OneIterationFluxResult run_one_iteration_with_flux_relaxation(const cfd::Mesh &m
     std::copy(initial_mass_flux.begin(), initial_mass_flux.end(), mass_flux.values().begin());
     cfd::IncompressibleSimpleOptions options{test_options()};
     options.maximum_iterations = 1;
+    options.momentum_relaxation_factor = momentum_relaxation_factor;
     options.velocity_relative_tolerance = 1.0e-14;
     options.rhie_chow_flux_relaxation_factor = relaxation_factor;
     const cfd::IncompressibleSimpleResult result{
         solve_pressure_driven_channel(mesh, options, velocity, pressure, mass_flux)};
     return {result, {mass_flux.values().begin(), mass_flux.values().end()}};
+}
+
+void test_momentum_relaxation_preserves_the_converged_channel_solution()
+{
+    cfd::MeshBuildResult build_result{cfd::build_mesh(make_channel_raw_mesh(8, 4))};
+    const cfd::Mesh &mesh{build_result.mesh};
+
+    cfd::CellVelocityField reference_velocity{mesh.cell_count()};
+    cfd::CellScalarField reference_pressure{mesh.cell_count()};
+    cfd::FaceFluxField reference_mass_flux{mesh.face_count()};
+    cfd::IncompressibleSimpleOptions reference_options{test_options()};
+    reference_options.maximum_iterations = 1000;
+    reference_options.rhie_chow_flux_relaxation_factor = 1.0;
+    const cfd::IncompressibleSimpleResult reference_result{solve_pressure_driven_channel(
+        mesh, reference_options, reference_velocity, reference_pressure, reference_mass_flux, false)};
+    require(reference_result.converged, "The alpha_u=1 channel reference did not converge.");
+
+    cfd::CellVelocityField relaxed_velocity{mesh.cell_count()};
+    cfd::CellScalarField relaxed_pressure{mesh.cell_count()};
+    cfd::FaceFluxField relaxed_mass_flux{mesh.face_count()};
+    cfd::IncompressibleSimpleOptions relaxed_options{reference_options};
+    relaxed_options.momentum_relaxation_factor = 0.7;
+    const cfd::IncompressibleSimpleResult relaxed_result{solve_pressure_driven_channel(
+        mesh, relaxed_options, relaxed_velocity, relaxed_pressure, relaxed_mass_flux, false)};
+    require(relaxed_result.converged, "The alpha_u=0.7, alpha_rc=1 channel did not converge.");
+
+    constexpr double solution_tolerance{1.0e-8};
+    for (cfd::Index cell_id = 0; cell_id < mesh.cell_count(); ++cell_id)
+    {
+        require_near(relaxed_velocity.u()[cell_id], reference_velocity.u()[cell_id], solution_tolerance,
+                     "Momentum relaxation changed the converged channel u velocity.");
+        require_near(relaxed_velocity.v()[cell_id], reference_velocity.v()[cell_id], solution_tolerance,
+                     "Momentum relaxation changed the converged channel v velocity.");
+        require_near(relaxed_pressure[cell_id], reference_pressure[cell_id], solution_tolerance,
+                     "Momentum relaxation changed the converged channel pressure.");
+    }
+    for (cfd::Index face_id = 0; face_id < mesh.face_count(); ++face_id)
+    {
+        require_near(relaxed_mass_flux[face_id], reference_mass_flux[face_id], solution_tolerance,
+                     "Momentum relaxation changed a converged channel mass flux.");
+    }
+
+    cfd::CellVelocityField jointly_relaxed_velocity{mesh.cell_count()};
+    cfd::CellScalarField jointly_relaxed_pressure{mesh.cell_count()};
+    cfd::FaceFluxField jointly_relaxed_mass_flux{mesh.face_count()};
+    cfd::IncompressibleSimpleOptions jointly_relaxed_options{relaxed_options};
+    jointly_relaxed_options.rhie_chow_flux_relaxation_factor = 0.3;
+    const cfd::IncompressibleSimpleResult jointly_relaxed_result{
+        solve_pressure_driven_channel(mesh, jointly_relaxed_options, jointly_relaxed_velocity, jointly_relaxed_pressure,
+                                      jointly_relaxed_mass_flux, false)};
+    require(jointly_relaxed_result.converged, "The alpha_u=0.7, alpha_rc=0.3 channel did not converge.");
+    for (cfd::Index cell_id = 0; cell_id < mesh.cell_count(); ++cell_id)
+    {
+        require_near(jointly_relaxed_velocity.u()[cell_id], reference_velocity.u()[cell_id], solution_tolerance,
+                     "Combined momentum/flux relaxation changed the converged channel u velocity.");
+        require_near(jointly_relaxed_velocity.v()[cell_id], reference_velocity.v()[cell_id], solution_tolerance,
+                     "Combined momentum/flux relaxation changed the converged channel v velocity.");
+        require_near(jointly_relaxed_pressure[cell_id], reference_pressure[cell_id], solution_tolerance,
+                     "Combined momentum/flux relaxation changed the converged channel pressure.");
+    }
+    for (cfd::Index face_id = 0; face_id < mesh.face_count(); ++face_id)
+    {
+        require_near(jointly_relaxed_mass_flux[face_id], reference_mass_flux[face_id], solution_tolerance,
+                     "Combined momentum/flux relaxation changed a converged channel mass flux.");
+    }
+}
+
+void test_rhie_chow_residual_is_measured_before_flux_relaxation()
+{
+    cfd::MeshBuildResult build_result{cfd::build_mesh(make_channel_raw_mesh(2, 2))};
+    const cfd::Mesh &mesh{build_result.mesh};
+    const std::vector<double> initial_mass_flux(mesh.face_count());
+    constexpr double momentum_relaxation_factor{0.7};
+
+    const OneIterationFluxResult unrelaxed_flux{
+        run_one_iteration_with_flux_relaxation(mesh, 1.0, initial_mass_flux, momentum_relaxation_factor)};
+    const OneIterationFluxResult relaxed_flux{
+        run_one_iteration_with_flux_relaxation(mesh, 0.3, initial_mass_flux, momentum_relaxation_factor)};
+
+    require(unrelaxed_flux.solve_result.rhie_chow_flux_relative_residual > 0.0,
+            "The momentum-relaxed fixture produced a zero Rhie-Chow fixed-point residual.");
+    require_near(unrelaxed_flux.solve_result.rhie_chow_flux_relative_residual,
+                 relaxed_flux.solve_result.rhie_chow_flux_relative_residual, test_tolerance,
+                 "Rhie-Chow flux relaxation changed the pre-relaxation fixed-point residual.");
 }
 
 void test_reports_each_completed_iteration()
@@ -789,6 +886,10 @@ int main()
     failure_count +=
         cfd::test::run_test("SIMPLE FixedPressure anchored path", test_fixed_pressure_anchored_zero_flow_path);
     failure_count += cfd::test::run_test("SIMPLE solve input validation", test_input_validation_precedes_iterations);
+    failure_count += cfd::test::run_test("SIMPLE momentum-relaxation fixed point",
+                                         test_momentum_relaxation_preserves_the_converged_channel_solution);
+    failure_count += cfd::test::run_test("SIMPLE Rhie-Chow residual before flux relaxation",
+                                         test_rhie_chow_residual_is_measured_before_flux_relaxation);
     failure_count += cfd::test::run_test("SIMPLE p-prime gradient boundary mapping",
                                          test_pressure_correction_gradient_boundary_mapping);
     failure_count += cfd::test::run_test("SIMPLE completed-iteration callback", test_reports_each_completed_iteration);

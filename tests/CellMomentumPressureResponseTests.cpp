@@ -22,6 +22,7 @@ using cfd::test::make_two_triangle_raw_mesh;
 using cfd::test::require;
 using cfd::test::require_near;
 using cfd::test::require_throws;
+using cfd::test::test_tolerance;
 
 static_assert(!std::is_default_constructible_v<cfd::CellMomentumPressureResponse>);
 static_assert(std::is_copy_constructible_v<cfd::CellMomentumPressureResponse>);
@@ -127,6 +128,28 @@ void test_computes_one_cell_response_from_independent_diagonals()
     require_near(response.u()[0], area / u_diagonal, 0.0, "The one-cell u-momentum pressure response is incorrect.");
     require_near(response.v()[0], area / v_diagonal, 0.0, "The one-cell v-momentum pressure response is incorrect.");
     require(response.u()[0] != response.v()[0], "Different component diagonals produced equal responses.");
+}
+
+void test_relaxed_diagonal_scales_pressure_response()
+{
+    cfd::MeshBuildResult build_result{cfd::build_mesh(make_single_quadrilateral_raw_mesh())};
+    const cfd::Mesh &mesh{build_result.mesh};
+    cfd::ScalarLinearSystem u_system{mesh};
+    cfd::ScalarLinearSystem v_system{mesh};
+    constexpr double original_u_diagonal{2.0};
+    constexpr double original_v_diagonal{5.0};
+    constexpr double relaxation_factor{0.4};
+    u_system.diagonal()[0] = original_u_diagonal / relaxation_factor;
+    v_system.diagonal()[0] = original_v_diagonal / relaxation_factor;
+    cfd::CellMomentumPressureResponse response{mesh.cell_count()};
+
+    cfd::compute_momentum_pressure_response(mesh, u_system, v_system, response);
+
+    const double area{mesh.cell_areas()[0]};
+    require_near(response.u()[0], relaxation_factor * area / original_u_diagonal, test_tolerance,
+                 "The relaxed u diagonal produced an incorrect pressure response.");
+    require_near(response.v()[0], relaxation_factor * area / original_v_diagonal, test_tolerance,
+                 "The relaxed v diagonal produced an incorrect pressure response.");
 }
 
 void test_multiple_cells_use_current_diagonals_and_overwrite_output()
@@ -283,6 +306,8 @@ int main()
     failure_count += cfd::test::run_test("momentum pressure-response deep copy", test_copy_construction_is_deep);
     failure_count += cfd::test::run_test("one-cell momentum pressure response",
                                          test_computes_one_cell_response_from_independent_diagonals);
+    failure_count += cfd::test::run_test("relaxed-diagonal momentum pressure response",
+                                         test_relaxed_diagonal_scales_pressure_response);
     failure_count += cfd::test::run_test("multi-cell repeated momentum pressure response",
                                          test_multiple_cells_use_current_diagonals_and_overwrite_output);
     failure_count += cfd::test::run_test("momentum pressure-response input immutability",

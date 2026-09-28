@@ -198,7 +198,7 @@ void test_reuses_scalar_operators_and_alpha_one_preserves_unrelaxed_assembly()
 
 void test_equation_under_relaxation()
 {
-    cfd::MeshBuildResult build_result{cfd::build_mesh(make_single_quadrilateral_raw_mesh())};
+    cfd::MeshBuildResult build_result{cfd::build_mesh(make_two_cell_sheared_raw_mesh())};
     const cfd::Mesh &mesh{build_result.mesh};
     const cfd::IncompressibleMomentumAssembler assembler{mesh, 2.0};
     const cfd::CellVelocityField previous_velocity{mesh.cell_count(), {3.0, -4.0}};
@@ -220,24 +220,44 @@ void test_equation_under_relaxation()
                        v_boundary_conditions, mass_flux, relaxation_factor, relaxed_u_system, relaxed_v_system);
 
     const double relaxation_rhs_factor{(1.0 - relaxation_factor) / relaxation_factor};
-    require_near(unrelaxed_u_system.diagonal()[0], 16.0, test_tolerance,
-                 "The relaxation fixture has an unexpected unrelaxed u diagonal.");
-    require_near(unrelaxed_v_system.diagonal()[0], 16.0, test_tolerance,
-                 "The relaxation fixture has an unexpected unrelaxed v diagonal.");
-    require_near(unrelaxed_u_system.rhs()[0], 16.0, test_tolerance,
-                 "The relaxation fixture has an unexpected unrelaxed u RHS.");
-    require_near(unrelaxed_v_system.rhs()[0], 32.0, test_tolerance,
-                 "The relaxation fixture has an unexpected unrelaxed v RHS.");
-    require_near(relaxed_u_system.diagonal()[0], unrelaxed_u_system.diagonal()[0] / relaxation_factor, test_tolerance,
-                 "The u-momentum diagonal was not equation-under-relaxed.");
-    require_near(relaxed_v_system.diagonal()[0], unrelaxed_v_system.diagonal()[0] / relaxation_factor, test_tolerance,
-                 "The v-momentum diagonal was not equation-under-relaxed.");
-    require_near(relaxed_u_system.rhs()[0],
-                 unrelaxed_u_system.rhs()[0] + relaxation_rhs_factor * unrelaxed_u_system.diagonal()[0] * 3.0,
-                 test_tolerance, "The u-momentum relaxation source is incorrect.");
-    require_near(relaxed_v_system.rhs()[0],
-                 unrelaxed_v_system.rhs()[0] + relaxation_rhs_factor * unrelaxed_v_system.diagonal()[0] * -4.0,
-                 test_tolerance, "The v-momentum relaxation source is incorrect.");
+    for (cfd::Index cell_id = 0; cell_id < mesh.cell_count(); ++cell_id)
+    {
+        require_near(relaxed_u_system.diagonal()[cell_id], unrelaxed_u_system.diagonal()[cell_id] / relaxation_factor,
+                     test_tolerance, "The u-momentum diagonal was not equation-under-relaxed.");
+        require_near(relaxed_v_system.diagonal()[cell_id], unrelaxed_v_system.diagonal()[cell_id] / relaxation_factor,
+                     test_tolerance, "The v-momentum diagonal was not equation-under-relaxed.");
+        require_near(relaxed_u_system.rhs()[cell_id],
+                     unrelaxed_u_system.rhs()[cell_id] + relaxation_rhs_factor *
+                                                             unrelaxed_u_system.diagonal()[cell_id] *
+                                                             previous_velocity.u()[cell_id],
+                     test_tolerance, "The u-momentum relaxation source is incorrect.");
+        require_near(relaxed_v_system.rhs()[cell_id],
+                     unrelaxed_v_system.rhs()[cell_id] + relaxation_rhs_factor *
+                                                             unrelaxed_v_system.diagonal()[cell_id] *
+                                                             previous_velocity.v()[cell_id],
+                     test_tolerance, "The v-momentum relaxation source is incorrect.");
+    }
+
+    bool has_nonzero_off_diagonal{};
+    for (cfd::Index face_id = 0; face_id < mesh.face_count(); ++face_id)
+    {
+        require_near(relaxed_u_system.owner_neighbor_coefficients()[face_id],
+                     unrelaxed_u_system.owner_neighbor_coefficients()[face_id], 0.0,
+                     "Momentum relaxation changed a u owner-neighbor coefficient.");
+        require_near(relaxed_u_system.neighbor_owner_coefficients()[face_id],
+                     unrelaxed_u_system.neighbor_owner_coefficients()[face_id], 0.0,
+                     "Momentum relaxation changed a u neighbor-owner coefficient.");
+        require_near(relaxed_v_system.owner_neighbor_coefficients()[face_id],
+                     unrelaxed_v_system.owner_neighbor_coefficients()[face_id], 0.0,
+                     "Momentum relaxation changed a v owner-neighbor coefficient.");
+        require_near(relaxed_v_system.neighbor_owner_coefficients()[face_id],
+                     unrelaxed_v_system.neighbor_owner_coefficients()[face_id], 0.0,
+                     "Momentum relaxation changed a v neighbor-owner coefficient.");
+        has_nonzero_off_diagonal = has_nonzero_off_diagonal ||
+                                   unrelaxed_u_system.owner_neighbor_coefficients()[face_id] != 0.0 ||
+                                   unrelaxed_u_system.neighbor_owner_coefficients()[face_id] != 0.0;
+    }
+    require(has_nonzero_off_diagonal, "The relaxation fixture has no nonzero off-diagonal coefficient.");
 }
 
 void test_non_orthogonal_correction_reuses_diffusion_operator()

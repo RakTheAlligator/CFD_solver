@@ -227,6 +227,92 @@ void test_constructor_rejects_invalid_density()
     }
 }
 
+void test_momentum_relaxation_applies_fixed_pressure_majumdar_correction()
+{
+    cfd::MeshBuildResult build_result{cfd::build_mesh(make_single_cell_rectangle_raw_mesh())};
+    const cfd::Mesh &mesh{build_result.mesh};
+    constexpr double density{1.7};
+    constexpr double relaxation_factor{0.4};
+    const cfd::RhieChowBoundaryFaceInterpolation interpolation{mesh, density};
+    const cfd::CellVelocityField velocity{mesh.cell_count(), {1.25, -0.75}};
+    const cfd::CellScalarField pressure{mesh.cell_count(), 12.0};
+    const cfd::CellVectorField pressure_gradient{mesh.cell_count()};
+    cfd::CellMomentumPressureResponse momentum_response{mesh.cell_count()};
+    momentum_response.u()[0] = 0.8;
+    momentum_response.v()[0] = 1.4;
+    const cfd::ScalarBoundaryConditions pressure_boundary_conditions{
+        make_pressure_boundary_conditions(mesh, right_boundary_id, 12.0)};
+    const cfd::PressureCorrectionBoundaryConditions pressure_correction_boundary_conditions{
+        make_pressure_correction_boundary_conditions(mesh, right_boundary_id)};
+
+    cfd::FaceFluxField naive_mass_flux{mesh.face_count()};
+    cfd::FacePressureResponseField naive_face_response{mesh.face_count()};
+    interpolation.update_fixed_pressure_boundaries(
+        velocity, pressure, pressure_gradient, momentum_response, pressure_boundary_conditions,
+        pressure_correction_boundary_conditions, naive_mass_flux, naive_face_response);
+
+    const cfd::CellVelocityField previous_velocity{mesh.cell_count(), {-2.0, 0.5}};
+    cfd::FaceFluxField previous_mass_flux{mesh.face_count(), std::numeric_limits<double>::quiet_NaN()};
+    const cfd::Index face_id{boundary_face_id(mesh, right_boundary_id)};
+    previous_mass_flux[face_id] = 7.25;
+    cfd::FaceFluxField corrected_mass_flux{mesh.face_count()};
+    cfd::FacePressureResponseField corrected_face_response{mesh.face_count()};
+    seed_outputs(corrected_mass_flux, corrected_face_response);
+
+    interpolation.update_fixed_pressure_boundaries(velocity, previous_velocity, pressure, pressure_gradient,
+                                                   momentum_response, pressure_boundary_conditions,
+                                                   pressure_correction_boundary_conditions, previous_mass_flux,
+                                                   relaxation_factor, corrected_mass_flux, corrected_face_response);
+
+    const double previous_owner_mass_flux{
+        density * dot({previous_velocity.u()[0], previous_velocity.v()[0]}, mesh.face_area_vectors()[face_id])};
+    const double expected_mass_flux{naive_mass_flux[face_id] +
+                                    (1.0 - relaxation_factor) *
+                                        (previous_mass_flux[face_id] - previous_owner_mass_flux)};
+    require_near(corrected_mass_flux[face_id], expected_mass_flux, test_tolerance,
+                 "FixedPressure Majumdar mass-flux correction is incorrect.");
+    require_near(corrected_face_response[face_id], naive_face_response[face_id], 0.0,
+                 "FixedPressure Majumdar correction changed the face pressure response.");
+    for (cfd::Index other_face_id = 0; other_face_id < mesh.face_count(); ++other_face_id)
+    {
+        if (other_face_id == face_id)
+        {
+            continue;
+        }
+        require(corrected_mass_flux[other_face_id] == 101.0 + static_cast<double>(other_face_id),
+                "Majumdar interpolation read or modified a FixedMassFlux mass flux.");
+        require(corrected_face_response[other_face_id] == -201.0 - static_cast<double>(other_face_id),
+                "Majumdar interpolation modified a FixedMassFlux pressure response.");
+    }
+
+    const cfd::CellVelocityField unused_previous_velocity{
+        mesh.cell_count(), {std::numeric_limits<double>::quiet_NaN(), std::numeric_limits<double>::quiet_NaN()}};
+    const cfd::FaceFluxField unused_previous_mass_flux{mesh.face_count(), std::numeric_limits<double>::quiet_NaN()};
+    cfd::FaceFluxField alpha_one_mass_flux{mesh.face_count()};
+    cfd::FacePressureResponseField alpha_one_face_response{mesh.face_count()};
+    interpolation.update_fixed_pressure_boundaries(velocity, unused_previous_velocity, pressure, pressure_gradient,
+                                                   momentum_response, pressure_boundary_conditions,
+                                                   pressure_correction_boundary_conditions, unused_previous_mass_flux,
+                                                   1.0, alpha_one_mass_flux, alpha_one_face_response);
+    require_near(alpha_one_mass_flux[face_id], naive_mass_flux[face_id], 0.0,
+                 "alpha_u=1 changed the FixedPressure Rhie-Chow mass flux.");
+    require_near(alpha_one_face_response[face_id], naive_face_response[face_id], 0.0,
+                 "alpha_u=1 changed the FixedPressure face pressure response.");
+
+    cfd::FaceFluxField invalid_previous_mass_flux{previous_mass_flux};
+    invalid_previous_mass_flux[face_id] = std::numeric_limits<double>::quiet_NaN();
+    seed_outputs(corrected_mass_flux, corrected_face_response);
+    require_rejected_without_output_mutation<std::runtime_error>(
+        [&]() {
+            interpolation.update_fixed_pressure_boundaries(
+                velocity, previous_velocity, pressure, pressure_gradient, momentum_response,
+                pressure_boundary_conditions, pressure_correction_boundary_conditions, invalid_previous_mass_flux,
+                relaxation_factor, corrected_mass_flux, corrected_face_response);
+        },
+        corrected_mass_flux, corrected_face_response,
+        "FixedPressure Majumdar interpolation accepted an invalid previous flux.");
+}
+
 void test_constant_pressure_and_orthogonal_response()
 {
     cfd::MeshBuildResult build_result{cfd::build_mesh(make_single_cell_rectangle_raw_mesh())};
@@ -671,6 +757,8 @@ int main()
 
     failure_count +=
         cfd::test::run_test("boundary Rhie-Chow density validation", test_constructor_rejects_invalid_density);
+    failure_count += cfd::test::run_test("boundary Rhie-Chow momentum-relaxation Majumdar correction",
+                                         test_momentum_relaxation_applies_fixed_pressure_majumdar_correction);
     failure_count += cfd::test::run_test("boundary Rhie-Chow constant pressure and orthogonal response",
                                          test_constant_pressure_and_orthogonal_response);
     failure_count += cfd::test::run_test("boundary Rhie-Chow non-orthogonal anisotropic response",

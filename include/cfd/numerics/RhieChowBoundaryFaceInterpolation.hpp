@@ -69,6 +69,22 @@ class RhieChowBoundaryFaceInterpolation
         const PressureCorrectionBoundaryConditions &pressure_correction_boundary_conditions, FaceFluxField &mass_flux,
         FacePressureResponseField &face_pressure_response) const;
 
+    /// Overwrites FixedPressure outputs with momentum relaxation.
+    ///
+    /// For `alpha_u < 1`, `F_b_star` additionally receives
+    /// `(1 - alpha_u) * (F_previous - rho * U_previous,P . S_b)`.
+    /// The pressure response is unchanged by this Majumdar correction. At
+    /// `alpha_u == 1`, previous values are not used and the unrelaxed path is
+    /// preserved exactly. Other boundary and internal entries remain under
+    /// caller ownership.
+    void update_fixed_pressure_boundaries(
+        const CellVelocityField &velocity, const CellVelocityField &previous_velocity, const CellScalarField &pressure,
+        const CellVectorField &pressure_gradient, const CellMomentumPressureResponse &momentum_response,
+        const ScalarBoundaryConditions &pressure_boundary_conditions,
+        const PressureCorrectionBoundaryConditions &pressure_correction_boundary_conditions,
+        const FaceFluxField &previous_mass_flux, double momentum_relaxation_factor, FaceFluxField &mass_flux,
+        FacePressureResponseField &face_pressure_response) const;
+
   private:
     const Mesh *mesh_;
     double density_;

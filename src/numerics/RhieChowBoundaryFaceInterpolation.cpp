@@ -67,6 +67,19 @@ void RhieChowBoundaryFaceInterpolation::update_fixed_pressure_boundaries(
     const PressureCorrectionBoundaryConditions &pressure_correction_boundary_conditions, FaceFluxField &mass_flux,
     FacePressureResponseField &face_pressure_response) const
 {
+    update_fixed_pressure_boundaries(velocity, velocity, pressure, pressure_gradient, momentum_response,
+                                     pressure_boundary_conditions, pressure_correction_boundary_conditions, mass_flux,
+                                     1.0, mass_flux, face_pressure_response);
+}
+
+void RhieChowBoundaryFaceInterpolation::update_fixed_pressure_boundaries(
+    const CellVelocityField &velocity, const CellVelocityField &previous_velocity, const CellScalarField &pressure,
+    const CellVectorField &pressure_gradient, const CellMomentumPressureResponse &momentum_response,
+    const ScalarBoundaryConditions &pressure_boundary_conditions,
+    const PressureCorrectionBoundaryConditions &pressure_correction_boundary_conditions,
+    const FaceFluxField &previous_mass_flux, const double momentum_relaxation_factor, FaceFluxField &mass_flux,
+    FacePressureResponseField &face_pressure_response) const
+{
     const Index cell_count{mesh_->cell_count()};
     const Index face_count{mesh_->face_count()};
     const Index boundary_count{mesh_->boundary_groups().size()};
@@ -74,6 +87,11 @@ void RhieChowBoundaryFaceInterpolation::update_fixed_pressure_boundaries(
     if (velocity.size() != cell_count || velocity.u().size() != cell_count || velocity.v().size() != cell_count)
     {
         throw std::invalid_argument("Boundary Rhie-Chow velocity size must match the mesh cell count.");
+    }
+    if (previous_velocity.size() != cell_count || previous_velocity.u().size() != cell_count ||
+        previous_velocity.v().size() != cell_count)
+    {
+        throw std::invalid_argument("Previous boundary Rhie-Chow velocity size must match the mesh cell count.");
     }
     if (pressure.size() != cell_count)
     {
@@ -96,6 +114,15 @@ void RhieChowBoundaryFaceInterpolation::update_fixed_pressure_boundaries(
     {
         throw std::invalid_argument("Pressure-correction boundary-condition count must match the mesh boundary count.");
     }
+    if (previous_mass_flux.size() != face_count)
+    {
+        throw std::invalid_argument("Previous boundary Rhie-Chow mass-flux size must match the mesh face count.");
+    }
+    if (!std::isfinite(momentum_relaxation_factor) || !(momentum_relaxation_factor > 0.0) ||
+        !(momentum_relaxation_factor <= 1.0))
+    {
+        throw std::invalid_argument("Boundary Rhie-Chow momentum relaxation factor must be finite and in (0, 1].");
+    }
     if (mass_flux.size() != face_count)
     {
         throw std::invalid_argument("Boundary Rhie-Chow mass-flux size must match the mesh face count.");
@@ -107,6 +134,10 @@ void RhieChowBoundaryFaceInterpolation::update_fixed_pressure_boundaries(
 
     const auto u_values{velocity.u().values()};
     const auto v_values{velocity.v().values()};
+    const auto previous_u_values{previous_velocity.u().values()};
+    const auto previous_v_values{previous_velocity.v().values()};
+    const auto previous_mass_flux_values{previous_mass_flux.values()};
+    const bool relax_momentum{momentum_relaxation_factor != 1.0};
     const auto pressure_values{pressure.values()};
     const auto gradient_values{pressure_gradient.values()};
     const auto u_response_values{momentum_response.u().values()};
@@ -194,6 +225,20 @@ void RhieChowBoundaryFaceInterpolation::update_fixed_pressure_boundaries(
                                           pressure_coefficient * pressure_difference -
                                           dot(owner_gradient, tangential_response)};
         const double integrated_mass_flux{density_ * flux_without_density};
+        double majumdar_mass_flux{integrated_mass_flux};
+        if (relax_momentum)
+        {
+            const Vector2 previous_owner_velocity{previous_u_values[owner_id], previous_v_values[owner_id]};
+            const double previous_flux{previous_mass_flux_values[face_id]};
+            const double previous_owner_mass_flux{density_ * dot(previous_owner_velocity, area_vector)};
+            majumdar_mass_flux += (1.0 - momentum_relaxation_factor) * (previous_flux - previous_owner_mass_flux);
+            if (!std::isfinite(previous_owner_velocity.x) || !std::isfinite(previous_owner_velocity.y) ||
+                !std::isfinite(previous_flux) || !std::isfinite(previous_owner_mass_flux) ||
+                !std::isfinite(majumdar_mass_flux))
+            {
+                throw_invalid_boundary_face_result(face_id, "the Majumdar-corrected mass flux is non-finite.");
+            }
+        }
         if (!std::isfinite(pressure_free_velocity.x) || !std::isfinite(pressure_free_velocity.y) ||
             !std::isfinite(pressure_difference) || !std::isfinite(flux_without_density) ||
             !std::isfinite(integrated_mass_flux))
@@ -201,7 +246,7 @@ void RhieChowBoundaryFaceInterpolation::update_fixed_pressure_boundaries(
             throw_invalid_boundary_face_result(face_id, "the interpolated mass flux is non-finite.");
         }
 
-        return BoundaryFaceResult{integrated_mass_flux, integrated_pressure_response};
+        return BoundaryFaceResult{majumdar_mass_flux, integrated_pressure_response};
     };
 
     // Validate every FixedPressure result before either caller-owned output changes.

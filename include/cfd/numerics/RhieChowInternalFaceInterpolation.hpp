@@ -40,7 +40,8 @@ class RhieChowInternalFaceInterpolation
 
     ~RhieChowInternalFaceInterpolation() = default;
 
-    /// Overwrites the mass flux and pressure response on every internal face.
+    /// Overwrites mass flux and pressure response on every internal face using
+    /// the exact unrelaxed momentum path.
     ///
     /// Boundary entries are left exactly unchanged. All inputs and computed
     /// internal-face results are validated before either output is modified.
@@ -53,6 +54,20 @@ class RhieChowInternalFaceInterpolation
                                const CellVectorField &pressure_gradient,
                                const CellMomentumPressureResponse &momentum_response, FaceFluxField &mass_flux,
                                FacePressureResponseField &face_pressure_response) const;
+
+    /// Overwrites mass flux and pressure response with momentum relaxation.
+    ///
+    /// For `alpha_u < 1`, the naive Rhie-Chow flux receives the additive
+    /// Majumdar correction
+    /// `(1 - alpha_u) * (F_previous - rho * I(U_previous) . S_f)`.
+    /// The face pressure response remains based on the supplied relaxed cell
+    /// momentum response. At `alpha_u == 1`, previous values are not used and
+    /// the unrelaxed path is preserved exactly.
+    void update_internal_faces(const CellVelocityField &velocity, const CellVelocityField &previous_velocity,
+                               const CellScalarField &pressure, const CellVectorField &pressure_gradient,
+                               const CellMomentumPressureResponse &momentum_response,
+                               const FaceFluxField &previous_mass_flux, double momentum_relaxation_factor,
+                               FaceFluxField &mass_flux, FacePressureResponseField &face_pressure_response) const;
 
   private:
     struct InternalFaceGeometry

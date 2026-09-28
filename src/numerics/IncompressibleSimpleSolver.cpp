@@ -40,7 +40,7 @@ void require_connected_cell_domain(const Mesh &mesh)
     const Index cell_count{mesh.cell_count()};
     if (cell_count == 0)
     {
-        throw std::invalid_argument("SIMPLE v1 requires a single connected cell domain.");
+        throw std::invalid_argument("SIMPLE requires a single connected cell domain.");
     }
 
     std::vector<bool> reached(cell_count);
@@ -78,7 +78,7 @@ void require_connected_cell_domain(const Mesh &mesh)
 
     if (reached_cell_count != cell_count)
     {
-        throw std::invalid_argument("SIMPLE v1 requires a single connected cell domain.");
+        throw std::invalid_argument("SIMPLE requires a single connected cell domain.");
     }
 }
 
@@ -99,11 +99,10 @@ IncompressibleSimpleOptions validate_options(IncompressibleSimpleOptions options
     {
         throw std::invalid_argument("SIMPLE maximum iterations must be nonzero.");
     }
-    if (options.momentum_relaxation_factor != 1.0)
+    if (!std::isfinite(options.momentum_relaxation_factor) || !(options.momentum_relaxation_factor > 0.0) ||
+        !(options.momentum_relaxation_factor <= 1.0))
     {
-        throw std::invalid_argument(
-            "SIMPLE v1 requires a momentum relaxation factor of exactly 1 until relaxation-consistent momentum "
-            "interpolation is implemented.");
+        throw std::invalid_argument("SIMPLE momentum relaxation factor must be finite and in (0, 1].");
     }
     if (!std::isfinite(options.pressure_relaxation_factor) || !(options.pressure_relaxation_factor > 0.0) ||
         !(options.pressure_relaxation_factor <= 1.0))
@@ -457,20 +456,24 @@ IncompressibleSimpleResult IncompressibleSimpleSolver::solve(
         const SimpleClock::time_point momentum_response_start{SimpleClock::now()};
         compute_momentum_pressure_response(*mesh_, u_momentum_system_, v_momentum_system_, momentum_response_);
         timings.momentum_pressure_response_seconds += elapsed_seconds_since(momentum_response_start);
+        const bool relax_momentum{options_.momentum_relaxation_factor != 1.0};
         const bool relax_rhie_chow_flux{options_.rhie_chow_flux_relaxation_factor != 1.0};
+        const bool preserve_previous_mass_flux{relax_momentum || relax_rhie_chow_flux};
 
         const SimpleClock::time_point rhie_chow_start{SimpleClock::now()};
-        if (relax_rhie_chow_flux)
+        if (preserve_previous_mass_flux)
         {
             std::copy(mass_flux.values().begin(), mass_flux.values().end(), previous_mass_flux_.values().begin());
         }
-        internal_face_interpolation_.update_internal_faces(velocity, pressure, pressure_gradient_, momentum_response_,
-                                                           mass_flux, face_pressure_response_);
+        internal_face_interpolation_.update_internal_faces(
+            velocity, previous_velocity_, pressure, pressure_gradient_, momentum_response_, previous_mass_flux_,
+            options_.momentum_relaxation_factor, mass_flux, face_pressure_response_);
         boundary_face_interpolation_.update_fixed_pressure_boundaries(
-            velocity, pressure, pressure_gradient_, momentum_response_, pressure_boundary_conditions,
-            pressure_correction_boundary_conditions, mass_flux, face_pressure_response_);
+            velocity, previous_velocity_, pressure, pressure_gradient_, momentum_response_,
+            pressure_boundary_conditions, pressure_correction_boundary_conditions, previous_mass_flux_,
+            options_.momentum_relaxation_factor, mass_flux, face_pressure_response_);
         double rhie_chow_flux_relative_residual{};
-        if (relax_rhie_chow_flux)
+        if (preserve_previous_mass_flux)
         {
             const double relaxation_factor{options_.rhie_chow_flux_relaxation_factor};
             const auto face_adjacencies{mesh_->face_adjacencies()};
@@ -500,7 +503,10 @@ IncompressibleSimpleResult IncompressibleSimpleSolver::solve(
 
                 flux_scale = std::max({flux_scale, std::abs(unrelaxed_flux), std::abs(previous_flux)});
 
-                mass_flux[face_id] = relaxation_factor * unrelaxed_flux + (1.0 - relaxation_factor) * previous_flux;
+                if (relax_rhie_chow_flux)
+                {
+                    mass_flux[face_id] = relaxation_factor * unrelaxed_flux + (1.0 - relaxation_factor) * previous_flux;
+                }
             }
 
             if (flux_scale == 0.0)

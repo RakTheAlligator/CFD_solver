@@ -27,16 +27,17 @@ class Mesh;
 class PressureCorrectionBoundaryConditions;
 class ScalarBoundaryConditions;
 
-/// Controls for the steady incompressible SIMPLE v1 iteration.
+/// Controls for the steady incompressible SIMPLE iteration.
 struct IncompressibleSimpleOptions
 {
     Index maximum_iterations{500};
+    /// Algebraic momentum-equation relaxation factor in `(0, 1]`.
     double momentum_relaxation_factor{1.0};
     double pressure_relaxation_factor{0.3};
     /// Relaxes computed integrated owner-oriented Rhie-Chow mass fluxes before pressure correction.
     ///
     /// Internal and `FixedPressure` boundary faces use
-    /// `F_provisional = alpha_rc * F_RhieChow + (1 - alpha_rc) * F_previous`,
+    /// `F_provisional = alpha_rc * F_Majumdar + (1 - alpha_rc) * F_previous`,
     /// where `F_previous` is the corrected flux from the preceding iteration.
     /// `FixedMassFlux` boundary values and face pressure-response coefficients
     /// are unchanged. A value of one preserves the unrelaxed path.
@@ -67,7 +68,6 @@ struct SimpleIterationInfo
     double y_velocity_equation_residual{};
     double velocity_relative_change{};
     /// Relative fixed-point residual of the Rhie-Chow face flux.
-    /// Zero when Rhie-Chow flux relaxation is disabled.
     double rhie_chow_flux_relative_residual{};
     /// Default continuity monitor: provisional continuity before pressure correction.
     double provisional_continuity_relative_residual{};
@@ -114,7 +114,6 @@ struct IncompressibleSimpleResult
     Index iteration_count{};
     double velocity_relative_change{};
     /// Relative fixed-point residual of the Rhie-Chow face flux.
-    /// Zero when Rhie-Chow flux relaxation is disabled.
     double rhie_chow_flux_relative_residual{};
     /// Relative continuity residual of the provisional flux before correction.
     double provisional_continuity_relative_residual{};
@@ -125,16 +124,16 @@ struct IncompressibleSimpleResult
     SimpleTimingBreakdown timings{};
 };
 
-/// Reusable steady incompressible SIMPLE v1 solver.
+/// Reusable steady incompressible SIMPLE solver.
 ///
 /// This class orchestrates the existing momentum, Rhie-Chow,
 /// pressure-correction, field-correction, and linear-solver components. It owns
 /// fixed-cardinality workspace and reuses it across outer iterations.
 ///
-/// SIMPLE v1 deliberately requires a momentum relaxation factor of exactly
-/// one. The current momentum-weighted interpolation uses the final momentum
-/// diagonal and does not yet implement a relaxation-consistent Majumdar
-/// treatment. Pressure under-relaxation remains supported.
+/// Momentum equations are algebraically under-relaxed. Momentum-weighted
+/// interpolation applies the corresponding Majumdar correction using the
+/// iteration-start cell velocity and corrected face flux. Pressure
+/// under-relaxation remains independent.
 ///
 /// Computed provisional face mass fluxes may be relaxed independently after
 /// Rhie-Chow interpolation and before pressure-correction assembly. This is
@@ -150,8 +149,7 @@ class IncompressibleSimpleSolver
     /// Constructs a SIMPLE solver and its fixed workspace.
     ///
     /// @throws std::invalid_argument If a physical coefficient or option is
-    ///         invalid, momentum relaxation differs from one, or the convection
-    ///         scheme is unsupported.
+    ///         invalid or the convection scheme is unsupported.
     /// @throws std::runtime_error If an existing numerical component rejects
     ///         the Mesh geometry.
     IncompressibleSimpleSolver(const Mesh &mesh, double density, double dynamic_viscosity,
@@ -164,9 +162,9 @@ class IncompressibleSimpleSolver
 
     ~IncompressibleSimpleSolver() = default;
 
-    /// Iterates until velocity change and provisional continuity satisfy their
-    /// tolerances and, when Rhie-Chow flux relaxation is enabled, the computed
-    /// face flux has reached its fixed-point tolerance.
+    /// Iterates until velocity relative change, provisional continuity, and the
+    /// momentum-weighted face-flux fixed-point residual simultaneously satisfy
+    /// their tolerances.
     /// Corrected continuity remains available as a diagnostic.
     ///
     /// `FixedPressure` pressure-correction conditions must correspond to
@@ -176,7 +174,7 @@ class IncompressibleSimpleSolver
     ///
     /// For reconstructing `grad(p')` only, `FixedPressure` maps to homogeneous
     /// scalar Dirichlet data and `FixedMassFlux` maps to homogeneous scalar
-    /// Neumann data. The latter is a SIMPLE v1 reconstruction closure for the
+    /// Neumann data. The latter is the current SIMPLE reconstruction closure for the
     /// cell velocity correction: with unequal Cartesian momentum responses it
     /// does not generally imply `(D_P * grad(p')) . S_b = 0`. The discrete
     /// `FixedMassFlux` face correction remains exactly zero independently and

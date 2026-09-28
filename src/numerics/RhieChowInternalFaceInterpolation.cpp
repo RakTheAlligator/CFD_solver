@@ -99,12 +99,27 @@ void RhieChowInternalFaceInterpolation::update_internal_faces(const CellVelocity
                                                               FaceFluxField &mass_flux,
                                                               FacePressureResponseField &face_pressure_response) const
 {
+    update_internal_faces(velocity, velocity, pressure, pressure_gradient, momentum_response, mass_flux, 1.0, mass_flux,
+                          face_pressure_response);
+}
+
+void RhieChowInternalFaceInterpolation::update_internal_faces(
+    const CellVelocityField &velocity, const CellVelocityField &previous_velocity, const CellScalarField &pressure,
+    const CellVectorField &pressure_gradient, const CellMomentumPressureResponse &momentum_response,
+    const FaceFluxField &previous_mass_flux, const double momentum_relaxation_factor, FaceFluxField &mass_flux,
+    FacePressureResponseField &face_pressure_response) const
+{
     const Index cell_count{mesh_->cell_count()};
     const Index face_count{mesh_->face_count()};
 
     if (velocity.size() != cell_count || velocity.u().size() != cell_count || velocity.v().size() != cell_count)
     {
         throw std::invalid_argument("Rhie-Chow velocity size must match the mesh cell count.");
+    }
+    if (previous_velocity.size() != cell_count || previous_velocity.u().size() != cell_count ||
+        previous_velocity.v().size() != cell_count)
+    {
+        throw std::invalid_argument("Previous Rhie-Chow velocity size must match the mesh cell count.");
     }
     if (pressure.size() != cell_count)
     {
@@ -119,6 +134,15 @@ void RhieChowInternalFaceInterpolation::update_internal_faces(const CellVelocity
     {
         throw std::invalid_argument("Rhie-Chow momentum-response size must match the mesh cell count.");
     }
+    if (previous_mass_flux.size() != face_count)
+    {
+        throw std::invalid_argument("Previous Rhie-Chow mass-flux size must match the mesh face count.");
+    }
+    if (!std::isfinite(momentum_relaxation_factor) || !(momentum_relaxation_factor > 0.0) ||
+        !(momentum_relaxation_factor <= 1.0))
+    {
+        throw std::invalid_argument("Rhie-Chow momentum relaxation factor must be finite and in (0, 1].");
+    }
     if (mass_flux.size() != face_count)
     {
         throw std::invalid_argument("Rhie-Chow mass-flux size must match the mesh face count.");
@@ -130,6 +154,10 @@ void RhieChowInternalFaceInterpolation::update_internal_faces(const CellVelocity
 
     const auto u_values{velocity.u().values()};
     const auto v_values{velocity.v().values()};
+    const auto previous_u_values{previous_velocity.u().values()};
+    const auto previous_v_values{previous_velocity.v().values()};
+    const auto previous_mass_flux_values{previous_mass_flux.values()};
+    const bool relax_momentum{momentum_relaxation_factor != 1.0};
     const auto pressure_values{pressure.values()};
     const auto gradient_values{pressure_gradient.values()};
     const auto u_response_values{momentum_response.u().values()};
@@ -140,6 +168,11 @@ void RhieChowInternalFaceInterpolation::update_internal_faces(const CellVelocity
         if (!std::isfinite(u_values[cell_id]) || !std::isfinite(v_values[cell_id]))
         {
             throw_invalid_cell_value(cell_id, "velocity components must be finite.");
+        }
+        if (relax_momentum &&
+            (!std::isfinite(previous_u_values[cell_id]) || !std::isfinite(previous_v_values[cell_id])))
+        {
+            throw_invalid_cell_value(cell_id, "previous velocity components must be finite.");
         }
         if (!std::isfinite(pressure_values[cell_id]))
         {
@@ -225,6 +258,24 @@ void RhieChowInternalFaceInterpolation::update_internal_faces(const CellVelocity
                                           pressure_coefficient * pressure_jump -
                                           dot(face_gradient, tangential_response)};
         const double integrated_mass_flux{density_ * flux_without_density};
+        double majumdar_mass_flux{integrated_mass_flux};
+        if (relax_momentum)
+        {
+            const Vector2 interpolated_previous_velocity{
+                owner_weight * previous_u_values[owner_id] + lambda * previous_u_values[neighbor_id],
+                owner_weight * previous_v_values[owner_id] + lambda * previous_v_values[neighbor_id],
+            };
+            const double previous_flux{previous_mass_flux_values[face_id]};
+            const double interpolated_previous_mass_flux{density_ * dot(interpolated_previous_velocity, area_vector)};
+            majumdar_mass_flux +=
+                (1.0 - momentum_relaxation_factor) * (previous_flux - interpolated_previous_mass_flux);
+            if (!std::isfinite(interpolated_previous_velocity.x) || !std::isfinite(interpolated_previous_velocity.y) ||
+                !std::isfinite(previous_flux) || !std::isfinite(interpolated_previous_mass_flux) ||
+                !std::isfinite(majumdar_mass_flux))
+            {
+                throw_invalid_face_result(face_id, "the Majumdar-corrected mass flux is non-finite.");
+            }
+        }
         if (!std::isfinite(face_gradient.x) || !std::isfinite(face_gradient.y) ||
             !std::isfinite(owner_pressure_free_velocity.x) || !std::isfinite(owner_pressure_free_velocity.y) ||
             !std::isfinite(neighbor_pressure_free_velocity.x) || !std::isfinite(neighbor_pressure_free_velocity.y) ||
@@ -235,7 +286,7 @@ void RhieChowInternalFaceInterpolation::update_internal_faces(const CellVelocity
             throw_invalid_face_result(face_id, "the interpolated mass flux is non-finite.");
         }
 
-        return InternalFaceResult{integrated_mass_flux, integrated_pressure_response};
+        return InternalFaceResult{majumdar_mass_flux, integrated_pressure_response};
     };
 
     // Validate every internal result before either caller-owned output changes.
