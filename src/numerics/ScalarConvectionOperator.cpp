@@ -137,6 +137,50 @@ ScalarConvectionOperator::ScalarConvectionOperator(const Mesh &mesh, const Scala
     }
 }
 
+HybridConvectionFaceCounts ScalarConvectionOperator::classify_hybrid_faces(
+    const FaceFluxField &face_flux, const std::span<const double> face_diffusion_conductances) const
+{
+    if (scheme_ != ScalarConvectionScheme::Hybrid)
+    {
+        throw std::invalid_argument("Hybrid face classification requires a Hybrid convection operator.");
+    }
+    validate_face_flux_count(*mesh_, face_flux);
+    validate_hybrid_conductance_count(*mesh_, scheme_, face_diffusion_conductances);
+
+    HybridConvectionFaceCounts counts;
+    const auto face_adjacencies{mesh_->face_adjacencies()};
+    const auto flux_values{face_flux.values()};
+    for (Index face_id = 0; face_id < mesh_->face_count(); ++face_id)
+    {
+        const FaceAdjacency &adjacency{face_adjacencies[face_id]};
+        const double carrier_flux{flux_values[face_id]};
+        const double diffusion_conductance{validated_hybrid_conductance(face_diffusion_conductances, face_id)};
+        if (adjacency.is_boundary())
+        {
+            if (hybrid_uses_linear_boundary(carrier_flux, diffusion_conductance))
+            {
+                ++counts.boundary_linear_faces;
+            }
+            else
+            {
+                ++counts.boundary_upwind_faces;
+            }
+            continue;
+        }
+
+        const double neighbor_weight{internal_face_interpolation_weights_[face_id]};
+        if (hybrid_uses_linear_internal(carrier_flux, neighbor_weight, diffusion_conductance))
+        {
+            ++counts.internal_linear_faces;
+        }
+        else
+        {
+            ++counts.internal_upwind_faces;
+        }
+    }
+    return counts;
+}
+
 void ScalarConvectionOperator::compute_flux_balance(const CellScalarField &field,
                                                     const ScalarBoundaryConditions &boundary_conditions,
                                                     const FaceFluxField &face_flux, CellScalarField &flux_balance,

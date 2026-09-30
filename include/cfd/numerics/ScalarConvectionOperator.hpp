@@ -1,5 +1,7 @@
 #pragma once
 
+#include "cfd/mesh/Types.hpp"
+
 #include <cstdint>
 #include <span>
 #include <vector>
@@ -25,6 +27,15 @@ enum class ScalarConvectionScheme : std::uint8_t
     /// Selects Linear or FirstOrderUpwind independently on each face from the
     /// local mass flux, interpolation weight, and diffusion conductance.
     Hybrid
+};
+
+/// Counts faces selected by each branch of the Hybrid convection criterion.
+struct HybridConvectionFaceCounts
+{
+    Index internal_linear_faces{};
+    Index internal_upwind_faces{};
+    Index boundary_linear_faces{};
+    Index boundary_upwind_faces{};
 };
 
 /// Finite-volume convection operator for a scalar field.
@@ -63,6 +74,18 @@ class ScalarConvectionOperator
     ScalarConvectionOperator &operator=(ScalarConvectionOperator &&) noexcept = delete;
 
     ~ScalarConvectionOperator() = default;
+
+    /// Classifies every face using the Hybrid convection criterion.
+    ///
+    /// This explicit diagnostic performs one face traversal, allocates no
+    /// storage, and does not alter the operator or its inputs.
+    ///
+    /// @throws std::invalid_argument If this operator is not configured for
+    ///         Hybrid, a cardinality is incompatible, or a conductance is
+    ///         non-finite or not strictly positive.
+    [[nodiscard]]
+    HybridConvectionFaceCounts classify_hybrid_faces(const FaceFluxField &face_flux,
+                                                     std::span<const double> face_diffusion_conductances) const;
 
     /// Computes one integrated outward convective-flux balance per cell.
     ///

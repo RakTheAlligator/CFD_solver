@@ -921,6 +921,62 @@ void test_hybrid_assembly_matches_direct_balance()
     }
 }
 
+void test_hybrid_face_classification_diagnostic()
+{
+    cfd::MeshBuildResult build_result{cfd::build_mesh(make_two_cell_six_boundary_raw_mesh())};
+    const cfd::Mesh &mesh{build_result.mesh};
+    const cfd::ScalarConvectionOperator hybrid{mesh, cfd::ScalarConvectionScheme::Hybrid};
+    cfd::FaceFluxField face_flux{mesh.face_count()};
+    const cfd::Index internal_id{internal_face_id(mesh)};
+    face_flux[internal_id] = 3.0;
+    set_boundary_flux(mesh, face_flux, find_boundary_id(mesh, "bottom_0"), -2.0);
+    set_boundary_flux(mesh, face_flux, find_boundary_id(mesh, "bottom_1"), 0.0);
+    set_boundary_flux(mesh, face_flux, find_boundary_id(mesh, "right"), 2.0);
+    set_boundary_flux(mesh, face_flux, find_boundary_id(mesh, "top_1"), 0.5);
+    set_boundary_flux(mesh, face_flux, find_boundary_id(mesh, "top_0"), 2.0);
+    set_boundary_flux(mesh, face_flux, find_boundary_id(mesh, "left"), 1.0);
+    const std::vector<double> conductances(mesh.face_count(), 1.0);
+
+    const cfd::HybridConvectionFaceCounts upwind_internal{hybrid.classify_hybrid_faces(face_flux, conductances)};
+    require(upwind_internal.internal_linear_faces == 0 && upwind_internal.internal_upwind_faces == 1,
+            "Hybrid face classification gave incorrect internal Upwind counts.");
+    require(upwind_internal.boundary_linear_faces == 4 && upwind_internal.boundary_upwind_faces == 2,
+            "Hybrid face classification gave incorrect boundary counts.");
+
+    face_flux[internal_id] = 2.0;
+    const cfd::HybridConvectionFaceCounts linear_internal{hybrid.classify_hybrid_faces(face_flux, conductances)};
+    require(linear_internal.internal_linear_faces == 1 && linear_internal.internal_upwind_faces == 0,
+            "Hybrid face classification did not classify threshold equality as Linear.");
+    require(linear_internal.boundary_linear_faces == upwind_internal.boundary_linear_faces &&
+                linear_internal.boundary_upwind_faces == upwind_internal.boundary_upwind_faces,
+            "Changing an internal flux changed Hybrid boundary counts.");
+
+    require_throws<std::invalid_argument>(
+        [&]() {
+            const cfd::FaceFluxField wrong_flux{mesh.face_count() + 1};
+            static_cast<void>(hybrid.classify_hybrid_faces(wrong_flux, conductances));
+        },
+        "Hybrid face classification accepted an incorrect flux cardinality.");
+    require_throws<std::invalid_argument>(
+        [&]() {
+            const std::vector<double> wrong_conductances(mesh.face_count() - 1, 1.0);
+            static_cast<void>(hybrid.classify_hybrid_faces(face_flux, wrong_conductances));
+        },
+        "Hybrid face classification accepted an incorrect conductance cardinality.");
+    require_throws<std::invalid_argument>(
+        [&]() {
+            std::vector<double> invalid_conductances(mesh.face_count(), 1.0);
+            invalid_conductances.back() = 0.0;
+            static_cast<void>(hybrid.classify_hybrid_faces(face_flux, invalid_conductances));
+        },
+        "Hybrid face classification accepted a non-positive conductance.");
+
+    const cfd::ScalarConvectionOperator linear{mesh, cfd::ScalarConvectionScheme::Linear};
+    require_throws<std::invalid_argument>(
+        [&]() { static_cast<void>(linear.classify_hybrid_faces(face_flux, conductances)); },
+        "A non-Hybrid convection operator accepted Hybrid face classification.");
+}
+
 void test_hybrid_conductance_validation()
 {
     cfd::MeshBuildResult build_result{cfd::build_mesh(make_two_cell_rectangle_raw_mesh())};
@@ -1106,6 +1162,8 @@ int main()
     failure_count += cfd::test::run_test("hybrid convection boundary switch", test_hybrid_boundary_switch);
     failure_count +=
         cfd::test::run_test("hybrid convection assembly identity", test_hybrid_assembly_matches_direct_balance);
+    failure_count += cfd::test::run_test("hybrid convection face classification diagnostic",
+                                         test_hybrid_face_classification_diagnostic);
     failure_count +=
         cfd::test::run_test("hybrid convection conductance validation", test_hybrid_conductance_validation);
     failure_count +=
