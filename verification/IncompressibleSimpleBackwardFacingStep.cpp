@@ -75,8 +75,6 @@ constexpr std::array orthogonal_grids{
     GridDefinition{"fine", 0.025, 1.0, 1.0},
 };
 
-constexpr GridDefinition refined_grid{"fine_D", 0.025, 0.5, 0.5};
-
 struct BoundaryData
 {
     cfd::ScalarBoundaryConditions u;
@@ -294,16 +292,16 @@ double inlet_volumetric_flow(const cfd::Mesh &mesh, const BoundaryData &boundary
 }
 
 [[nodiscard]]
-cfd::IncompressibleSimpleOptions simple_options(const double tolerance)
+cfd::IncompressibleSimpleOptions simple_options()
 {
     return {
-        .maximum_iterations = 10'000,
-        .momentum_relaxation_factor = 1.0,
-        .pressure_relaxation_factor = 0.10,
-        .rhie_chow_flux_relaxation_factor = 0.10,
-        .velocity_relative_tolerance = tolerance,
-        .rhie_chow_flux_relative_tolerance = tolerance,
-        .continuity_relative_tolerance = tolerance,
+        .maximum_iterations = 4000,
+        .momentum_relaxation_factor = 0.7,
+        .pressure_relaxation_factor = 0.3,
+        .rhie_chow_flux_relaxation_factor = 1.0,
+        .velocity_relative_tolerance = 1.0e-8,
+        .rhie_chow_flux_relative_tolerance = 1.0e-8,
+        .continuity_relative_tolerance = 1.0e-8,
         .momentum_linear_solver = {.relative_tolerance = 1.0e-10, .maximum_iterations = 5000},
         .pressure_correction_linear_solver = {.relative_tolerance = 1.0e-10, .maximum_iterations = 5000},
     };
@@ -456,8 +454,7 @@ void write_armaly_profiles(const cfd::Mesh &mesh, const cfd::CellVelocityField &
 }
 
 [[nodiscard]]
-LevelResult run_level(const GridDefinition &grid, const double tolerance,
-                      const std::optional<std::filesystem::path> &profile_file)
+LevelResult run_level(const GridDefinition &grid, const std::optional<std::filesystem::path> &profile_file)
 {
     cfd::MeshBuildResult build_result{make_mesh(grid)};
     const cfd::Mesh &mesh{build_result.mesh};
@@ -482,27 +479,42 @@ LevelResult run_level(const GridDefinition &grid, const double tolerance,
     cfd::CellVelocityField velocity{mesh.cell_count()};
     cfd::CellScalarField pressure{mesh.cell_count()};
     cfd::FaceFluxField mass_flux{make_initial_mass_flux(mesh, boundary)};
-    const cfd::IncompressibleSimpleOptions options{simple_options(tolerance)};
+    const cfd::IncompressibleSimpleOptions options{simple_options()};
     cfd::IncompressibleSimpleSolver solver{mesh, density, dynamic_viscosity,
                                            cfd::ScalarConvectionScheme::FirstOrderUpwind, options};
-    cfd::Index last_completed_iteration{};
+    std::optional<cfd::SimpleIterationInfo> last_completed_iteration;
     cfd::IncompressibleSimpleResult simple;
     try
     {
         simple =
             solver.solve(boundary.u, boundary.v, boundary.pressure, boundary.pressure_correction, velocity, pressure,
                          mass_flux, [&last_completed_iteration](const cfd::SimpleIterationInfo &information) {
-                             last_completed_iteration = information.iteration;
+                             last_completed_iteration = information;
                          });
     }
     catch (const std::exception &error)
     {
+        if (last_completed_iteration)
+        {
+            std::cerr << "Last completed Armaly iteration " << last_completed_iteration->iteration
+                      << ": r_U=" << last_completed_iteration->velocity_relative_change
+                      << " r_RC=" << last_completed_iteration->rhie_chow_flux_relative_residual
+                      << " continuity_provisional="
+                      << last_completed_iteration->provisional_continuity_relative_residual
+                      << " continuity_corrected=" << last_completed_iteration->corrected_continuity_relative_residual
+                      << "\n";
+        }
+        const cfd::Index completed_iterations{last_completed_iteration ? last_completed_iteration->iteration : 0};
         throw std::runtime_error("Armaly SIMPLE failed on grid " + std::string{grid.name} + " (" +
                                  std::to_string(mesh.cell_count()) + " cells) after " +
-                                 std::to_string(last_completed_iteration) + " completed iterations: " + error.what());
+                                 std::to_string(completed_iterations) + " completed iterations: " + error.what());
     }
     if (!simple.converged)
     {
+        std::cerr << "Final Armaly diagnostics: r_U=" << simple.velocity_relative_change
+                  << " r_RC=" << simple.rhie_chow_flux_relative_residual
+                  << " continuity_provisional=" << simple.provisional_continuity_relative_residual
+                  << " continuity_corrected=" << simple.continuity_relative_residual << "\n";
         throw std::runtime_error("Armaly SIMPLE did not converge on grid " + std::string{grid.name} + " after " +
                                  std::to_string(simple.iteration_count) + " iterations.");
     }
@@ -530,16 +542,6 @@ LevelResult run_level(const GridDefinition &grid, const double tolerance,
 }
 
 [[nodiscard]]
-double relative_difference(const double reference, const double candidate)
-{
-    if (reference == 0.0)
-    {
-        return candidate == 0.0 ? 0.0 : std::numeric_limits<double>::infinity();
-    }
-    return std::abs(candidate - reference) / std::abs(reference);
-}
-
-[[nodiscard]]
 std::string_view convergence_behavior_name(const cfd::verification::GridConvergenceBehavior behavior) noexcept
 {
     switch (behavior)
@@ -558,10 +560,15 @@ void print_level(const LevelResult &level)
               << std::setw(9) << level.face_count << std::scientific << std::setprecision(5) << std::setw(13)
               << level.effective_grid_size << std::fixed << std::setprecision(3) << std::setw(11)
               << level.maximum_non_orthogonality << std::setw(11) << level.maximum_neighbor_size_ratio << std::setw(9)
-              << level.simple.iteration_count << std::setprecision(6) << std::setw(12)
-              << level.reattachment_length_over_step << std::scientific << std::setprecision(5) << std::setw(13)
-              << level.inlet_volumetric_flow << std::setw(13) << level.inlet_flow_relative_error << std::setw(13)
-              << level.outlet_volumetric_flow << std::setw(13) << level.maximum_velocity_magnitude << '\n';
+              << level.simple.iteration_count << std::setw(7) << (level.simple.converged ? "yes" : "no")
+              << std::setprecision(6) << std::setw(12) << level.reattachment_length_over_step << std::scientific
+              << std::setprecision(5) << std::setw(13) << level.inlet_volumetric_flow << std::setw(13)
+              << level.inlet_flow_relative_error << std::setw(13) << level.outlet_volumetric_flow << std::setw(13)
+              << level.maximum_velocity_magnitude << "\n";
+    std::cout << "  diagnostics " << level.name << ": r_U=" << level.simple.velocity_relative_change
+              << " r_RC=" << level.simple.rhie_chow_flux_relative_residual
+              << " continuity_provisional=" << level.simple.provisional_continuity_relative_residual
+              << " continuity_corrected=" << level.simple.continuity_relative_residual << "\n";
 }
 
 } // namespace
@@ -581,9 +588,23 @@ int main()
                   << "\n"
                   << "  rho=" << density << " mu=" << dynamic_viscosity << " V=" << mean_inlet_velocity << "\n\n";
 
-        std::cout << "Grid and solution:\n"
-                  << "name        cells    faces        h_eff  nonorth°  sizeRatio    iter       xR/S         Qin"
-                     "      QinErr         Qout         Umax\n";
+        const cfd::IncompressibleSimpleOptions campaign_options{simple_options()};
+        std::cout << "SIMPLE: maximum_iterations=" << campaign_options.maximum_iterations
+                  << " alpha_u=" << campaign_options.momentum_relaxation_factor
+                  << " alpha_p=" << campaign_options.pressure_relaxation_factor
+                  << " alpha_rc=" << campaign_options.rhie_chow_flux_relaxation_factor
+                  << " outer_tolerances=" << campaign_options.velocity_relative_tolerance << "/"
+                  << campaign_options.rhie_chow_flux_relative_tolerance << "/"
+                  << campaign_options.continuity_relative_tolerance
+                  << " momentum_linear=" << campaign_options.momentum_linear_solver.relative_tolerance << "/"
+                  << campaign_options.momentum_linear_solver.maximum_iterations
+                  << " pressure_linear=" << campaign_options.pressure_correction_linear_solver.relative_tolerance << "/"
+                  << campaign_options.pressure_correction_linear_solver.maximum_iterations << "\n\n";
+
+        std::cout
+            << "Grid and solution:\n"
+            << "name        cells    faces        h_eff  nonorth°  sizeRatio    iter   conv       xR/S         Qin"
+               "      QinErr         Qout         Umax\n";
 
         std::vector<LevelResult> levels;
         levels.reserve(orthogonal_grids.size());
@@ -591,7 +612,7 @@ int main()
         {
             const std::filesystem::path profile_file{output_directory /
                                                      ("armaly_profiles_" + std::string{grid.name} + ".csv")};
-            levels.push_back(run_level(grid, 1.0e-8, profile_file));
+            levels.push_back(run_level(grid, profile_file));
             print_level(levels.back());
         }
 
@@ -600,61 +621,39 @@ int main()
         const LevelResult &fine{levels[2]};
         const double r21{medium.effective_grid_size / fine.effective_grid_size};
         const double r32{coarse.effective_grid_size / medium.effective_grid_size};
+        const double phi1{fine.reattachment_length_over_step};
+        const double phi2{medium.reattachment_length_over_step};
+        const double phi3{coarse.reattachment_length_over_step};
+        const double epsilon21{phi2 - phi1};
+        const double epsilon32{phi3 - phi2};
         const std::optional<cfd::verification::GridConvergenceIndexResult> gci{
-            cfd::verification::compute_grid_convergence_index(fine.reattachment_length_over_step,
-                                                              medium.reattachment_length_over_step,
-                                                              coarse.reattachment_length_over_step, r21, r32)};
+            cfd::verification::compute_grid_convergence_index(phi1, phi2, phi3, r21, r32)};
 
         std::cout << "\nGrid convergence:\n"
-                  << std::scientific << std::setprecision(8) << "  r21=" << r21 << " r32=" << r32 << '\n';
+                  << std::scientific << std::setprecision(8) << "  r21=" << r21 << " r32=" << r32 << "\n"
+                  << "  phi1=" << phi1 << " phi2=" << phi2 << " phi3=" << phi3 << "\n"
+                  << "  epsilon21=" << epsilon21 << " epsilon32=" << epsilon32 << "\n";
         if (gci)
         {
-            std::cout << "  behavior=" << convergence_behavior_name(gci->behavior) << " p=" << gci->apparent_order
-                      << " Richardson=" << gci->extrapolated_value << " ea21=" << gci->approximate_relative_error
-                      << " eext21=" << gci->extrapolated_relative_error
-                      << " GCI_fine=" << gci->fine_grid_convergence_index << '\n';
+            std::cout << "  behavior=" << convergence_behavior_name(gci->behavior)
+                      << " apparent_order=" << gci->apparent_order << "\n"
+                      << "  Richardson=" << gci->extrapolated_value
+                      << " approximate_error21=" << gci->approximate_relative_error
+                      << " extrapolated_error21=" << gci->extrapolated_relative_error
+                      << " GCI21_fine=" << gci->fine_grid_convergence_index << "\n"
+                      << "  GCI32_medium and asymptoticity ratio are not provided by the current GCI helper.\n";
         }
         else
         {
             std::cout << "  GCI unavailable: nearly identical differences or ill-conditioned apparent order.\n";
         }
 
-        const LevelResult medium_tight{run_level(orthogonal_grids[1], 1.0e-10, std::nullopt)};
-        std::cout << "\nIteration sensitivity (medium):\n"
-                  << "  iterations 1e-8/1e-10=" << medium.simple.iteration_count << '/'
-                  << medium_tight.simple.iteration_count << '\n'
-                  << "  xR/S 1e-8/1e-10=" << medium.reattachment_length_over_step << '/'
-                  << medium_tight.reattachment_length_over_step << " relative_difference="
-                  << relative_difference(medium_tight.reattachment_length_over_step,
-                                         medium.reattachment_length_over_step)
-                  << '\n'
-                  << "  Qin relative_difference="
-                  << relative_difference(medium_tight.inlet_volumetric_flow, medium.inlet_volumetric_flow) << '\n'
-                  << "  Qout relative_difference="
-                  << relative_difference(medium_tight.outlet_volumetric_flow, medium.outlet_volumetric_flow) << '\n'
-                  << "  Umax relative_difference="
-                  << relative_difference(medium_tight.maximum_velocity_magnitude, medium.maximum_velocity_magnitude)
-                  << '\n';
-
-        const std::filesystem::path refined_profile_file{output_directory / "armaly_profiles_fine_D.csv"};
-        const LevelResult refined{run_level(refined_grid, 1.0e-8, refined_profile_file)};
-        std::cout << "\nRefined automatic mesh D:\n";
-        print_level(fine);
-        print_level(refined);
-        std::cout << "  relative xR/S difference="
-                  << relative_difference(fine.reattachment_length_over_step, refined.reattachment_length_over_step)
-                  << " Qout difference="
-                  << relative_difference(fine.outlet_volumetric_flow, refined.outlet_volumetric_flow)
-                  << " Umax difference="
-                  << relative_difference(fine.maximum_velocity_magnitude, refined.maximum_velocity_magnitude) << '\n';
-
         std::cout << "\nCSV profiles:\n";
         for (const LevelResult &level : levels)
         {
             std::cout << "  " << level.profile_file.string() << '\n';
         }
-        std::cout << "  " << refined.profile_file.string() << '\n'
-                  << "  x/S=0 uses one-sided linear extrapolation from the first two downstream cell columns.\n";
+        std::cout << "  x/S=0 uses one-sided linear extrapolation from the first two downstream cell columns.\n";
         return 0;
     }
     catch (const std::exception &error)
