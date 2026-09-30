@@ -44,6 +44,43 @@ void validate_rhs_size(const Mesh &mesh, const std::span<double> rhs)
     }
 }
 
+void validate_hybrid_conductance_count(const Mesh &mesh, const ScalarConvectionScheme scheme,
+                                       const std::span<const double> face_diffusion_conductances)
+{
+    if (scheme == ScalarConvectionScheme::Hybrid && face_diffusion_conductances.size() != mesh.face_count())
+    {
+        throw std::invalid_argument("Hybrid convection conductance count must match the mesh face count.");
+    }
+}
+
+[[nodiscard]]
+double validated_hybrid_conductance(const std::span<const double> face_diffusion_conductances, const Index face_id)
+{
+    const double conductance{face_diffusion_conductances[face_id]};
+    if (!std::isfinite(conductance) || !(conductance > 0.0))
+    {
+        throw std::invalid_argument("Hybrid convection conductances must be finite and strictly positive.");
+    }
+    return conductance;
+}
+
+[[nodiscard]]
+bool hybrid_uses_linear_internal(const double carrier_flux, const double neighbor_weight,
+                                 const double diffusion_conductance) noexcept
+{
+    if (carrier_flux >= 0.0)
+    {
+        return carrier_flux * neighbor_weight <= diffusion_conductance;
+    }
+    return -carrier_flux * (1.0 - neighbor_weight) <= diffusion_conductance;
+}
+
+[[nodiscard]]
+bool hybrid_uses_linear_boundary(const double carrier_flux, const double diffusion_conductance) noexcept
+{
+    return carrier_flux <= diffusion_conductance;
+}
+
 [[nodiscard]]
 double boundary_normal_distance(const Point2 &cell_center, const Point2 &face_center, const Vector2 &area_vector,
                                 const double face_length) noexcept
@@ -68,6 +105,7 @@ ScalarConvectionOperator::ScalarConvectionOperator(const Mesh &mesh, const Scala
         return;
 
     case ScalarConvectionScheme::Linear:
+    case ScalarConvectionScheme::Hybrid:
         break;
 
     default:
@@ -101,7 +139,8 @@ ScalarConvectionOperator::ScalarConvectionOperator(const Mesh &mesh, const Scala
 
 void ScalarConvectionOperator::compute_flux_balance(const CellScalarField &field,
                                                     const ScalarBoundaryConditions &boundary_conditions,
-                                                    const FaceFluxField &face_flux, CellScalarField &flux_balance) const
+                                                    const FaceFluxField &face_flux, CellScalarField &flux_balance,
+                                                    const std::span<const double> face_diffusion_conductances) const
 {
     const Index cell_count{mesh_->cell_count()};
 
@@ -115,6 +154,7 @@ void ScalarConvectionOperator::compute_flux_balance(const CellScalarField &field
     }
     validate_face_flux_count(*mesh_, face_flux);
     validate_boundary_condition_count(*mesh_, boundary_conditions);
+    validate_hybrid_conductance_count(*mesh_, scheme_, face_diffusion_conductances);
     if (&field == &flux_balance)
     {
         throw std::invalid_argument("Scalar convection output must not alias the input scalar field.");
@@ -171,6 +211,57 @@ void ScalarConvectionOperator::compute_flux_balance(const CellScalarField &field
         return;
     }
 
+    if (scheme_ == ScalarConvectionScheme::Hybrid)
+    {
+        for (Index face_id = 0; face_id < mesh_->face_count(); ++face_id)
+        {
+            const FaceAdjacency &adjacency{face_adjacencies[face_id]};
+            const Index owner_id{adjacency.owner};
+            const double carrier_flux{flux_values[face_id]};
+            const double diffusion_conductance{validated_hybrid_conductance(face_diffusion_conductances, face_id)};
+
+            if (!adjacency.is_boundary())
+            {
+                const Index neighbor_id{adjacency.neighbor};
+                const double neighbor_weight{internal_face_interpolation_weights_[face_id]};
+                double face_value{};
+                if (hybrid_uses_linear_internal(carrier_flux, neighbor_weight, diffusion_conductance))
+                {
+                    face_value =
+                        (1.0 - neighbor_weight) * field_values[owner_id] + neighbor_weight * field_values[neighbor_id];
+                }
+                else
+                {
+                    face_value = carrier_flux >= 0.0 ? field_values[owner_id] : field_values[neighbor_id];
+                }
+                const double convective_flux{carrier_flux * face_value};
+                balance_values[owner_id] += convective_flux;
+                balance_values[neighbor_id] -= convective_flux;
+                continue;
+            }
+
+            double face_value{field_values[owner_id]};
+            if (hybrid_uses_linear_boundary(carrier_flux, diffusion_conductance))
+            {
+                const ScalarBoundaryCondition &condition{boundary_conditions[face_boundary_ids[face_id]]};
+                switch (condition.type)
+                {
+                case ScalarBoundaryConditionType::Dirichlet:
+                    face_value = condition.value;
+                    break;
+
+                case ScalarBoundaryConditionType::Neumann:
+                    face_value +=
+                        condition.value * boundary_normal_distance(cell_centers[owner_id], face_centers[face_id],
+                                                                   face_area_vectors[face_id], face_lengths[face_id]);
+                    break;
+                }
+            }
+            balance_values[owner_id] += carrier_flux * face_value;
+        }
+        return;
+    }
+
     for (Index face_id = 0; face_id < mesh_->face_count(); ++face_id)
     {
         const FaceAdjacency &adjacency{face_adjacencies[face_id]};
@@ -210,11 +301,12 @@ void ScalarConvectionOperator::compute_flux_balance(const CellScalarField &field
 }
 
 void ScalarConvectionOperator::add_matrix_contributions(const ScalarBoundaryConditions &boundary_conditions,
-                                                        const FaceFluxField &face_flux,
-                                                        ScalarLinearSystem &system) const
+                                                        const FaceFluxField &face_flux, ScalarLinearSystem &system,
+                                                        const std::span<const double> face_diffusion_conductances) const
 {
     validate_boundary_condition_count(*mesh_, boundary_conditions);
     validate_face_flux_count(*mesh_, face_flux);
+    validate_hybrid_conductance_count(*mesh_, scheme_, face_diffusion_conductances);
     if (&system.mesh() != mesh_ || system.cell_count() != mesh_->cell_count() ||
         system.face_count() != mesh_->face_count())
     {
@@ -255,6 +347,53 @@ void ScalarConvectionOperator::add_matrix_contributions(const ScalarBoundaryCond
         return;
     }
 
+    if (scheme_ == ScalarConvectionScheme::Hybrid)
+    {
+        for (Index face_id = 0; face_id < mesh_->face_count(); ++face_id)
+        {
+            const FaceAdjacency &adjacency{face_adjacencies[face_id]};
+            const double carrier_flux{flux_values[face_id]};
+            const double diffusion_conductance{validated_hybrid_conductance(face_diffusion_conductances, face_id)};
+
+            if (!adjacency.is_boundary())
+            {
+                const double neighbor_weight{internal_face_interpolation_weights_[face_id]};
+                if (hybrid_uses_linear_internal(carrier_flux, neighbor_weight, diffusion_conductance))
+                {
+                    const double owner_weight{1.0 - neighbor_weight};
+                    diagonal[adjacency.owner] += carrier_flux * owner_weight;
+                    owner_neighbor_coefficients[face_id] += carrier_flux * neighbor_weight;
+                    neighbor_owner_coefficients[face_id] -= carrier_flux * owner_weight;
+                    diagonal[adjacency.neighbor] -= carrier_flux * neighbor_weight;
+                }
+                else
+                {
+                    const double positive_flux{std::max(carrier_flux, 0.0)};
+                    const double negative_flux{std::min(carrier_flux, 0.0)};
+                    diagonal[adjacency.owner] += positive_flux;
+                    owner_neighbor_coefficients[face_id] += negative_flux;
+                    diagonal[adjacency.neighbor] -= negative_flux;
+                    neighbor_owner_coefficients[face_id] -= positive_flux;
+                }
+                continue;
+            }
+
+            const ScalarBoundaryCondition &condition{boundary_conditions[face_boundary_ids[face_id]]};
+            if (hybrid_uses_linear_boundary(carrier_flux, diffusion_conductance))
+            {
+                if (condition.type == ScalarBoundaryConditionType::Neumann)
+                {
+                    diagonal[adjacency.owner] += carrier_flux;
+                }
+            }
+            else
+            {
+                diagonal[adjacency.owner] += carrier_flux;
+            }
+        }
+        return;
+    }
+
     for (Index face_id = 0; face_id < mesh_->face_count(); ++face_id)
     {
         const FaceAdjacency &adjacency{face_adjacencies[face_id]};
@@ -280,11 +419,13 @@ void ScalarConvectionOperator::add_matrix_contributions(const ScalarBoundaryCond
 }
 
 void ScalarConvectionOperator::add_boundary_rhs(const ScalarBoundaryConditions &boundary_conditions,
-                                                const FaceFluxField &face_flux, const std::span<double> rhs) const
+                                                const FaceFluxField &face_flux, const std::span<double> rhs,
+                                                const std::span<const double> face_diffusion_conductances) const
 {
     validate_boundary_condition_count(*mesh_, boundary_conditions);
     validate_face_flux_count(*mesh_, face_flux);
     validate_rhs_size(*mesh_, rhs);
+    validate_hybrid_conductance_count(*mesh_, scheme_, face_diffusion_conductances);
 
     const auto face_adjacencies{mesh_->face_adjacencies()};
     const auto face_boundary_ids{mesh_->face_boundary_ids()};
@@ -305,6 +446,39 @@ void ScalarConvectionOperator::add_boundary_rhs(const ScalarBoundaryConditions &
             }
 
             const double carrier_flux{flux_values[face_id]};
+            const ScalarBoundaryCondition &condition{boundary_conditions[face_boundary_ids[face_id]]};
+            switch (condition.type)
+            {
+            case ScalarBoundaryConditionType::Dirichlet:
+                rhs[adjacency.owner] -= carrier_flux * condition.value;
+                break;
+
+            case ScalarBoundaryConditionType::Neumann:
+                rhs[adjacency.owner] -= carrier_flux * condition.value *
+                                        boundary_normal_distance(cell_centers[adjacency.owner], face_centers[face_id],
+                                                                 face_area_vectors[face_id], face_lengths[face_id]);
+                break;
+            }
+        }
+        return;
+    }
+
+    if (scheme_ == ScalarConvectionScheme::Hybrid)
+    {
+        for (Index face_id = 0; face_id < mesh_->face_count(); ++face_id)
+        {
+            const FaceAdjacency &adjacency{face_adjacencies[face_id]};
+            const double diffusion_conductance{validated_hybrid_conductance(face_diffusion_conductances, face_id)};
+            if (!adjacency.is_boundary())
+            {
+                continue;
+            }
+
+            const double carrier_flux{flux_values[face_id]};
+            if (!hybrid_uses_linear_boundary(carrier_flux, diffusion_conductance))
+            {
+                continue;
+            }
             const ScalarBoundaryCondition &condition{boundary_conditions[face_boundary_ids[face_id]]};
             switch (condition.type)
             {

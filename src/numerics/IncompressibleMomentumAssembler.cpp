@@ -107,16 +107,18 @@ void IncompressibleMomentumAssembler::assemble(const CellVelocityField &previous
     u_system.clear();
     v_system.clear();
 
+    const auto face_diffusion_conductances{diffusion_.face_primary_coefficients()};
+
     diffusion_.add_matrix_contributions(u_boundary_conditions, u_system);
-    convection_.add_matrix_contributions(u_boundary_conditions, mass_flux, u_system);
+    convection_.add_matrix_contributions(u_boundary_conditions, mass_flux, u_system, face_diffusion_conductances);
     diffusion_.add_boundary_rhs(u_boundary_conditions, u_system.rhs());
-    convection_.add_boundary_rhs(u_boundary_conditions, mass_flux, u_system.rhs());
+    convection_.add_boundary_rhs(u_boundary_conditions, mass_flux, u_system.rhs(), face_diffusion_conductances);
     diffusion_.add_non_orthogonal_rhs(u_boundary_conditions, u_gradient, u_system.rhs());
 
     diffusion_.add_matrix_contributions(v_boundary_conditions, v_system);
-    convection_.add_matrix_contributions(v_boundary_conditions, mass_flux, v_system);
+    convection_.add_matrix_contributions(v_boundary_conditions, mass_flux, v_system, face_diffusion_conductances);
     diffusion_.add_boundary_rhs(v_boundary_conditions, v_system.rhs());
-    convection_.add_boundary_rhs(v_boundary_conditions, mass_flux, v_system.rhs());
+    convection_.add_boundary_rhs(v_boundary_conditions, mass_flux, v_system.rhs(), face_diffusion_conductances);
     diffusion_.add_non_orthogonal_rhs(v_boundary_conditions, v_gradient, v_system.rhs());
 
     const auto cell_areas{mesh_->cell_areas()};

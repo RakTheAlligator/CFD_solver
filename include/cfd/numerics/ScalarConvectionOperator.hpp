@@ -21,7 +21,10 @@ enum class ScalarConvectionScheme : std::uint8_t
     /// Geometry-aware linear interpolation between adjacent cell centers.
     ///
     /// On a uniform Cartesian mesh this is classical centered interpolation.
-    Linear
+    Linear,
+    /// Selects Linear or FirstOrderUpwind independently on each face from the
+    /// local mass flux, interpolation weight, and diffusion conductance.
+    Hybrid
 };
 
 /// Finite-volume convection operator for a scalar field.
@@ -33,7 +36,8 @@ enum class ScalarConvectionScheme : std::uint8_t
 /// FirstOrderUpwind uses the existing flow-directed boundary treatment. Linear
 /// applies boundary conditions independently of flow direction: Dirichlet uses
 /// the prescribed face value and Neumann uses the first-order closure
-/// `phi_b = phi_P + (d(phi)/dn) d_n`.
+/// `phi_b = phi_P + (d(phi)/dn) d_n`. Hybrid selects between those treatments
+/// face by face using caller-supplied diffusion conductances.
 ///
 /// @note The referenced Mesh is not owned and must outlive this operator.
 /// @note Repeated valid calls perform no dynamic allocation.
@@ -48,8 +52,8 @@ class ScalarConvectionOperator
     /// Constructs an operator with an explicitly selected interpolation scheme.
     ///
     /// @throws std::invalid_argument If `scheme` is unsupported.
-    /// @throws std::runtime_error If Linear interpolation encounters unusable
-    ///         internal-face geometry.
+    /// @throws std::runtime_error If Linear or Hybrid interpolation encounters
+    ///         unusable internal-face geometry.
     ScalarConvectionOperator(const Mesh &mesh, ScalarConvectionScheme scheme);
 
     ScalarConvectionOperator(const ScalarConvectionOperator &) = delete;
@@ -62,28 +66,44 @@ class ScalarConvectionOperator
 
     /// Computes one integrated outward convective-flux balance per cell.
     ///
-    /// The output is overwritten in full.
+    /// The output is overwritten in full. For Hybrid,
+    /// `face_diffusion_conductances[face]` is the integrated principal
+    /// diffusion coefficient for that same face and must be finite and positive.
     ///
-    /// @throws std::invalid_argument If a cardinality is incompatible or
-    ///         `field` and `flux_balance` are the same object.
+    /// @throws std::invalid_argument If a cardinality is incompatible, `field`
+    ///         and `flux_balance` are the same object, or Hybrid conductances
+    ///         are absent, have incorrect cardinality, are non-finite, or are
+    ///         not strictly positive.
     void compute_flux_balance(const CellScalarField &field, const ScalarBoundaryConditions &boundary_conditions,
-                              const FaceFluxField &face_flux, CellScalarField &flux_balance) const;
+                              const FaceFluxField &face_flux, CellScalarField &flux_balance,
+                              std::span<const double> face_diffusion_conductances = {}) const;
 
     /// Adds coefficients for the selected scheme to an existing system matrix.
     ///
-    /// @throws std::invalid_argument If a cardinality is incompatible or
-    ///         `system` does not reference this operator's exact Mesh instance.
+    /// For Hybrid, `face_diffusion_conductances[face]` is the integrated
+    /// principal diffusion coefficient for that same face and must be finite
+    /// and positive.
+    ///
+    /// @throws std::invalid_argument If a cardinality is incompatible, `system`
+    ///         does not reference this operator's exact Mesh instance, or Hybrid
+    ///         conductances are absent, have incorrect cardinality, are
+    ///         non-finite, or are not strictly positive.
     void add_matrix_contributions(const ScalarBoundaryConditions &boundary_conditions, const FaceFluxField &face_flux,
-                                  ScalarLinearSystem &system) const;
+                                  ScalarLinearSystem &system,
+                                  std::span<const double> face_diffusion_conductances = {}) const;
 
     /// Adds boundary contributions to `rhs` without clearing it.
     ///
     /// With the assembly convention used here,
-    /// `A * phi - b_boundary` equals the convective flux balance.
+    /// `A * phi - b_boundary` equals the convective flux balance. For Hybrid,
+    /// `face_diffusion_conductances[face]` is the integrated principal
+    /// diffusion coefficient for that same face and must be finite and positive.
     ///
-    /// @throws std::invalid_argument If a cardinality is incompatible.
+    /// @throws std::invalid_argument If a cardinality is incompatible or Hybrid
+    ///         conductances are absent, have incorrect cardinality, are
+    ///         non-finite, or are not strictly positive.
     void add_boundary_rhs(const ScalarBoundaryConditions &boundary_conditions, const FaceFluxField &face_flux,
-                          std::span<double> rhs) const;
+                          std::span<double> rhs, std::span<const double> face_diffusion_conductances = {}) const;
 
   private:
     const Mesh *mesh_;

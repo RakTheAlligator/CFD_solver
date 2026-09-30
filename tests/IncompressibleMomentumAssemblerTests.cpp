@@ -36,6 +36,31 @@ using cfd::test::require_throws;
 using cfd::test::test_tolerance;
 
 [[nodiscard]]
+cfd::RawMeshData make_two_cell_rectangle_raw_mesh()
+{
+    constexpr cfd::BoundaryId wall_boundary_id{0};
+
+    cfd::RawMeshData raw_mesh;
+    raw_mesh.nodes = {
+        {0.0, 0.0}, {1.0, 0.0}, {2.0, 0.0}, {0.0, 1.0}, {1.0, 1.0}, {2.0, 1.0},
+    };
+    raw_mesh.cell_types = {
+        cfd::CellType::Quadrilateral,
+        cfd::CellType::Quadrilateral,
+    };
+    raw_mesh.cell_nodes = {
+        0, 1, 4, 3, 1, 2, 5, 4,
+    };
+    raw_mesh.cell_node_offsets = {0, 4, 8};
+    raw_mesh.boundary_groups = {{wall_boundary_id, "wall"}};
+    raw_mesh.boundary_edges = {
+        {{0, 1}, wall_boundary_id}, {{1, 2}, wall_boundary_id}, {{2, 5}, wall_boundary_id},
+        {{5, 4}, wall_boundary_id}, {{4, 3}, wall_boundary_id}, {{3, 0}, wall_boundary_id},
+    };
+    return raw_mesh;
+}
+
+[[nodiscard]]
 cfd::RawMeshData make_two_cell_sheared_raw_mesh()
 {
     cfd::RawMeshData raw_mesh;
@@ -258,6 +283,51 @@ void test_equation_under_relaxation()
                                    unrelaxed_u_system.neighbor_owner_coefficients()[face_id] != 0.0;
     }
     require(has_nonzero_off_diagonal, "The relaxation fixture has no nonzero off-diagonal coefficient.");
+}
+
+void test_hybrid_uses_linear_and_upwind_momentum_branches()
+{
+    cfd::MeshBuildResult build_result{cfd::build_mesh(make_two_cell_rectangle_raw_mesh())};
+    const cfd::Mesh &mesh{build_result.mesh};
+    const cfd::CellVelocityField previous_velocity{mesh.cell_count()};
+    const cfd::CellVectorField zero_gradient{mesh.cell_count()};
+    const cfd::ScalarBoundaryConditions boundary_conditions{make_uniform_boundary_conditions(
+        mesh.boundary_groups().size(), cfd::ScalarBoundaryConditionType::Neumann, 0.0)};
+    cfd::Index internal_face{mesh.face_count()};
+    for (cfd::Index face_id = 0; face_id < mesh.face_count(); ++face_id)
+    {
+        if (!mesh.face_adjacencies()[face_id].is_boundary())
+        {
+            internal_face = face_id;
+            break;
+        }
+    }
+    require(internal_face < mesh.face_count(), "The Hybrid momentum fixture has no internal face.");
+
+    const auto require_hybrid_matches = [&](const double carrier_flux,
+                                            const cfd::ScalarConvectionScheme expected_scheme,
+                                            const std::string &context) {
+        cfd::FaceFluxField mass_flux{mesh.face_count()};
+        mass_flux[internal_face] = carrier_flux;
+        const cfd::IncompressibleMomentumAssembler hybrid_assembler{mesh, 1.0, cfd::ScalarConvectionScheme::Hybrid};
+        const cfd::IncompressibleMomentumAssembler reference_assembler{mesh, 1.0, expected_scheme};
+        cfd::ScalarLinearSystem hybrid_u_system{mesh};
+        cfd::ScalarLinearSystem hybrid_v_system{mesh};
+        cfd::ScalarLinearSystem reference_u_system{mesh};
+        cfd::ScalarLinearSystem reference_v_system{mesh};
+
+        hybrid_assembler.assemble(previous_velocity, zero_gradient, zero_gradient, zero_gradient, boundary_conditions,
+                                  boundary_conditions, mass_flux, 1.0, hybrid_u_system, hybrid_v_system);
+        reference_assembler.assemble(previous_velocity, zero_gradient, zero_gradient, zero_gradient,
+                                     boundary_conditions, boundary_conditions, mass_flux, 1.0, reference_u_system,
+                                     reference_v_system);
+
+        require_system_near(hybrid_u_system, reference_u_system, context + " u-system");
+        require_system_near(hybrid_v_system, reference_v_system, context + " v-system");
+    };
+
+    require_hybrid_matches(1.0, cfd::ScalarConvectionScheme::Linear, "Hybrid Linear branch");
+    require_hybrid_matches(3.0, cfd::ScalarConvectionScheme::FirstOrderUpwind, "Hybrid Upwind branch");
 }
 
 void test_non_orthogonal_correction_reuses_diffusion_operator()
@@ -569,6 +639,8 @@ int main()
     failure_count += cfd::test::run_test("momentum scalar-operator reuse and alpha-one assembly",
                                          test_reuses_scalar_operators_and_alpha_one_preserves_unrelaxed_assembly);
     failure_count += cfd::test::run_test("momentum equation under-relaxation", test_equation_under_relaxation);
+    failure_count += cfd::test::run_test("momentum Hybrid Linear and Upwind branches",
+                                         test_hybrid_uses_linear_and_upwind_momentum_branches);
     failure_count += cfd::test::run_test("momentum non-orthogonal correction",
                                          test_non_orthogonal_correction_reuses_diffusion_operator);
     failure_count += cfd::test::run_test("momentum output clearing", test_output_systems_are_cleared);

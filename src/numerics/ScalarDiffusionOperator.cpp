@@ -61,6 +61,7 @@ ScalarDiffusionOperator::ScalarDiffusionOperator(const Mesh &mesh, const double 
     }
 
     const Index face_count{mesh_->face_count()};
+    face_primary_coefficients_.resize(face_count);
     face_data_.resize(face_count);
 
     const auto face_adjacencies{mesh_->face_adjacencies()};
@@ -105,13 +106,14 @@ ScalarDiffusionOperator::ScalarDiffusionOperator(const Mesh &mesh, const double 
         };
 
         FaceData &data{face_data_[face_id]};
-        data.primary_coefficient = diffusivity_ * beta;
+        double &primary_coefficient{face_primary_coefficients_[face_id]};
+        primary_coefficient = diffusivity_ * beta;
         data.correction_flux_vector = {
             -diffusivity_ * correction.x,
             -diffusivity_ * correction.y,
         };
 
-        if (!std::isfinite(data.primary_coefficient) || !(data.primary_coefficient > 0.0) ||
+        if (!std::isfinite(primary_coefficient) || !(primary_coefficient > 0.0) ||
             !std::isfinite(data.correction_flux_vector.x) || !std::isfinite(data.correction_flux_vector.y))
         {
             throw_unusable_face_geometry(face_id, "precomputed coefficients are non-finite.");
@@ -180,7 +182,7 @@ void ScalarDiffusionOperator::compute_flux_balance(const CellScalarField &field,
                 owner_gradient.y + lambda * (neighbor_gradient.y - owner_gradient.y),
             };
 
-            flux = data.primary_coefficient * (field_values[owner_id] - field_values[neighbor_id]) +
+            flux = face_primary_coefficients_[face_id] * (field_values[owner_id] - field_values[neighbor_id]) +
                    dot(face_gradient, data.correction_flux_vector);
 
             balance_values[owner_id] += flux;
@@ -192,7 +194,7 @@ void ScalarDiffusionOperator::compute_flux_balance(const CellScalarField &field,
         switch (condition.type)
         {
         case ScalarBoundaryConditionType::Dirichlet:
-            flux = data.primary_coefficient * (field_values[owner_id] - condition.value) +
+            flux = face_primary_coefficients_[face_id] * (field_values[owner_id] - condition.value) +
                    dot(gradient_values[owner_id], data.correction_flux_vector);
             break;
 
@@ -224,7 +226,7 @@ void ScalarDiffusionOperator::add_matrix_contributions(const ScalarBoundaryCondi
     for (Index face_id = 0; face_id < mesh_->face_count(); ++face_id)
     {
         const FaceAdjacency &adjacency{face_adjacencies[face_id]};
-        const double coefficient{face_data_[face_id].primary_coefficient};
+        const double coefficient{face_primary_coefficients_[face_id]};
         if (!adjacency.is_boundary())
         {
             diagonal[adjacency.owner] += coefficient;
@@ -262,7 +264,7 @@ void ScalarDiffusionOperator::add_boundary_rhs(const ScalarBoundaryConditions &b
         switch (condition.type)
         {
         case ScalarBoundaryConditionType::Dirichlet:
-            rhs[adjacency.owner] += face_data_[face_id].primary_coefficient * condition.value;
+            rhs[adjacency.owner] += face_primary_coefficients_[face_id] * condition.value;
             break;
 
         case ScalarBoundaryConditionType::Neumann:

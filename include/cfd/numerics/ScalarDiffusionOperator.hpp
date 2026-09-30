@@ -93,16 +93,26 @@ class ScalarDiffusionOperator
     void add_non_orthogonal_rhs(const ScalarBoundaryConditions &boundary_conditions, const CellVectorField &gradient,
                                 std::span<double> rhs) const;
 
+    /// Returns the integrated two-point conductance precomputed for every face.
+    ///
+    /// The returned non-owning view remains valid until this operator is moved
+    /// or destroyed.
+    [[nodiscard]]
+    std::span<const double> face_primary_coefficients() const noexcept
+    {
+        return face_primary_coefficients_;
+    }
+
   private:
     struct FaceData
     {
         Vector2 correction_flux_vector;
-        double primary_coefficient{};
         double neighbor_gradient_weight{};
     };
 
     const Mesh *mesh_;
     double diffusivity_;
+    std::vector<double> face_primary_coefficients_;
     std::vector<FaceData> face_data_;
 };
 
