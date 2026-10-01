@@ -3,6 +3,8 @@
 #include "cfd/numerics/ScalarConvectionOperator.hpp"
 #include "cfd/numerics/ScalarDiffusionOperator.hpp"
 
+#include <vector>
+
 namespace cfd
 {
 
@@ -38,13 +40,16 @@ class IncompressibleMomentumAssembler
     /// @param dynamic_viscosity Constant dynamic viscosity `mu`.
     /// @param convection_scheme Scalar convection interpolation scheme used for
     ///        both velocity components.
+    /// @param convection_limiter Optional limiter used for both velocity
+    ///        components.
     /// @throws std::invalid_argument If `dynamic_viscosity` is non-finite or not
-    ///         strictly positive, or if `convection_scheme` is unsupported.
+    ///         strictly positive, the convection scheme or limiter is
+    ///         unsupported, or their combination is unsupported.
     /// @throws std::runtime_error If face geometry is unusable by a composed
     ///         operator.
-    IncompressibleMomentumAssembler(
-        const Mesh &mesh, double dynamic_viscosity,
-        ScalarConvectionScheme convection_scheme = ScalarConvectionScheme::FirstOrderUpwind);
+    IncompressibleMomentumAssembler(const Mesh &mesh, double dynamic_viscosity,
+                                    ScalarConvectionScheme convection_scheme = ScalarConvectionScheme::FirstOrderUpwind,
+                                    ScalarConvectionLimiter convection_limiter = ScalarConvectionLimiter::None);
 
     IncompressibleMomentumAssembler(const IncompressibleMomentumAssembler &) = delete;
     IncompressibleMomentumAssembler &operator=(const IncompressibleMomentumAssembler &) = delete;
@@ -71,12 +76,13 @@ class IncompressibleMomentumAssembler
                   const CellVectorField &v_gradient, const CellVectorField &pressure_gradient,
                   const ScalarBoundaryConditions &u_boundary_conditions,
                   const ScalarBoundaryConditions &v_boundary_conditions, const FaceFluxField &mass_flux,
-                  double relaxation_factor, ScalarLinearSystem &u_system, ScalarLinearSystem &v_system) const;
+                  double relaxation_factor, ScalarLinearSystem &u_system, ScalarLinearSystem &v_system);
 
   private:
     const Mesh *mesh_;
     ScalarDiffusionOperator diffusion_;
     ScalarConvectionOperator convection_;
+    std::vector<double> linear_upwind_limiter_workspace_;
 };
 
 } // namespace cfd

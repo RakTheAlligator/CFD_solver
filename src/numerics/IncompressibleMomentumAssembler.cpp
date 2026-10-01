@@ -74,8 +74,11 @@ void apply_equation_relaxation(const CellScalarField &previous_field, const doub
 } // namespace
 
 IncompressibleMomentumAssembler::IncompressibleMomentumAssembler(const Mesh &mesh, const double dynamic_viscosity,
-                                                                 const ScalarConvectionScheme convection_scheme)
-    : mesh_(&mesh), diffusion_(mesh, dynamic_viscosity), convection_(mesh, convection_scheme)
+                                                                 const ScalarConvectionScheme convection_scheme,
+                                                                 const ScalarConvectionLimiter convection_limiter)
+    : mesh_(&mesh), diffusion_(mesh, dynamic_viscosity), convection_(mesh, convection_scheme, convection_limiter),
+      linear_upwind_limiter_workspace_(convection_limiter == ScalarConvectionLimiter::BarthJespersen ? mesh.cell_count()
+                                                                                                     : 0)
 {
 }
 
@@ -85,7 +88,7 @@ void IncompressibleMomentumAssembler::assemble(const CellVelocityField &previous
                                                const ScalarBoundaryConditions &u_boundary_conditions,
                                                const ScalarBoundaryConditions &v_boundary_conditions,
                                                const FaceFluxField &mass_flux, const double relaxation_factor,
-                                               ScalarLinearSystem &u_system, ScalarLinearSystem &v_system) const
+                                               ScalarLinearSystem &u_system, ScalarLinearSystem &v_system)
 {
     validate_cell_field_cardinalities(*mesh_, previous_velocity, u_gradient, v_gradient, pressure_gradient);
     if (mass_flux.size() != mesh_->face_count())
@@ -113,14 +116,16 @@ void IncompressibleMomentumAssembler::assemble(const CellVelocityField &previous
     convection_.add_matrix_contributions(u_boundary_conditions, mass_flux, u_system, face_diffusion_conductances);
     diffusion_.add_boundary_rhs(u_boundary_conditions, u_system.rhs());
     convection_.add_boundary_rhs(u_boundary_conditions, mass_flux, u_system.rhs(), face_diffusion_conductances);
-    convection_.add_deferred_correction_rhs(u_gradient, mass_flux, u_system.rhs());
+    convection_.add_deferred_correction_rhs(previous_velocity.u(), u_boundary_conditions, u_gradient, mass_flux,
+                                            linear_upwind_limiter_workspace_, u_system.rhs());
     diffusion_.add_non_orthogonal_rhs(u_boundary_conditions, u_gradient, u_system.rhs());
 
     diffusion_.add_matrix_contributions(v_boundary_conditions, v_system);
     convection_.add_matrix_contributions(v_boundary_conditions, mass_flux, v_system, face_diffusion_conductances);
     diffusion_.add_boundary_rhs(v_boundary_conditions, v_system.rhs());
     convection_.add_boundary_rhs(v_boundary_conditions, mass_flux, v_system.rhs(), face_diffusion_conductances);
-    convection_.add_deferred_correction_rhs(v_gradient, mass_flux, v_system.rhs());
+    convection_.add_deferred_correction_rhs(previous_velocity.v(), v_boundary_conditions, v_gradient, mass_flux,
+                                            linear_upwind_limiter_workspace_, v_system.rhs());
     diffusion_.add_non_orthogonal_rhs(v_boundary_conditions, v_gradient, v_system.rhs());
 
     const auto cell_areas{mesh_->cell_areas()};

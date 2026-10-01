@@ -132,7 +132,7 @@ void test_pressure_source_sign_and_component_separation()
 {
     cfd::MeshBuildResult build_result{cfd::build_mesh(make_single_quadrilateral_raw_mesh())};
     const cfd::Mesh &mesh{build_result.mesh};
-    const cfd::IncompressibleMomentumAssembler assembler{mesh, 1.0};
+    cfd::IncompressibleMomentumAssembler assembler{mesh, 1.0};
     const cfd::CellVelocityField previous_velocity{mesh.cell_count()};
     const cfd::CellVectorField zero_gradient{mesh.cell_count()};
     const cfd::CellVectorField pressure_gradient{mesh.cell_count(), {2.0, -3.0}};
@@ -158,7 +158,7 @@ void test_reuses_scalar_operators_and_alpha_one_preserves_unrelaxed_assembly()
     const cfd::Mesh &mesh{build_result.mesh};
     constexpr double dynamic_viscosity{0.7};
     constexpr cfd::ScalarConvectionScheme scheme{cfd::ScalarConvectionScheme::Linear};
-    const cfd::IncompressibleMomentumAssembler assembler{mesh, dynamic_viscosity, scheme};
+    cfd::IncompressibleMomentumAssembler assembler{mesh, dynamic_viscosity, scheme};
     cfd::CellVelocityField previous_velocity{mesh.cell_count()};
     previous_velocity.u()[0] = 1.2;
     previous_velocity.u()[1] = -0.4;
@@ -225,7 +225,7 @@ void test_equation_under_relaxation()
 {
     cfd::MeshBuildResult build_result{cfd::build_mesh(make_two_cell_sheared_raw_mesh())};
     const cfd::Mesh &mesh{build_result.mesh};
-    const cfd::IncompressibleMomentumAssembler assembler{mesh, 2.0};
+    cfd::IncompressibleMomentumAssembler assembler{mesh, 2.0};
     const cfd::CellVelocityField previous_velocity{mesh.cell_count(), {3.0, -4.0}};
     const cfd::CellVectorField zero_gradient{mesh.cell_count()};
     const cfd::ScalarBoundaryConditions u_boundary_conditions{make_uniform_boundary_conditions(
@@ -309,8 +309,8 @@ void test_hybrid_uses_linear_and_upwind_momentum_branches()
                                             const std::string &context) {
         cfd::FaceFluxField mass_flux{mesh.face_count()};
         mass_flux[internal_face] = carrier_flux;
-        const cfd::IncompressibleMomentumAssembler hybrid_assembler{mesh, 1.0, cfd::ScalarConvectionScheme::Hybrid};
-        const cfd::IncompressibleMomentumAssembler reference_assembler{mesh, 1.0, expected_scheme};
+        cfd::IncompressibleMomentumAssembler hybrid_assembler{mesh, 1.0, cfd::ScalarConvectionScheme::Hybrid};
+        cfd::IncompressibleMomentumAssembler reference_assembler{mesh, 1.0, expected_scheme};
         cfd::ScalarLinearSystem hybrid_u_system{mesh};
         cfd::ScalarLinearSystem hybrid_v_system{mesh};
         cfd::ScalarLinearSystem reference_u_system{mesh};
@@ -334,7 +334,7 @@ void test_non_orthogonal_correction_reuses_diffusion_operator()
 {
     cfd::MeshBuildResult build_result{cfd::build_mesh(make_two_cell_sheared_raw_mesh())};
     const cfd::Mesh &mesh{build_result.mesh};
-    const cfd::IncompressibleMomentumAssembler assembler{mesh, 1.0};
+    cfd::IncompressibleMomentumAssembler assembler{mesh, 1.0};
     const cfd::CellVelocityField previous_velocity{mesh.cell_count()};
     const cfd::CellVectorField u_gradient{mesh.cell_count(), {0.0, 1.0}};
     const cfd::CellVectorField v_gradient{mesh.cell_count(), {1.0, -0.5}};
@@ -370,7 +370,7 @@ void test_output_systems_are_cleared()
 {
     cfd::MeshBuildResult build_result{cfd::build_mesh(make_single_quadrilateral_raw_mesh())};
     const cfd::Mesh &mesh{build_result.mesh};
-    const cfd::IncompressibleMomentumAssembler assembler{mesh, 1.0};
+    cfd::IncompressibleMomentumAssembler assembler{mesh, 1.0};
     const cfd::CellVelocityField previous_velocity{mesh.cell_count()};
     const cfd::CellVectorField zero_gradient{mesh.cell_count()};
     const cfd::ScalarBoundaryConditions u_boundary_conditions{make_uniform_boundary_conditions(
@@ -398,7 +398,7 @@ void test_different_component_boundary_data_remain_independent()
 {
     cfd::MeshBuildResult build_result{cfd::build_mesh(make_single_quadrilateral_raw_mesh())};
     const cfd::Mesh &mesh{build_result.mesh};
-    const cfd::IncompressibleMomentumAssembler assembler{mesh, 2.0};
+    cfd::IncompressibleMomentumAssembler assembler{mesh, 2.0};
     const cfd::CellVelocityField previous_velocity{mesh.cell_count()};
     const cfd::CellVectorField zero_gradient{mesh.cell_count()};
     const cfd::ScalarBoundaryConditions u_boundary_conditions{make_uniform_boundary_conditions(
@@ -422,9 +422,7 @@ void test_constructor_rejects_invalid_dynamic_viscosity()
     const cfd::Mesh &mesh{build_result.mesh};
     const auto require_rejected = [&mesh](const double dynamic_viscosity) {
         require_throws<std::invalid_argument>(
-            [&mesh, dynamic_viscosity]() {
-                const cfd::IncompressibleMomentumAssembler assembler{mesh, dynamic_viscosity};
-            },
+            [&mesh, dynamic_viscosity]() { cfd::IncompressibleMomentumAssembler assembler{mesh, dynamic_viscosity}; },
             "Momentum assembly accepted an invalid dynamic viscosity.");
     };
 
@@ -438,7 +436,7 @@ void test_rejects_invalid_assembly_inputs_before_mutating_outputs()
 {
     cfd::MeshBuildResult build_result{cfd::build_mesh(make_single_quadrilateral_raw_mesh())};
     const cfd::Mesh &mesh{build_result.mesh};
-    const cfd::IncompressibleMomentumAssembler assembler{mesh, 1.0};
+    cfd::IncompressibleMomentumAssembler assembler{mesh, 1.0};
     const cfd::CellVelocityField previous_velocity{mesh.cell_count()};
     const cfd::CellVectorField gradient{mesh.cell_count()};
     const cfd::ScalarBoundaryConditions boundary_conditions{make_uniform_boundary_conditions(
@@ -556,7 +554,7 @@ void test_does_not_mutate_inputs()
 {
     cfd::MeshBuildResult build_result{cfd::build_mesh(make_two_cell_sheared_raw_mesh())};
     const cfd::Mesh &mesh{build_result.mesh};
-    const cfd::IncompressibleMomentumAssembler assembler{mesh, 0.9, cfd::ScalarConvectionScheme::Linear};
+    cfd::IncompressibleMomentumAssembler assembler{mesh, 0.9, cfd::ScalarConvectionScheme::Linear};
     cfd::CellVelocityField previous_velocity{mesh.cell_count()};
     previous_velocity.u()[0] = 1.0;
     previous_velocity.u()[1] = 2.0;
@@ -632,10 +630,8 @@ void test_linear_upwind_deferred_correction_precedes_equation_relaxation()
 {
     cfd::MeshBuildResult build_result{cfd::build_mesh(make_two_cell_rectangle_raw_mesh())};
     const cfd::Mesh &mesh{build_result.mesh};
-    const cfd::IncompressibleMomentumAssembler upwind_assembler{mesh, 1.0,
-                                                                cfd::ScalarConvectionScheme::FirstOrderUpwind};
-    const cfd::IncompressibleMomentumAssembler linear_upwind_assembler{mesh, 1.0,
-                                                                       cfd::ScalarConvectionScheme::LinearUpwind};
+    cfd::IncompressibleMomentumAssembler upwind_assembler{mesh, 1.0, cfd::ScalarConvectionScheme::FirstOrderUpwind};
+    cfd::IncompressibleMomentumAssembler linear_upwind_assembler{mesh, 1.0, cfd::ScalarConvectionScheme::LinearUpwind};
     const cfd::CellVelocityField previous_velocity{mesh.cell_count(), {1.5, -2.5}};
     cfd::CellVectorField u_gradient{mesh.cell_count()};
     cfd::CellVectorField v_gradient{mesh.cell_count()};
@@ -723,6 +719,105 @@ void test_linear_upwind_deferred_correction_precedes_equation_relaxation()
     require_relaxation_case(1.0);
     require_relaxation_case(0.5);
 }
+
+void test_barth_jespersen_limits_components_separately_and_reuses_workspace()
+{
+    cfd::MeshBuildResult build_result{cfd::build_mesh(make_two_cell_sheared_raw_mesh())};
+    const cfd::Mesh &mesh{build_result.mesh};
+    cfd::IncompressibleMomentumAssembler upwind_assembler{mesh, 1.0, cfd::ScalarConvectionScheme::FirstOrderUpwind};
+    cfd::IncompressibleMomentumAssembler limited_assembler{mesh, 1.0, cfd::ScalarConvectionScheme::LinearUpwind,
+                                                           cfd::ScalarConvectionLimiter::BarthJespersen};
+    cfd::CellVelocityField previous_velocity{mesh.cell_count()};
+    previous_velocity.u()[0] = 0.7;
+    previous_velocity.u()[1] = 1.7;
+    previous_velocity.v()[0] = 1.4;
+    previous_velocity.v()[1] = 3.4;
+    const cfd::CellVectorField u_gradient{mesh.cell_count(), {4.0, 0.0}};
+    const cfd::CellVectorField v_gradient{mesh.cell_count(), {2.0, 0.0}};
+    const cfd::CellVectorField pressure_gradient{mesh.cell_count()};
+    const cfd::ScalarBoundaryConditions u_conditions{
+        6,
+        {
+            {cfd::ScalarBoundaryConditionType::Dirichlet, 0.5},
+            {cfd::ScalarBoundaryConditionType::Dirichlet, 1.5},
+            {cfd::ScalarBoundaryConditionType::Dirichlet, 2.2},
+            {cfd::ScalarBoundaryConditionType::Dirichlet, 1.9},
+            {cfd::ScalarBoundaryConditionType::Dirichlet, 0.9},
+            {cfd::ScalarBoundaryConditionType::Dirichlet, 0.2},
+        },
+    };
+    const cfd::ScalarBoundaryConditions v_conditions{
+        6,
+        {
+            {cfd::ScalarBoundaryConditionType::Dirichlet, 1.0},
+            {cfd::ScalarBoundaryConditionType::Dirichlet, 3.0},
+            {cfd::ScalarBoundaryConditionType::Dirichlet, 4.4},
+            {cfd::ScalarBoundaryConditionType::Dirichlet, 3.8},
+            {cfd::ScalarBoundaryConditionType::Dirichlet, 1.8},
+            {cfd::ScalarBoundaryConditionType::Dirichlet, 0.4},
+        },
+    };
+    cfd::FaceFluxField mass_flux{mesh.face_count()};
+    cfd::Index internal_face{mesh.face_count()};
+    for (cfd::Index face_id = 0; face_id < mesh.face_count(); ++face_id)
+    {
+        if (!mesh.face_adjacencies()[face_id].is_boundary())
+        {
+            internal_face = face_id;
+            break;
+        }
+    }
+    require(internal_face < mesh.face_count(), "The bounded momentum fixture has no internal face.");
+    mass_flux[internal_face] = 2.0;
+    const cfd::FaceAdjacency &adjacency{mesh.face_adjacencies()[internal_face]};
+
+    const auto require_relaxation_case = [&](const double relaxation_factor) {
+        cfd::ScalarLinearSystem upwind_u_system{mesh};
+        cfd::ScalarLinearSystem upwind_v_system{mesh};
+        cfd::ScalarLinearSystem limited_u_system{mesh};
+        cfd::ScalarLinearSystem limited_v_system{mesh};
+
+        upwind_assembler.assemble(previous_velocity, u_gradient, v_gradient, pressure_gradient, u_conditions,
+                                  v_conditions, mass_flux, relaxation_factor, upwind_u_system, upwind_v_system);
+        limited_assembler.assemble(previous_velocity, u_gradient, v_gradient, pressure_gradient, u_conditions,
+                                   v_conditions, mass_flux, relaxation_factor, limited_u_system, limited_v_system);
+
+        for (cfd::Index cell_id = 0; cell_id < mesh.cell_count(); ++cell_id)
+        {
+            require_near(limited_u_system.diagonal()[cell_id], upwind_u_system.diagonal()[cell_id], 0.0,
+                         "Barth-Jespersen changed a relaxed u-momentum diagonal.");
+            require_near(limited_v_system.diagonal()[cell_id], upwind_v_system.diagonal()[cell_id], 0.0,
+                         "Barth-Jespersen changed a relaxed v-momentum diagonal.");
+        }
+        for (cfd::Index face_id = 0; face_id < mesh.face_count(); ++face_id)
+        {
+            require_near(limited_u_system.owner_neighbor_coefficients()[face_id],
+                         upwind_u_system.owner_neighbor_coefficients()[face_id], 0.0,
+                         "Barth-Jespersen changed a u owner-neighbor coefficient.");
+            require_near(limited_u_system.neighbor_owner_coefficients()[face_id],
+                         upwind_u_system.neighbor_owner_coefficients()[face_id], 0.0,
+                         "Barth-Jespersen changed a u neighbor-owner coefficient.");
+            require_near(limited_v_system.owner_neighbor_coefficients()[face_id],
+                         upwind_v_system.owner_neighbor_coefficients()[face_id], 0.0,
+                         "Barth-Jespersen changed a v owner-neighbor coefficient.");
+            require_near(limited_v_system.neighbor_owner_coefficients()[face_id],
+                         upwind_v_system.neighbor_owner_coefficients()[face_id], 0.0,
+                         "Barth-Jespersen changed a v neighbor-owner coefficient.");
+        }
+
+        require_near(limited_u_system.rhs()[adjacency.owner] - upwind_u_system.rhs()[adjacency.owner], -1.0,
+                     test_tolerance, "The limited u correction is incorrect.");
+        require_near(limited_u_system.rhs()[adjacency.neighbor] - upwind_u_system.rhs()[adjacency.neighbor], 1.0,
+                     test_tolerance, "The limited u correction is not conservative.");
+        require_near(limited_v_system.rhs()[adjacency.owner] - upwind_v_system.rhs()[adjacency.owner], -2.0,
+                     test_tolerance, "The v limiter was contaminated by the preceding u workspace.");
+        require_near(limited_v_system.rhs()[adjacency.neighbor] - upwind_v_system.rhs()[adjacency.neighbor], 2.0,
+                     test_tolerance, "The limited v correction is not conservative.");
+    };
+
+    require_relaxation_case(1.0);
+    require_relaxation_case(0.5);
+}
 } // namespace
 
 int main()
@@ -738,6 +833,8 @@ int main()
                                          test_hybrid_uses_linear_and_upwind_momentum_branches);
     failure_count += cfd::test::run_test("momentum LinearUpwind deferred correction and equation relaxation",
                                          test_linear_upwind_deferred_correction_precedes_equation_relaxation);
+    failure_count += cfd::test::run_test("momentum Barth-Jespersen component separation and workspace reuse",
+                                         test_barth_jespersen_limits_components_separately_and_reuses_workspace);
     failure_count += cfd::test::run_test("momentum non-orthogonal correction",
                                          test_non_orthogonal_correction_reuses_diffusion_operator);
     failure_count += cfd::test::run_test("momentum output clearing", test_output_systems_are_cleared);

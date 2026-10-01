@@ -155,6 +155,16 @@ class IncompressibleSimpleSolver
     IncompressibleSimpleSolver(const Mesh &mesh, double density, double dynamic_viscosity,
                                ScalarConvectionScheme convection_scheme, IncompressibleSimpleOptions options = {});
 
+    /// Constructs a SIMPLE solver with an explicitly selected convection limiter.
+    ///
+    /// @throws std::invalid_argument If a physical coefficient or option is
+    ///         invalid, or the convection scheme/limiter combination is
+    ///         unsupported.
+    /// @throws std::runtime_error If an existing numerical component rejects the Mesh geometry.
+    IncompressibleSimpleSolver(const Mesh &mesh, double density, double dynamic_viscosity,
+                               ScalarConvectionScheme convection_scheme, ScalarConvectionLimiter convection_limiter,
+                               IncompressibleSimpleOptions options = {});
+
     IncompressibleSimpleSolver(const IncompressibleSimpleSolver &) = delete;
     IncompressibleSimpleSolver &operator=(const IncompressibleSimpleSolver &) = delete;
     IncompressibleSimpleSolver(IncompressibleSimpleSolver &&) = delete;

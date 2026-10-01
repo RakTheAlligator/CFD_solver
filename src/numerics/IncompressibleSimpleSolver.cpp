@@ -366,12 +366,22 @@ IncompressibleSimpleSolver::IncompressibleSimpleSolver(const Mesh &mesh, const d
                                                        const double dynamic_viscosity,
                                                        const ScalarConvectionScheme convection_scheme,
                                                        IncompressibleSimpleOptions options)
+    : IncompressibleSimpleSolver(mesh, density, dynamic_viscosity, convection_scheme, ScalarConvectionLimiter::None,
+                                 options)
+{
+}
+
+IncompressibleSimpleSolver::IncompressibleSimpleSolver(const Mesh &mesh, const double density,
+                                                       const double dynamic_viscosity,
+                                                       const ScalarConvectionScheme convection_scheme,
+                                                       const ScalarConvectionLimiter convection_limiter,
+                                                       IncompressibleSimpleOptions options)
     : mesh_(&mesh), density_(validate_positive_physical_coefficient(density, "SIMPLE density")),
       options_(validate_options(options)), u_momentum_solver_(options_.momentum_linear_solver),
       v_momentum_solver_(options_.momentum_linear_solver),
       pressure_correction_solver_(options_.pressure_correction_linear_solver),
       momentum_assembler_(mesh, validate_positive_physical_coefficient(dynamic_viscosity, "SIMPLE dynamic viscosity"),
-                          convection_scheme),
+                          convection_scheme, convection_limiter),
       internal_face_interpolation_(mesh, density_), boundary_face_interpolation_(mesh, density_),
       pressure_correction_assembler_(mesh), pressure_velocity_corrector_(mesh), previous_velocity_(mesh.cell_count()),
       previous_mass_flux_(mesh.face_count()), u_gradient_(mesh.cell_count()), v_gradient_(mesh.cell_count()),

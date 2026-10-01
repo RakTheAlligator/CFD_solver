@@ -1328,6 +1328,205 @@ void test_linear_upwind_boundary_treatments()
     require_case(cfd::ScalarBoundaryConditionType::Dirichlet, 1000.0, 0.0, 0.0, 0.0, 0.0, "LinearUpwind zero flux");
 }
 
+void test_barth_jespersen_constant_monotone_and_bounded_reconstruction()
+{
+    cfd::MeshBuildResult build_result{cfd::build_mesh(make_single_cell_four_boundary_raw_mesh())};
+    const cfd::Mesh &mesh{build_result.mesh};
+    const cfd::ScalarConvectionOperator unlimited{mesh, cfd::ScalarConvectionScheme::LinearUpwind,
+                                                  cfd::ScalarConvectionLimiter::None};
+    const cfd::ScalarConvectionOperator limited{mesh, cfd::ScalarConvectionScheme::LinearUpwind,
+                                                cfd::ScalarConvectionLimiter::BarthJespersen};
+    const cfd::ScalarBoundaryConditions linear_conditions{
+        4,
+        {
+            {cfd::ScalarBoundaryConditionType::Dirichlet, 0.0},
+            {cfd::ScalarBoundaryConditionType::Dirichlet, 1.0},
+            {cfd::ScalarBoundaryConditionType::Dirichlet, 0.5},
+            {cfd::ScalarBoundaryConditionType::Dirichlet, 0.5},
+        },
+    };
+    const cfd::BoundaryId left_id{find_boundary_id(mesh, "left")};
+    const cfd::BoundaryId right_id{find_boundary_id(mesh, "right")};
+    cfd::CellScalarField field{mesh.cell_count(), 0.5};
+    cfd::CellVectorField gradient{mesh.cell_count(), {4.0, 0.0}};
+    cfd::FaceFluxField face_flux{mesh.face_count()};
+    cfd::CellScalarField unlimited_balance{mesh.cell_count()};
+    cfd::CellScalarField limited_balance{mesh.cell_count()};
+    std::vector<double> limiter(mesh.cell_count(), -1.0);
+
+    set_boundary_flux(mesh, face_flux, right_id, 2.0);
+    unlimited.compute_flux_balance(field, linear_conditions, face_flux, gradient, unlimited_balance);
+    limited.compute_flux_balance(field, linear_conditions, face_flux, gradient, limiter, limited_balance);
+    require_near(limiter[0], 0.25, test_tolerance,
+                 "Barth-Jespersen computed an incorrect positive-overshoot coefficient.");
+    require_near(unlimited_balance[0], 5.0, test_tolerance,
+                 "The unlimited reconstruction did not expose the positive overshoot fixture.");
+    require_near(limited_balance[0], 2.0, test_tolerance,
+                 "Barth-Jespersen did not clamp the outflow reconstruction to phi_max.");
+
+    std::ranges::fill(face_flux.values(), 0.0);
+    set_boundary_flux(mesh, face_flux, left_id, 2.0);
+    unlimited.compute_flux_balance(field, linear_conditions, face_flux, gradient, unlimited_balance);
+    limited.compute_flux_balance(field, linear_conditions, face_flux, gradient, limiter, limited_balance);
+    require_near(limiter[0], 0.25, test_tolerance,
+                 "Barth-Jespersen computed an incorrect negative-undershoot coefficient.");
+    require_near(unlimited_balance[0], -3.0, test_tolerance,
+                 "The unlimited reconstruction did not expose the negative undershoot fixture.");
+    require_near(limited_balance[0], 0.0, test_tolerance,
+                 "Barth-Jespersen did not clamp the outflow reconstruction to phi_min.");
+
+    gradient[0] = {1.0, 0.0};
+    std::ranges::fill(face_flux.values(), 0.0);
+    set_boundary_flux(mesh, face_flux, right_id, 2.0);
+    limited.compute_flux_balance(field, linear_conditions, face_flux, gradient, limiter, limited_balance);
+    require_near(limiter[0], 1.0, test_tolerance, "Barth-Jespersen limited a monotone linear reconstruction.");
+    require_near(limited_balance[0], 2.0, test_tolerance, "Barth-Jespersen lost exact monotone linear reconstruction.");
+
+    const cfd::ScalarBoundaryConditions constant_conditions{
+        make_uniform_conditions(4, cfd::ScalarBoundaryConditionType::Neumann, 0.0)};
+    field[0] = 3.0;
+    gradient[0] = {};
+    std::ranges::fill(face_flux.values(), 0.0);
+    limited.compute_flux_balance(field, constant_conditions, face_flux, gradient, limiter, limited_balance);
+    require_near(limiter[0], 1.0, 0.0, "A constant field did not retain a unit limiter coefficient.");
+    require_near(limited_balance[0], 0.0, 0.0, "A constant zero-flux field produced a convective balance.");
+
+    const cfd::ScalarBoundaryConditions extremum_conditions{
+        make_uniform_conditions(4, cfd::ScalarBoundaryConditionType::Dirichlet, 0.0)};
+    field[0] = 1.0;
+    gradient[0] = {2.0, 0.0};
+    set_boundary_flux(mesh, face_flux, right_id, 2.0);
+    limited.compute_flux_balance(field, extremum_conditions, face_flux, gradient, limiter, limited_balance);
+    require_near(limiter[0], 0.0, 0.0, "Barth-Jespersen did not suppress reconstruction at a local extremum.");
+    require_near(limited_balance[0], 2.0, test_tolerance,
+                 "A local-extremum reconstruction did not fall back to the owner value.");
+}
+
+void test_barth_jespersen_internal_flux_selection_conservation_and_assembly()
+{
+    cfd::MeshBuildResult build_result{cfd::build_mesh(make_two_cell_six_boundary_raw_mesh())};
+    const cfd::Mesh &mesh{build_result.mesh};
+    const cfd::ScalarConvectionOperator limited{mesh, cfd::ScalarConvectionScheme::LinearUpwind,
+                                                cfd::ScalarConvectionLimiter::BarthJespersen};
+    const cfd::ScalarConvectionOperator upwind{mesh, cfd::ScalarConvectionScheme::FirstOrderUpwind};
+    const cfd::ScalarBoundaryConditions conditions{
+        6,
+        {
+            {cfd::ScalarBoundaryConditionType::Dirichlet, 0.5},
+            {cfd::ScalarBoundaryConditionType::Dirichlet, 1.5},
+            {cfd::ScalarBoundaryConditionType::Dirichlet, 2.0},
+            {cfd::ScalarBoundaryConditionType::Dirichlet, 1.5},
+            {cfd::ScalarBoundaryConditionType::Dirichlet, 0.5},
+            {cfd::ScalarBoundaryConditionType::Dirichlet, 0.0},
+        },
+    };
+    cfd::CellScalarField field{mesh.cell_count()};
+    field[0] = 0.5;
+    field[1] = 1.5;
+    const cfd::CellVectorField gradient{mesh.cell_count(), {4.0, 0.0}};
+    const cfd::Index face_id{internal_face_id(mesh)};
+
+    for (const double carrier_flux : {3.0, -4.0})
+    {
+        cfd::FaceFluxField face_flux{mesh.face_count()};
+        face_flux[face_id] = carrier_flux;
+        cfd::CellScalarField balance{mesh.cell_count()};
+        std::vector<double> limiter(mesh.cell_count(), -1.0);
+        std::vector<double> rhs{10.0, -20.0};
+
+        limited.compute_flux_balance(field, conditions, face_flux, gradient, limiter, balance);
+        limited.add_deferred_correction_rhs(field, conditions, gradient, face_flux, limiter, rhs);
+
+        require_near(limiter[0], 0.25, test_tolerance, "The owner received an incorrect limiter coefficient.");
+        require_near(limiter[1], 0.25, test_tolerance, "The neighbor received an incorrect limiter coefficient.");
+        require_near(balance[0], carrier_flux, test_tolerance,
+                     "The limited internal face used an incorrect upwind reconstruction.");
+        require_near(balance[1], -carrier_flux, test_tolerance, "The limited internal face is not conservative.");
+        require_near((rhs[0] - 10.0) + (rhs[1] + 20.0), 0.0, test_tolerance,
+                     "The limited deferred correction is not conservative or additive.");
+
+        cfd::ScalarLinearSystem limited_system{mesh};
+        cfd::ScalarLinearSystem upwind_system{mesh};
+        limited.add_matrix_contributions(conditions, face_flux, limited_system);
+        upwind.add_matrix_contributions(conditions, face_flux, upwind_system);
+        limited.add_boundary_rhs(conditions, face_flux, limited_system.rhs());
+        limited.add_deferred_correction_rhs(field, conditions, gradient, face_flux, limiter, limited_system.rhs());
+        std::vector<double> matrix_product(mesh.cell_count());
+        limited_system.apply_matrix(field.values(), matrix_product);
+
+        for (cfd::Index cell_id = 0; cell_id < mesh.cell_count(); ++cell_id)
+        {
+            require_near(limited_system.diagonal()[cell_id], upwind_system.diagonal()[cell_id], 0.0,
+                         "Barth-Jespersen changed the FirstOrderUpwind matrix diagonal.");
+            require_near(matrix_product[cell_id] - limited_system.rhs()[cell_id], balance[cell_id], test_tolerance,
+                         "Limited direct balance differs from A*phi-rhs.");
+        }
+        for (cfd::Index current_face = 0; current_face < mesh.face_count(); ++current_face)
+        {
+            require_near(limited_system.owner_neighbor_coefficients()[current_face],
+                         upwind_system.owner_neighbor_coefficients()[current_face], 0.0,
+                         "Barth-Jespersen changed an owner-neighbor matrix coefficient.");
+            require_near(limited_system.neighbor_owner_coefficients()[current_face],
+                         upwind_system.neighbor_owner_coefficients()[current_face], 0.0,
+                         "Barth-Jespersen changed a neighbor-owner matrix coefficient.");
+        }
+    }
+}
+
+void test_barth_jespersen_boundary_bounds_and_flow_directions()
+{
+    cfd::MeshBuildResult build_result{cfd::build_mesh(make_single_cell_four_boundary_raw_mesh())};
+    const cfd::Mesh &mesh{build_result.mesh};
+    const cfd::ScalarConvectionOperator limited{mesh, cfd::ScalarConvectionScheme::LinearUpwind,
+                                                cfd::ScalarConvectionLimiter::BarthJespersen};
+    const cfd::CellScalarField field{mesh.cell_count(), 0.5};
+    const cfd::CellVectorField gradient{mesh.cell_count(), {4.0, 0.0}};
+    std::vector<double> limiter(mesh.cell_count(), -1.0);
+    cfd::CellScalarField balance{mesh.cell_count()};
+    cfd::FaceFluxField face_flux{mesh.face_count()};
+    const cfd::BoundaryId left_id{find_boundary_id(mesh, "left")};
+    const cfd::BoundaryId right_id{find_boundary_id(mesh, "right")};
+
+    const cfd::ScalarBoundaryConditions dirichlet_conditions{
+        4,
+        {
+            {cfd::ScalarBoundaryConditionType::Dirichlet, 0.0},
+            {cfd::ScalarBoundaryConditionType::Dirichlet, 1.0},
+            {cfd::ScalarBoundaryConditionType::Dirichlet, 0.5},
+            {cfd::ScalarBoundaryConditionType::Dirichlet, 0.5},
+        },
+    };
+    set_boundary_flux(mesh, face_flux, left_id, -2.0);
+    limited.compute_flux_balance(field, dirichlet_conditions, face_flux, gradient, limiter, balance);
+    require_near(balance[0], 0.0, 0.0, "Barth-Jespersen changed Dirichlet inflow treatment.");
+    require_near(limiter[0], 0.25, test_tolerance, "Dirichlet face values did not participate in limiter bounds.");
+
+    const cfd::ScalarBoundaryConditions neumann_conditions{
+        4,
+        {
+            {cfd::ScalarBoundaryConditionType::Neumann, -1.0},
+            {cfd::ScalarBoundaryConditionType::Neumann, 1.0},
+            {cfd::ScalarBoundaryConditionType::Neumann, 0.0},
+            {cfd::ScalarBoundaryConditionType::Neumann, 0.0},
+        },
+    };
+    std::ranges::fill(face_flux.values(), 0.0);
+    set_boundary_flux(mesh, face_flux, right_id, 2.0);
+    limited.compute_flux_balance(field, neumann_conditions, face_flux, gradient, limiter, balance);
+    require_near(limiter[0], 0.25, test_tolerance, "Neumann closure values did not participate in limiter bounds.");
+    require_near(balance[0], 2.0, test_tolerance, "Barth-Jespersen gave an incorrect Neumann outflow.");
+
+    std::ranges::fill(face_flux.values(), 0.0);
+    set_boundary_flux(mesh, face_flux, left_id, -2.0);
+    limited.compute_flux_balance(field, neumann_conditions, face_flux, gradient, limiter, balance);
+    require_near(balance[0], 0.0, test_tolerance, "Barth-Jespersen changed Neumann inflow treatment.");
+
+    std::ranges::fill(face_flux.values(), 0.0);
+    limited.compute_flux_balance(field, neumann_conditions, face_flux, gradient, limiter, balance);
+    require_near(limiter[0], 0.25, test_tolerance, "Zero-flux faces did not participate in spatial limiting.");
+    require_near(balance[0], 0.0, 0.0, "Zero face flux produced a limited convective contribution.");
+}
+
 void test_linear_upwind_validation_noop_and_input_immutability()
 {
     cfd::MeshBuildResult build_result{cfd::build_mesh(make_two_cell_rectangle_raw_mesh())};
@@ -1403,6 +1602,137 @@ void test_linear_upwind_validation_noop_and_input_immutability()
     }
 }
 
+void test_barth_jespersen_validation_none_compatibility_and_input_immutability()
+{
+    cfd::MeshBuildResult build_result{cfd::build_mesh(make_single_cell_four_boundary_raw_mesh())};
+    const cfd::Mesh &mesh{build_result.mesh};
+    const cfd::ScalarConvectionOperator limited{mesh, cfd::ScalarConvectionScheme::LinearUpwind,
+                                                cfd::ScalarConvectionLimiter::BarthJespersen};
+    const cfd::ScalarConvectionOperator default_unlimited{mesh, cfd::ScalarConvectionScheme::LinearUpwind};
+    const cfd::ScalarConvectionOperator explicit_unlimited{mesh, cfd::ScalarConvectionScheme::LinearUpwind,
+                                                           cfd::ScalarConvectionLimiter::None};
+    const cfd::ScalarBoundaryConditions conditions{
+        make_uniform_conditions(4, cfd::ScalarBoundaryConditionType::Dirichlet, 1.0)};
+    cfd::CellScalarField field{mesh.cell_count(), 0.5};
+    cfd::CellVectorField gradient{mesh.cell_count(), {1.0, -0.5}};
+    cfd::FaceFluxField face_flux{mesh.face_count()};
+    face_flux[first_boundary_face_id(mesh)] = 2.0;
+    cfd::CellScalarField default_balance{mesh.cell_count()};
+    cfd::CellScalarField explicit_balance{mesh.cell_count()};
+    cfd::CellScalarField limited_balance{mesh.cell_count()};
+    std::vector<double> limiter(mesh.cell_count());
+    std::vector<double> rhs(mesh.cell_count());
+
+    default_unlimited.compute_flux_balance(field, conditions, face_flux, gradient, default_balance);
+    explicit_unlimited.compute_flux_balance(field, conditions, face_flux, gradient, explicit_balance);
+    require_near(explicit_balance[0], default_balance[0], 0.0,
+                 "Explicit ScalarConvectionLimiter::None changed LinearUpwind.");
+
+    for (const cfd::ScalarConvectionScheme scheme :
+         {cfd::ScalarConvectionScheme::FirstOrderUpwind, cfd::ScalarConvectionScheme::Linear,
+          cfd::ScalarConvectionScheme::Hybrid})
+    {
+        require_throws<std::invalid_argument>(
+            [&mesh, scheme]() {
+                const cfd::ScalarConvectionOperator invalid{mesh, scheme, cfd::ScalarConvectionLimiter::BarthJespersen};
+            },
+            "Barth-Jespersen was accepted with a non-LinearUpwind scheme.");
+    }
+    require_throws<std::invalid_argument>(
+        [&mesh]() {
+            static_cast<void>(cfd::ScalarConvectionOperator{
+                mesh,
+                cfd::ScalarConvectionScheme::LinearUpwind,
+                // NOLINTNEXTLINE(clang-analyzer-optin.core.EnumCastOutOfRange)
+                static_cast<cfd::ScalarConvectionLimiter>(255),
+            });
+        },
+        "An unsupported scalar convection limiter was accepted.");
+    require_throws<std::invalid_argument>(
+        [&]() { limited.compute_flux_balance(field, conditions, face_flux, gradient, limited_balance); },
+        "Limited LinearUpwind accepted the overload without a limiter workspace.");
+    require_throws<std::invalid_argument>(
+        [&]() {
+            std::vector<double> wrong_workspace(mesh.cell_count() + 1);
+            limited.compute_flux_balance(field, conditions, face_flux, gradient, wrong_workspace, limited_balance);
+        },
+        "Barth-Jespersen accepted an incorrect workspace cardinality.");
+    require_throws<std::invalid_argument>(
+        [&]() {
+            cfd::CellScalarField non_finite_field{mesh.cell_count(), std::numeric_limits<double>::quiet_NaN()};
+            limited.compute_flux_balance(non_finite_field, conditions, face_flux, gradient, limiter, limited_balance);
+        },
+        "Barth-Jespersen accepted a non-finite scalar value.");
+    require_throws<std::invalid_argument>(
+        [&]() {
+            cfd::CellVectorField non_finite_gradient{mesh.cell_count(), {std::numeric_limits<double>::infinity(), 0.0}};
+            limited.compute_flux_balance(field, conditions, face_flux, non_finite_gradient, limiter, limited_balance);
+        },
+        "Barth-Jespersen accepted a non-finite gradient.");
+    require_throws<std::invalid_argument>(
+        [&]() {
+            cfd::FaceFluxField non_finite_flux{mesh.face_count()};
+            non_finite_flux[first_boundary_face_id(mesh)] = std::numeric_limits<double>::infinity();
+            limited.compute_flux_balance(field, conditions, non_finite_flux, gradient, limiter, limited_balance);
+        },
+        "Barth-Jespersen accepted a non-finite face flux.");
+    require_throws<std::invalid_argument>(
+        [&]() {
+            limited.compute_flux_balance(field, conditions, face_flux, gradient, field.values(), limited_balance);
+        },
+        "Barth-Jespersen accepted a workspace aliasing its scalar input.");
+
+    const auto offset_flux_workspace{face_flux.values().subspan(1, mesh.cell_count())};
+    require(offset_flux_workspace.data() != face_flux.values().data(),
+            "The partial-overlap fixture did not use a nonzero face-flux offset.");
+    require_throws<std::invalid_argument>(
+        [&]() {
+            limited.compute_flux_balance(field, conditions, face_flux, gradient, offset_flux_workspace,
+                                         limited_balance);
+        },
+        "Barth-Jespersen accepted a workspace partially overlapping face-flux storage.");
+    require_throws<std::invalid_argument>(
+        [&]() {
+            limited.add_deferred_correction_rhs(field, conditions, gradient, face_flux, offset_flux_workspace, rhs);
+        },
+        "Barth-Jespersen assembly accepted a workspace partially overlapping face-flux storage.");
+    const auto offset_flux_rhs{face_flux.values().subspan(1, mesh.cell_count())};
+    require_throws<std::invalid_argument>(
+        [&]() { default_unlimited.add_deferred_correction_rhs(gradient, face_flux, offset_flux_rhs); },
+        "Unlimited LinearUpwind accepted an RHS partially overlapping face-flux storage.");
+    require_throws<std::invalid_argument>(
+        [&]() {
+            limited.add_deferred_correction_rhs(field, conditions, gradient, face_flux, limiter, offset_flux_rhs);
+        },
+        "Barth-Jespersen accepted an RHS partially overlapping face-flux storage.");
+    require_throws<std::invalid_argument>(
+        [&]() {
+            limited.compute_flux_balance(field, conditions, face_flux, gradient, limited_balance.values(),
+                                         limited_balance);
+        },
+        "Barth-Jespersen accepted a workspace overlapping its output.");
+    require_throws<std::invalid_argument>(
+        [&]() { limited.add_deferred_correction_rhs(field, conditions, gradient, face_flux, rhs, rhs); },
+        "Barth-Jespersen accepted a workspace aliasing its RHS.");
+    require_throws<std::invalid_argument>(
+        [&]() { limited.add_deferred_correction_rhs(field, conditions, gradient, face_flux, limiter, field.values()); },
+        "Barth-Jespersen accepted an RHS overlapping its scalar input.");
+
+    const cfd::CellScalarField field_before{field};
+    const cfd::CellVectorField gradient_before{gradient};
+    const cfd::FaceFluxField face_flux_before{face_flux};
+    limited.compute_flux_balance(field, conditions, face_flux, gradient, limiter, limited_balance);
+    limited.add_deferred_correction_rhs(field, conditions, gradient, face_flux, limiter, rhs);
+    require_near(field[0], field_before[0], 0.0, "Barth-Jespersen modified its scalar input.");
+    require_near(gradient[0].x, gradient_before[0].x, 0.0, "Barth-Jespersen modified its gradient input.");
+    require_near(gradient[0].y, gradient_before[0].y, 0.0, "Barth-Jespersen modified its gradient input.");
+    for (cfd::Index face_id = 0; face_id < mesh.face_count(); ++face_id)
+    {
+        require_near(face_flux[face_id], face_flux_before[face_id], 0.0,
+                     "Barth-Jespersen modified its face-flux input.");
+    }
+}
+
 } // namespace
 
 int main()
@@ -1451,6 +1781,14 @@ int main()
     failure_count += cfd::test::run_test("LinearUpwind boundary treatments", test_linear_upwind_boundary_treatments);
     failure_count += cfd::test::run_test("LinearUpwind validation, no-op, and input immutability",
                                          test_linear_upwind_validation_noop_and_input_immutability);
+    failure_count += cfd::test::run_test("Barth-Jespersen constant, monotone, and bounded reconstruction",
+                                         test_barth_jespersen_constant_monotone_and_bounded_reconstruction);
+    failure_count += cfd::test::run_test("Barth-Jespersen internal selection, conservation, and assembly",
+                                         test_barth_jespersen_internal_flux_selection_conservation_and_assembly);
+    failure_count += cfd::test::run_test("Barth-Jespersen boundary bounds and flow directions",
+                                         test_barth_jespersen_boundary_bounds_and_flow_directions);
+    failure_count += cfd::test::run_test("Barth-Jespersen validation, None compatibility, and input immutability",
+                                         test_barth_jespersen_validation_none_compatibility_and_input_immutability);
     failure_count +=
         cfd::test::run_test("hybrid convection uniform internal switch", test_hybrid_uniform_internal_switch);
     failure_count +=

@@ -403,7 +403,7 @@ LevelResult run_level(const GridLevel &level, const SchemeStudy &study)
         total_area += cell_area;
     }
 
-    const cfd::IncompressibleMomentumAssembler assembler{mesh, dynamic_viscosity, study.scheme};
+    cfd::IncompressibleMomentumAssembler assembler{mesh, dynamic_viscosity, study.scheme};
     cfd::ScalarLinearSystem u_system{mesh};
     cfd::ScalarLinearSystem v_system{mesh};
     assembler.assemble(previous_velocity, u_gradient, v_gradient, pressure_gradient, u_boundary_conditions,
@@ -516,7 +516,7 @@ FixedPointResult run_relaxation_fixed_point_check()
         pressure_gradient[cell_id] = analytical_pressure_gradient(cell_center);
     }
 
-    const cfd::IncompressibleMomentumAssembler assembler{mesh, dynamic_viscosity, cfd::ScalarConvectionScheme::Linear};
+    cfd::IncompressibleMomentumAssembler assembler{mesh, dynamic_viscosity, cfd::ScalarConvectionScheme::Linear};
     const cfd::CellVelocityField initial_previous_velocity{mesh.cell_count()};
     cfd::ScalarLinearSystem unrelaxed_u_system{mesh};
     cfd::ScalarLinearSystem unrelaxed_v_system{mesh};
