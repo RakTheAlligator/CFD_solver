@@ -628,6 +628,101 @@ void test_does_not_mutate_inputs()
     }
 }
 
+void test_linear_upwind_deferred_correction_precedes_equation_relaxation()
+{
+    cfd::MeshBuildResult build_result{cfd::build_mesh(make_two_cell_rectangle_raw_mesh())};
+    const cfd::Mesh &mesh{build_result.mesh};
+    const cfd::IncompressibleMomentumAssembler upwind_assembler{mesh, 1.0,
+                                                                cfd::ScalarConvectionScheme::FirstOrderUpwind};
+    const cfd::IncompressibleMomentumAssembler linear_upwind_assembler{mesh, 1.0,
+                                                                       cfd::ScalarConvectionScheme::LinearUpwind};
+    const cfd::CellVelocityField previous_velocity{mesh.cell_count(), {1.5, -2.5}};
+    cfd::CellVectorField u_gradient{mesh.cell_count()};
+    cfd::CellVectorField v_gradient{mesh.cell_count()};
+    const cfd::CellVectorField pressure_gradient{mesh.cell_count()};
+    const cfd::ScalarBoundaryConditions boundary_conditions{make_uniform_boundary_conditions(
+        mesh.boundary_groups().size(), cfd::ScalarBoundaryConditionType::Neumann, 0.0)};
+    cfd::FaceFluxField mass_flux{mesh.face_count()};
+
+    cfd::Index internal_face{mesh.face_count()};
+    for (cfd::Index face_id = 0; face_id < mesh.face_count(); ++face_id)
+    {
+        if (!mesh.face_adjacencies()[face_id].is_boundary())
+        {
+            internal_face = face_id;
+            break;
+        }
+    }
+    require(internal_face < mesh.face_count(), "The LinearUpwind momentum fixture has no internal face.");
+    const cfd::FaceAdjacency &adjacency{mesh.face_adjacencies()[internal_face]};
+    u_gradient[adjacency.owner] = {2.0, 0.0};
+    u_gradient[adjacency.neighbor] = {40.0, 50.0};
+    v_gradient[adjacency.owner] = {-3.0, 1.0};
+    v_gradient[adjacency.neighbor] = {-60.0, -70.0};
+    constexpr double carrier_flux{2.0};
+    mass_flux[internal_face] = carrier_flux;
+
+    const cfd::Point2 &owner_center{mesh.cell_centers()[adjacency.owner]};
+    const cfd::Point2 &face_center{mesh.face_centers()[internal_face]};
+    const double u_correction{u_gradient[adjacency.owner].x * (face_center.x - owner_center.x) +
+                              u_gradient[adjacency.owner].y * (face_center.y - owner_center.y)};
+    const double v_correction{v_gradient[adjacency.owner].x * (face_center.x - owner_center.x) +
+                              v_gradient[adjacency.owner].y * (face_center.y - owner_center.y)};
+    const double u_correction_flux{carrier_flux * u_correction};
+    const double v_correction_flux{carrier_flux * v_correction};
+
+    const auto require_relaxation_case = [&](const double relaxation_factor) {
+        cfd::ScalarLinearSystem upwind_u_system{mesh};
+        cfd::ScalarLinearSystem upwind_v_system{mesh};
+        cfd::ScalarLinearSystem linear_upwind_u_system{mesh};
+        cfd::ScalarLinearSystem linear_upwind_v_system{mesh};
+
+        upwind_assembler.assemble(previous_velocity, u_gradient, v_gradient, pressure_gradient, boundary_conditions,
+                                  boundary_conditions, mass_flux, relaxation_factor, upwind_u_system, upwind_v_system);
+        linear_upwind_assembler.assemble(previous_velocity, u_gradient, v_gradient, pressure_gradient,
+                                         boundary_conditions, boundary_conditions, mass_flux, relaxation_factor,
+                                         linear_upwind_u_system, linear_upwind_v_system);
+
+        for (cfd::Index cell_id = 0; cell_id < mesh.cell_count(); ++cell_id)
+        {
+            require_near(linear_upwind_u_system.diagonal()[cell_id], upwind_u_system.diagonal()[cell_id], 0.0,
+                         "LinearUpwind changed a relaxed u-momentum diagonal.");
+            require_near(linear_upwind_v_system.diagonal()[cell_id], upwind_v_system.diagonal()[cell_id], 0.0,
+                         "LinearUpwind changed a relaxed v-momentum diagonal.");
+        }
+        for (cfd::Index face_id = 0; face_id < mesh.face_count(); ++face_id)
+        {
+            require_near(linear_upwind_u_system.owner_neighbor_coefficients()[face_id],
+                         upwind_u_system.owner_neighbor_coefficients()[face_id], 0.0,
+                         "LinearUpwind changed a u owner-neighbor coefficient.");
+            require_near(linear_upwind_u_system.neighbor_owner_coefficients()[face_id],
+                         upwind_u_system.neighbor_owner_coefficients()[face_id], 0.0,
+                         "LinearUpwind changed a u neighbor-owner coefficient.");
+            require_near(linear_upwind_v_system.owner_neighbor_coefficients()[face_id],
+                         upwind_v_system.owner_neighbor_coefficients()[face_id], 0.0,
+                         "LinearUpwind changed a v owner-neighbor coefficient.");
+            require_near(linear_upwind_v_system.neighbor_owner_coefficients()[face_id],
+                         upwind_v_system.neighbor_owner_coefficients()[face_id], 0.0,
+                         "LinearUpwind changed a v neighbor-owner coefficient.");
+        }
+
+        require_near(linear_upwind_u_system.rhs()[adjacency.owner] - upwind_u_system.rhs()[adjacency.owner],
+                     -u_correction_flux, test_tolerance,
+                     "Momentum assembly gave an incorrect owner u deferred correction.");
+        require_near(linear_upwind_u_system.rhs()[adjacency.neighbor] - upwind_u_system.rhs()[adjacency.neighbor],
+                     u_correction_flux, test_tolerance,
+                     "Momentum assembly gave an incorrect neighbor u deferred correction.");
+        require_near(linear_upwind_v_system.rhs()[adjacency.owner] - upwind_v_system.rhs()[adjacency.owner],
+                     -v_correction_flux, test_tolerance,
+                     "Momentum assembly mixed or scaled the owner v deferred correction.");
+        require_near(linear_upwind_v_system.rhs()[adjacency.neighbor] - upwind_v_system.rhs()[adjacency.neighbor],
+                     v_correction_flux, test_tolerance,
+                     "Momentum assembly mixed or scaled the neighbor v deferred correction.");
+    };
+
+    require_relaxation_case(1.0);
+    require_relaxation_case(0.5);
+}
 } // namespace
 
 int main()
@@ -641,6 +736,8 @@ int main()
     failure_count += cfd::test::run_test("momentum equation under-relaxation", test_equation_under_relaxation);
     failure_count += cfd::test::run_test("momentum Hybrid Linear and Upwind branches",
                                          test_hybrid_uses_linear_and_upwind_momentum_branches);
+    failure_count += cfd::test::run_test("momentum LinearUpwind deferred correction and equation relaxation",
+                                         test_linear_upwind_deferred_correction_precedes_equation_relaxation);
     failure_count += cfd::test::run_test("momentum non-orthogonal correction",
                                          test_non_orthogonal_correction_reuses_diffusion_operator);
     failure_count += cfd::test::run_test("momentum output clearing", test_output_systems_are_cleared);

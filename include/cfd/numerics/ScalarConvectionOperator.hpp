@@ -10,6 +10,7 @@ namespace cfd
 {
 
 class CellScalarField;
+class CellVectorField;
 class FaceFluxField;
 class Mesh;
 class ScalarBoundaryConditions;
@@ -26,7 +27,10 @@ enum class ScalarConvectionScheme : std::uint8_t
     Linear,
     /// Selects Linear or FirstOrderUpwind independently on each face from the
     /// local mass flux, interpolation weight, and diffusion conductance.
-    Hybrid
+    Hybrid,
+    /// Uses an implicit FirstOrderUpwind matrix plus an explicit WLS-gradient
+    /// reconstruction from the upwind cell.
+    LinearUpwind
 };
 
 /// Counts faces selected by each branch of the Hybrid convection criterion.
@@ -48,7 +52,9 @@ struct HybridConvectionFaceCounts
 /// applies boundary conditions independently of flow direction: Dirichlet uses
 /// the prescribed face value and Neumann uses the first-order closure
 /// `phi_b = phi_P + (d(phi)/dn) d_n`. Hybrid selects between those treatments
-/// face by face using caller-supplied diffusion conductances.
+/// face by face using caller-supplied diffusion conductances. LinearUpwind
+/// retains the FirstOrderUpwind matrix and adds its higher-order reconstruction
+/// explicitly to the right-hand side.
 ///
 /// @note The referenced Mesh is not owned and must outlive this operator.
 /// @note Repeated valid calls perform no dynamic allocation.
@@ -101,6 +107,19 @@ class ScalarConvectionOperator
                               const FaceFluxField &face_flux, CellScalarField &flux_balance,
                               std::span<const double> face_diffusion_conductances = {}) const;
 
+    /// Computes the complete LinearUpwind convective-flux balance.
+    ///
+    /// Internal faces reconstruct from the upwind cell. Boundary inflow retains
+    /// the FirstOrderUpwind boundary closure, while boundary outflow reconstructs
+    /// from the owner cell. The supplied gradient is treated as explicit data.
+    ///
+    /// @throws std::invalid_argument If this operator is not configured for
+    ///         LinearUpwind, a cardinality is incompatible, or `field` and
+    ///         `flux_balance` are the same object.
+    void compute_flux_balance(const CellScalarField &field, const ScalarBoundaryConditions &boundary_conditions,
+                              const FaceFluxField &face_flux, const CellVectorField &gradient,
+                              CellScalarField &flux_balance) const;
+
     /// Adds coefficients for the selected scheme to an existing system matrix.
     ///
     /// For Hybrid, `face_diffusion_conductances[face]` is the integrated
@@ -127,6 +146,16 @@ class ScalarConvectionOperator
     ///         non-finite, or are not strictly positive.
     void add_boundary_rhs(const ScalarBoundaryConditions &boundary_conditions, const FaceFluxField &face_flux,
                           std::span<double> rhs, std::span<const double> face_diffusion_conductances = {}) const;
+
+    /// Adds the selected scheme's deferred correction to `rhs`.
+    ///
+    /// LinearUpwind adds `-F delta_phi` to the owner and `+F delta_phi` to the
+    /// neighbor of each internal face. Positive-flux boundary faces add the
+    /// corresponding owner reconstruction. Other schemes perform no work.
+    ///
+    /// @throws std::invalid_argument For LinearUpwind, if a cardinality is incompatible.
+    void add_deferred_correction_rhs(const CellVectorField &gradient, const FaceFluxField &face_flux,
+                                     std::span<double> rhs) const;
 
   private:
     const Mesh *mesh_;

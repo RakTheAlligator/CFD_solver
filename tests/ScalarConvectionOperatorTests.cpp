@@ -1,6 +1,7 @@
 #include "cfd/numerics/ScalarConvectionOperator.hpp"
 
 #include "cfd/field/CellScalarField.hpp"
+#include "cfd/field/CellVectorField.hpp"
 #include "cfd/field/FaceFluxField.hpp"
 #include "cfd/field/ScalarBoundaryConditions.hpp"
 #include "cfd/linear_algebra/ScalarLinearSystem.hpp"
@@ -1119,6 +1120,289 @@ void test_does_not_mutate_inputs()
             "Scalar convection modified its boundary condition.");
 }
 
+void test_linear_upwind_exact_linear_internal_reconstruction()
+{
+    cfd::MeshBuildResult build_result{cfd::build_mesh(make_nonuniform_two_cell_rectangle_raw_mesh())};
+    const cfd::Mesh &mesh{build_result.mesh};
+    const cfd::ScalarConvectionOperator convection{mesh, cfd::ScalarConvectionScheme::LinearUpwind};
+    const cfd::ScalarBoundaryConditions conditions{
+        make_uniform_conditions(1, cfd::ScalarBoundaryConditionType::Neumann, 0.0)};
+    const auto cell_centers{mesh.cell_centers()};
+    const cfd::Index face_id{internal_face_id(mesh)};
+    const cfd::FaceAdjacency &adjacency{mesh.face_adjacencies()[face_id]};
+    const cfd::Point2 &face_center{mesh.face_centers()[face_id]};
+    cfd::CellScalarField field{mesh.cell_count()};
+    cfd::CellVectorField gradient{mesh.cell_count(), {2.0, -3.0}};
+    for (cfd::Index cell_id = 0; cell_id < mesh.cell_count(); ++cell_id)
+    {
+        field[cell_id] = 2.0 * cell_centers[cell_id].x - 3.0 * cell_centers[cell_id].y + 4.0;
+    }
+    const double exact_face_value{2.0 * face_center.x - 3.0 * face_center.y + 4.0};
+
+    for (const double carrier_flux : {3.0, -4.0})
+    {
+        cfd::FaceFluxField face_flux{mesh.face_count()};
+        face_flux[face_id] = carrier_flux;
+        cfd::CellScalarField balance{mesh.cell_count()};
+
+        convection.compute_flux_balance(field, conditions, face_flux, gradient, balance);
+
+        require_near(balance[adjacency.owner], carrier_flux * exact_face_value, test_tolerance,
+                     "LinearUpwind did not exactly reconstruct a linear internal-face value.");
+        require_near(balance[adjacency.neighbor], -carrier_flux * exact_face_value, test_tolerance,
+                     "LinearUpwind gave an incorrect conservative neighbor balance.");
+    }
+}
+
+void test_linear_upwind_selects_upwind_gradient_and_adds_conservatively()
+{
+    cfd::MeshBuildResult build_result{cfd::build_mesh(make_nonuniform_two_cell_rectangle_raw_mesh())};
+    const cfd::Mesh &mesh{build_result.mesh};
+    const cfd::ScalarConvectionOperator convection{mesh, cfd::ScalarConvectionScheme::LinearUpwind};
+    const cfd::Index face_id{internal_face_id(mesh)};
+    const cfd::FaceAdjacency &adjacency{mesh.face_adjacencies()[face_id]};
+    const auto cell_centers{mesh.cell_centers()};
+    const cfd::Point2 &face_center{mesh.face_centers()[face_id]};
+    cfd::CellVectorField gradient{mesh.cell_count()};
+    gradient[adjacency.owner] = {2.0, 0.0};
+    gradient[adjacency.neighbor] = {-5.0, 0.0};
+
+    for (const double carrier_flux : {3.0, -4.0})
+    {
+        cfd::FaceFluxField face_flux{mesh.face_count()};
+        face_flux[face_id] = carrier_flux;
+        std::vector<double> rhs{10.0, -20.0};
+        const cfd::Index upwind_id{carrier_flux >= 0.0 ? adjacency.owner : adjacency.neighbor};
+        const double correction{gradient[upwind_id].x * (face_center.x - cell_centers[upwind_id].x) +
+                                gradient[upwind_id].y * (face_center.y - cell_centers[upwind_id].y)};
+        const double correction_flux{carrier_flux * correction};
+
+        convection.add_deferred_correction_rhs(gradient, face_flux, rhs);
+
+        require_near(rhs[adjacency.owner], 10.0 - correction_flux, test_tolerance,
+                     "LinearUpwind selected the wrong upwind gradient for the owner RHS.");
+        require_near(rhs[adjacency.neighbor], -20.0 + correction_flux, test_tolerance,
+                     "LinearUpwind selected the wrong upwind gradient for the neighbor RHS.");
+        require_near((rhs[adjacency.owner] - 10.0) + (rhs[adjacency.neighbor] + 20.0), 0.0, test_tolerance,
+                     "LinearUpwind deferred correction is not conservative.");
+    }
+
+    const cfd::CellVectorField zero_gradient{mesh.cell_count()};
+    cfd::FaceFluxField face_flux{mesh.face_count()};
+    face_flux[face_id] = 3.0;
+    std::vector<double> rhs{10.0, -20.0};
+    convection.add_deferred_correction_rhs(zero_gradient, face_flux, rhs);
+    require_near(rhs[0], 10.0, 0.0, "A zero gradient changed the LinearUpwind owner RHS.");
+    require_near(rhs[1], -20.0, 0.0, "A zero gradient changed the LinearUpwind neighbor RHS.");
+}
+
+void test_linear_upwind_matrix_and_base_boundary_rhs_match_upwind()
+{
+    cfd::MeshBuildResult build_result{cfd::build_mesh(make_two_cell_six_boundary_raw_mesh())};
+    const cfd::Mesh &mesh{build_result.mesh};
+    const cfd::ScalarConvectionOperator upwind{mesh, cfd::ScalarConvectionScheme::FirstOrderUpwind};
+    const cfd::ScalarConvectionOperator linear_upwind{mesh, cfd::ScalarConvectionScheme::LinearUpwind};
+    const cfd::ScalarBoundaryConditions conditions{
+        make_uniform_conditions(mesh.boundary_groups().size(), cfd::ScalarBoundaryConditionType::Dirichlet, 7.0)};
+    cfd::FaceFluxField face_flux{mesh.face_count()};
+    for (cfd::Index face_id = 0; face_id < mesh.face_count(); ++face_id)
+    {
+        const double magnitude{0.5 * static_cast<double>(face_id + 1)};
+        face_flux[face_id] = face_id % 2 == 0 ? magnitude : -magnitude;
+    }
+    cfd::ScalarLinearSystem upwind_system{mesh};
+    cfd::ScalarLinearSystem linear_upwind_system{mesh};
+
+    upwind.add_matrix_contributions(conditions, face_flux, upwind_system);
+    upwind.add_boundary_rhs(conditions, face_flux, upwind_system.rhs());
+    linear_upwind.add_matrix_contributions(conditions, face_flux, linear_upwind_system);
+    linear_upwind.add_boundary_rhs(conditions, face_flux, linear_upwind_system.rhs());
+
+    for (cfd::Index cell_id = 0; cell_id < mesh.cell_count(); ++cell_id)
+    {
+        require_near(linear_upwind_system.diagonal()[cell_id], upwind_system.diagonal()[cell_id], 0.0,
+                     "LinearUpwind matrix diagonal differs from FirstOrderUpwind.");
+        require_near(linear_upwind_system.rhs()[cell_id], upwind_system.rhs()[cell_id], 0.0,
+                     "LinearUpwind base boundary RHS differs from FirstOrderUpwind.");
+    }
+    for (cfd::Index face_id = 0; face_id < mesh.face_count(); ++face_id)
+    {
+        require_near(linear_upwind_system.owner_neighbor_coefficients()[face_id],
+                     upwind_system.owner_neighbor_coefficients()[face_id], 0.0,
+                     "LinearUpwind owner-neighbor coefficient differs from FirstOrderUpwind.");
+        require_near(linear_upwind_system.neighbor_owner_coefficients()[face_id],
+                     upwind_system.neighbor_owner_coefficients()[face_id], 0.0,
+                     "LinearUpwind neighbor-owner coefficient differs from FirstOrderUpwind.");
+    }
+}
+
+void test_linear_upwind_assembly_matches_direct_balance()
+{
+    cfd::MeshBuildResult build_result{cfd::build_mesh(make_two_cell_six_boundary_raw_mesh())};
+    const cfd::Mesh &mesh{build_result.mesh};
+    const cfd::ScalarConvectionOperator convection{mesh, cfd::ScalarConvectionScheme::LinearUpwind};
+    std::vector<cfd::ScalarBoundaryCondition> condition_values{
+        {cfd::ScalarBoundaryConditionType::Dirichlet, 1.2},  {cfd::ScalarBoundaryConditionType::Neumann, -0.4},
+        {cfd::ScalarBoundaryConditionType::Dirichlet, -2.0}, {cfd::ScalarBoundaryConditionType::Neumann, 0.7},
+        {cfd::ScalarBoundaryConditionType::Dirichlet, 3.0},  {cfd::ScalarBoundaryConditionType::Neumann, -1.1},
+    };
+    const cfd::ScalarBoundaryConditions conditions{6, std::move(condition_values)};
+    cfd::CellScalarField field{mesh.cell_count()};
+    field[0] = 2.3;
+    field[1] = -0.8;
+    cfd::CellVectorField gradient{mesh.cell_count()};
+    gradient[0] = {0.7, -1.1};
+    gradient[1] = {-0.4, 1.3};
+    cfd::FaceFluxField face_flux{mesh.face_count()};
+    face_flux[internal_face_id(mesh)] = -1.7;
+    set_boundary_flux(mesh, face_flux, find_boundary_id(mesh, "bottom_0"), -0.7);
+    set_boundary_flux(mesh, face_flux, find_boundary_id(mesh, "bottom_1"), -1.1);
+    set_boundary_flux(mesh, face_flux, find_boundary_id(mesh, "right"), 0.6);
+    set_boundary_flux(mesh, face_flux, find_boundary_id(mesh, "top_1"), 0.9);
+    set_boundary_flux(mesh, face_flux, find_boundary_id(mesh, "left"), -0.3);
+    cfd::CellScalarField balance{mesh.cell_count()};
+    cfd::ScalarLinearSystem system{mesh};
+
+    convection.compute_flux_balance(field, conditions, face_flux, gradient, balance);
+    convection.add_matrix_contributions(conditions, face_flux, system);
+    convection.add_boundary_rhs(conditions, face_flux, system.rhs());
+    convection.add_deferred_correction_rhs(gradient, face_flux, system.rhs());
+    std::vector<double> matrix_product(mesh.cell_count());
+    system.apply_matrix(field.values(), matrix_product);
+
+    for (cfd::Index cell_id = 0; cell_id < mesh.cell_count(); ++cell_id)
+    {
+        require_near(matrix_product[cell_id] - system.rhs()[cell_id], balance[cell_id], test_tolerance,
+                     "LinearUpwind assembly does not reconstruct its direct flux balance.");
+    }
+}
+
+void test_linear_upwind_boundary_treatments()
+{
+    cfd::MeshBuildResult build_result{cfd::build_mesh(make_single_quadrilateral_raw_mesh())};
+    const cfd::Mesh &mesh{build_result.mesh};
+    const cfd::ScalarConvectionOperator convection{mesh, cfd::ScalarConvectionScheme::LinearUpwind};
+    const cfd::CellScalarField field{mesh.cell_count(), 3.0};
+    const cfd::CellVectorField gradient{mesh.cell_count(), {2.0, 4.0}};
+    const cfd::Index face_id{first_boundary_face_id(mesh)};
+    const cfd::Index owner_id{mesh.face_adjacencies()[face_id].owner};
+    const cfd::Point2 &cell_center{mesh.cell_centers()[owner_id]};
+    const cfd::Point2 &face_center{mesh.face_centers()[face_id]};
+    const cfd::Vector2 &area_vector{mesh.face_area_vectors()[face_id]};
+    const double normal_distance{
+        ((face_center.x - cell_center.x) * area_vector.x + (face_center.y - cell_center.y) * area_vector.y) /
+        mesh.face_lengths()[face_id]};
+    const double reconstruction{gradient[owner_id].x * (face_center.x - cell_center.x) +
+                                gradient[owner_id].y * (face_center.y - cell_center.y)};
+
+    const auto require_case = [&](const cfd::ScalarBoundaryConditionType type, const double condition_value,
+                                  const double carrier_flux, const double expected_face_value,
+                                  const double expected_diagonal, const double expected_rhs,
+                                  const std::string &context) {
+        const cfd::ScalarBoundaryConditions conditions{make_uniform_conditions(1, type, condition_value)};
+        cfd::FaceFluxField face_flux{mesh.face_count()};
+        face_flux[face_id] = carrier_flux;
+        cfd::CellScalarField balance{mesh.cell_count(), 99.0};
+        cfd::ScalarLinearSystem system{mesh};
+
+        convection.compute_flux_balance(field, conditions, face_flux, gradient, balance);
+        convection.add_matrix_contributions(conditions, face_flux, system);
+        convection.add_boundary_rhs(conditions, face_flux, system.rhs());
+        convection.add_deferred_correction_rhs(gradient, face_flux, system.rhs());
+
+        require_near(balance[owner_id], carrier_flux * expected_face_value, test_tolerance,
+                     context + " direct balance is incorrect.");
+        require_near(system.diagonal()[owner_id], expected_diagonal, test_tolerance,
+                     context + " diagonal is incorrect.");
+        require_near(system.rhs()[owner_id], expected_rhs, test_tolerance, context + " RHS is incorrect.");
+    };
+
+    require_case(cfd::ScalarBoundaryConditionType::Dirichlet, 7.0, -2.0, 7.0, 0.0, 14.0,
+                 "LinearUpwind Dirichlet inflow");
+    require_case(cfd::ScalarBoundaryConditionType::Dirichlet, 1000.0, 2.0, 3.0 + reconstruction, 2.0,
+                 -2.0 * reconstruction, "LinearUpwind Dirichlet outflow");
+    require_case(cfd::ScalarBoundaryConditionType::Neumann, 4.0, -2.0, 3.0 + 4.0 * normal_distance, -2.0,
+                 8.0 * normal_distance, "LinearUpwind Neumann inflow");
+    require_case(cfd::ScalarBoundaryConditionType::Neumann, 1000.0, 2.0, 3.0 + reconstruction, 2.0,
+                 -2.0 * reconstruction, "LinearUpwind Neumann outflow");
+    require_case(cfd::ScalarBoundaryConditionType::Dirichlet, 1000.0, 0.0, 0.0, 0.0, 0.0, "LinearUpwind zero flux");
+}
+
+void test_linear_upwind_validation_noop_and_input_immutability()
+{
+    cfd::MeshBuildResult build_result{cfd::build_mesh(make_two_cell_rectangle_raw_mesh())};
+    const cfd::Mesh &mesh{build_result.mesh};
+    const cfd::ScalarConvectionOperator convection{mesh, cfd::ScalarConvectionScheme::LinearUpwind};
+    const cfd::ScalarBoundaryConditions conditions{
+        make_uniform_conditions(1, cfd::ScalarBoundaryConditionType::Neumann, 0.0)};
+    cfd::CellScalarField field{mesh.cell_count(), 2.0};
+    cfd::CellVectorField gradient{mesh.cell_count(), {0.5, -0.25}};
+    cfd::FaceFluxField face_flux{mesh.face_count()};
+    face_flux[internal_face_id(mesh)] = 2.0;
+    cfd::CellScalarField balance{mesh.cell_count()};
+    std::vector<double> rhs(mesh.cell_count());
+    const cfd::CellScalarField field_before{field};
+    const cfd::CellVectorField gradient_before{gradient};
+    const cfd::FaceFluxField face_flux_before{face_flux};
+
+    require_throws<std::invalid_argument>(
+        [&]() { convection.compute_flux_balance(field, conditions, face_flux, balance); },
+        "LinearUpwind accepted the flux-balance overload without a gradient.");
+    require_throws<std::invalid_argument>(
+        [&]() {
+            const cfd::CellVectorField wrong_gradient{mesh.cell_count() + 1};
+            convection.add_deferred_correction_rhs(wrong_gradient, face_flux, rhs);
+        },
+        "LinearUpwind accepted an incorrect gradient cardinality.");
+    require_throws<std::invalid_argument>(
+        [&]() {
+            const cfd::FaceFluxField wrong_flux{mesh.face_count() + 1};
+            convection.add_deferred_correction_rhs(gradient, wrong_flux, rhs);
+        },
+        "LinearUpwind accepted an incorrect face-flux cardinality.");
+    require_throws<std::invalid_argument>(
+        [&]() {
+            std::vector<double> wrong_rhs(mesh.cell_count() + 1);
+            convection.add_deferred_correction_rhs(gradient, face_flux, wrong_rhs);
+        },
+        "LinearUpwind accepted an incorrect RHS cardinality.");
+    require_throws<std::invalid_argument>(
+        [&]() {
+            const cfd::CellVectorField wrong_gradient{mesh.cell_count() + 1};
+            convection.compute_flux_balance(field, conditions, face_flux, wrong_gradient, balance);
+        },
+        "LinearUpwind direct balance accepted an incorrect gradient cardinality.");
+    require_throws<std::invalid_argument>(
+        [&]() { convection.compute_flux_balance(field, conditions, face_flux, gradient, field); },
+        "LinearUpwind direct balance accepted an aliased output.");
+
+    convection.compute_flux_balance(field, conditions, face_flux, gradient, balance);
+    convection.add_deferred_correction_rhs(gradient, face_flux, rhs);
+    for (cfd::Index cell_id = 0; cell_id < mesh.cell_count(); ++cell_id)
+    {
+        require_near(field[cell_id], field_before[cell_id], 0.0, "LinearUpwind modified its scalar input.");
+        require_near(gradient[cell_id].x, gradient_before[cell_id].x, 0.0,
+                     "LinearUpwind modified an input gradient x component.");
+        require_near(gradient[cell_id].y, gradient_before[cell_id].y, 0.0,
+                     "LinearUpwind modified an input gradient y component.");
+    }
+    for (cfd::Index face_id = 0; face_id < mesh.face_count(); ++face_id)
+    {
+        require_near(face_flux[face_id], face_flux_before[face_id], 0.0, "LinearUpwind modified an input face flux.");
+    }
+
+    for (const cfd::ScalarConvectionScheme scheme :
+         {cfd::ScalarConvectionScheme::FirstOrderUpwind, cfd::ScalarConvectionScheme::Linear,
+          cfd::ScalarConvectionScheme::Hybrid})
+    {
+        const cfd::ScalarConvectionOperator other_scheme{mesh, scheme};
+        std::vector<double> unchanged_rhs(mesh.cell_count(), 17.0);
+        other_scheme.add_deferred_correction_rhs(gradient, face_flux, unchanged_rhs);
+        require(std::ranges::all_of(unchanged_rhs, [](const double value) { return value == 17.0; }),
+                "A non-LinearUpwind scheme changed the deferred-correction RHS.");
+    }
+}
+
 } // namespace
 
 int main()
@@ -1155,6 +1439,18 @@ int main()
     failure_count += cfd::test::run_test("linear convection additive assembly", test_linear_assembly_is_additive);
     failure_count += cfd::test::run_test("linear convection validation and input immutability",
                                          test_linear_validation_and_input_immutability);
+
+    failure_count += cfd::test::run_test("LinearUpwind exact linear reconstruction",
+                                         test_linear_upwind_exact_linear_internal_reconstruction);
+    failure_count += cfd::test::run_test("LinearUpwind upwind-gradient selection and conservation",
+                                         test_linear_upwind_selects_upwind_gradient_and_adds_conservatively);
+    failure_count += cfd::test::run_test("LinearUpwind matrix equals FirstOrderUpwind",
+                                         test_linear_upwind_matrix_and_base_boundary_rhs_match_upwind);
+    failure_count +=
+        cfd::test::run_test("LinearUpwind assembly identity", test_linear_upwind_assembly_matches_direct_balance);
+    failure_count += cfd::test::run_test("LinearUpwind boundary treatments", test_linear_upwind_boundary_treatments);
+    failure_count += cfd::test::run_test("LinearUpwind validation, no-op, and input immutability",
+                                         test_linear_upwind_validation_noop_and_input_immutability);
     failure_count +=
         cfd::test::run_test("hybrid convection uniform internal switch", test_hybrid_uniform_internal_switch);
     failure_count +=

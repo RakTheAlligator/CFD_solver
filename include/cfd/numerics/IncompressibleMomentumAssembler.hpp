@@ -22,10 +22,10 @@ class ScalarLinearSystem;
 /// does not multiply convection by density again.
 ///
 /// Pressure gradients and component gradients for explicit non-orthogonal
-/// diffusion correction are supplied externally. Each call clears and fully
-/// rebuilds both output systems, then algebraically under-relaxes their
-/// diagonals. The final relaxed diagonals are intentionally retained for later
-/// pressure-velocity coupling work.
+/// diffusion and deferred convection corrections are supplied externally. Each
+/// call clears and fully rebuilds both output systems, then algebraically
+/// under-relaxes their diagonals. The final relaxed diagonals are intentionally
+/// retained for later pressure-velocity coupling work.
 ///
 /// @note The referenced Mesh is not owned and must outlive this assembler.
 /// @note Repeated valid calls to `assemble()` perform no dynamic allocation.
@@ -58,8 +58,9 @@ class IncompressibleMomentumAssembler
     ///
     /// `pressure_gradient` is the physical cell-centered `grad(p)`. The
     /// pressure contributions are `-A_P dp/dx` and `-A_P dp/dy`. The supplied
-    /// `u_gradient` and `v_gradient` are used only by explicit non-orthogonal
-    /// diffusion correction. Equation relaxation leaves the final diagonal as
+    /// `u_gradient` and `v_gradient` supply explicit non-orthogonal diffusion
+    /// correction and, for LinearUpwind, explicit deferred convection
+    /// correction. Equation relaxation leaves the final diagonal as
     /// `a_P / relaxation_factor`; no post-solve field blending is performed.
     ///
     /// @throws std::invalid_argument If a cardinality is incompatible,

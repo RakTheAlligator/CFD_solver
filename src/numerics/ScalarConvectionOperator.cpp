@@ -1,6 +1,7 @@
 #include "cfd/numerics/ScalarConvectionOperator.hpp"
 
 #include "cfd/field/CellScalarField.hpp"
+#include "cfd/field/CellVectorField.hpp"
 #include "cfd/field/FaceFluxField.hpp"
 #include "cfd/field/ScalarBoundaryConditions.hpp"
 #include "cfd/linear_algebra/ScalarLinearSystem.hpp"
@@ -41,6 +42,14 @@ void validate_rhs_size(const Mesh &mesh, const std::span<double> rhs)
     if (rhs.size() != mesh.cell_count())
     {
         throw std::invalid_argument("Scalar convection RHS size must match the mesh cell count.");
+    }
+}
+
+void validate_gradient_size(const Mesh &mesh, const CellVectorField &gradient)
+{
+    if (gradient.size() != mesh.cell_count())
+    {
+        throw std::invalid_argument("Scalar convection gradient size must match the mesh cell count.");
     }
 }
 
@@ -89,6 +98,13 @@ double boundary_normal_distance(const Point2 &cell_center, const Point2 &face_ce
            face_length;
 }
 
+[[nodiscard]]
+double linear_upwind_correction(const Point2 &upwind_center, const Point2 &face_center,
+                                const Vector2 &upwind_gradient) noexcept
+{
+    return upwind_gradient.x * (face_center.x - upwind_center.x) +
+           upwind_gradient.y * (face_center.y - upwind_center.y);
+}
 } // namespace
 
 ScalarConvectionOperator::ScalarConvectionOperator(const Mesh &mesh) noexcept
@@ -102,8 +118,8 @@ ScalarConvectionOperator::ScalarConvectionOperator(const Mesh &mesh, const Scala
     switch (scheme_)
     {
     case ScalarConvectionScheme::FirstOrderUpwind:
+    case ScalarConvectionScheme::LinearUpwind:
         return;
-
     case ScalarConvectionScheme::Linear:
     case ScalarConvectionScheme::Hybrid:
         break;
@@ -187,6 +203,11 @@ void ScalarConvectionOperator::compute_flux_balance(const CellScalarField &field
                                                     const std::span<const double> face_diffusion_conductances) const
 {
     const Index cell_count{mesh_->cell_count()};
+
+    if (scheme_ == ScalarConvectionScheme::LinearUpwind)
+    {
+        throw std::invalid_argument("LinearUpwind convection flux balance requires a cell gradient.");
+    }
 
     if (field.size() != cell_count)
     {
@@ -340,6 +361,95 @@ void ScalarConvectionOperator::compute_flux_balance(const CellScalarField &field
             }
         }
 
+        balance_values[owner_id] += carrier_flux * face_value;
+    }
+}
+
+void ScalarConvectionOperator::compute_flux_balance(const CellScalarField &field,
+                                                    const ScalarBoundaryConditions &boundary_conditions,
+                                                    const FaceFluxField &face_flux, const CellVectorField &gradient,
+                                                    CellScalarField &flux_balance) const
+{
+    if (scheme_ != ScalarConvectionScheme::LinearUpwind)
+    {
+        throw std::invalid_argument("Gradient-aware convection flux balance requires a LinearUpwind operator.");
+    }
+
+    const Index cell_count{mesh_->cell_count()};
+    if (field.size() != cell_count)
+    {
+        throw std::invalid_argument("Scalar convection field size must match the mesh cell count.");
+    }
+    if (flux_balance.size() != cell_count)
+    {
+        throw std::invalid_argument("Scalar convection output size must match the mesh cell count.");
+    }
+    validate_gradient_size(*mesh_, gradient);
+    validate_face_flux_count(*mesh_, face_flux);
+    validate_boundary_condition_count(*mesh_, boundary_conditions);
+    if (&field == &flux_balance)
+    {
+        throw std::invalid_argument("Scalar convection output must not alias the input scalar field.");
+    }
+
+    const auto face_adjacencies{mesh_->face_adjacencies()};
+    const auto face_boundary_ids{mesh_->face_boundary_ids()};
+    const auto cell_centers{mesh_->cell_centers()};
+    const auto face_centers{mesh_->face_centers()};
+    const auto face_lengths{mesh_->face_lengths()};
+    const auto face_area_vectors{mesh_->face_area_vectors()};
+    const auto field_values{field.values()};
+    const auto gradient_values{gradient.values()};
+    const auto flux_values{face_flux.values()};
+    auto balance_values{flux_balance.values()};
+
+    std::fill(balance_values.begin(), balance_values.end(), 0.0);
+
+    for (Index face_id = 0; face_id < mesh_->face_count(); ++face_id)
+    {
+        const FaceAdjacency &adjacency{face_adjacencies[face_id]};
+        const Index owner_id{adjacency.owner};
+        const double carrier_flux{flux_values[face_id]};
+        if (carrier_flux == 0.0)
+        {
+            continue;
+        }
+
+        if (!adjacency.is_boundary())
+        {
+            const Index neighbor_id{adjacency.neighbor};
+            const Index upwind_id{carrier_flux >= 0.0 ? owner_id : neighbor_id};
+            const double face_value{field_values[upwind_id] + linear_upwind_correction(cell_centers[upwind_id],
+                                                                                       face_centers[face_id],
+                                                                                       gradient_values[upwind_id])};
+            const double convective_flux{carrier_flux * face_value};
+            balance_values[owner_id] += convective_flux;
+            balance_values[neighbor_id] -= convective_flux;
+            continue;
+        }
+
+        double face_value{field_values[owner_id]};
+        if (carrier_flux < 0.0)
+        {
+            const ScalarBoundaryCondition &condition{boundary_conditions[face_boundary_ids[face_id]]};
+            switch (condition.type)
+            {
+            case ScalarBoundaryConditionType::Dirichlet:
+                face_value = condition.value;
+                break;
+
+            case ScalarBoundaryConditionType::Neumann:
+                face_value +=
+                    condition.value * boundary_normal_distance(cell_centers[owner_id], face_centers[face_id],
+                                                               face_area_vectors[face_id], face_lengths[face_id]);
+                break;
+            }
+        }
+        else
+        {
+            face_value +=
+                linear_upwind_correction(cell_centers[owner_id], face_centers[face_id], gradient_values[owner_id]);
+        }
         balance_values[owner_id] += carrier_flux * face_value;
     }
 }
@@ -565,4 +675,51 @@ void ScalarConvectionOperator::add_boundary_rhs(const ScalarBoundaryConditions &
     }
 }
 
+void ScalarConvectionOperator::add_deferred_correction_rhs(const CellVectorField &gradient,
+                                                           const FaceFluxField &face_flux,
+                                                           const std::span<double> rhs) const
+{
+    if (scheme_ != ScalarConvectionScheme::LinearUpwind)
+    {
+        return;
+    }
+
+    validate_gradient_size(*mesh_, gradient);
+    validate_face_flux_count(*mesh_, face_flux);
+    validate_rhs_size(*mesh_, rhs);
+
+    const auto face_adjacencies{mesh_->face_adjacencies()};
+    const auto cell_centers{mesh_->cell_centers()};
+    const auto face_centers{mesh_->face_centers()};
+    const auto gradient_values{gradient.values()};
+    const auto flux_values{face_flux.values()};
+
+    for (Index face_id = 0; face_id < mesh_->face_count(); ++face_id)
+    {
+        const FaceAdjacency &adjacency{face_adjacencies[face_id]};
+        const double carrier_flux{flux_values[face_id]};
+        if (carrier_flux == 0.0)
+        {
+            continue;
+        }
+
+        if (!adjacency.is_boundary())
+        {
+            const Index upwind_id{carrier_flux >= 0.0 ? adjacency.owner : adjacency.neighbor};
+            const double correction{
+                linear_upwind_correction(cell_centers[upwind_id], face_centers[face_id], gradient_values[upwind_id])};
+            const double correction_flux{carrier_flux * correction};
+            rhs[adjacency.owner] -= correction_flux;
+            rhs[adjacency.neighbor] += correction_flux;
+            continue;
+        }
+
+        if (carrier_flux > 0.0)
+        {
+            const double correction{linear_upwind_correction(cell_centers[adjacency.owner], face_centers[face_id],
+                                                             gradient_values[adjacency.owner])};
+            rhs[adjacency.owner] -= carrier_flux * correction;
+        }
+    }
+}
 } // namespace cfd
