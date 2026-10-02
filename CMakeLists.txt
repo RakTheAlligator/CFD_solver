@@ -101,6 +101,8 @@ add_library(
     src/numerics/RhieChowInternalFaceInterpolation.cpp
     src/numerics/ScalarConvectionOperator.cpp
     src/numerics/ScalarDiffusionOperator.cpp
+    src/numerics/ScalarTransportAssembler.cpp
+    src/numerics/SteadyScalarTransportSolver.cpp
 )
 
 target_include_directories(
@@ -215,6 +217,11 @@ if(BUILD_VERIFICATION)
     cfd_add_verification(
         cfd_scalar_convection_diffusion_solution_convergence
         verification/ScalarConvectionDiffusionSolutionConvergence.cpp
+    )
+
+    cfd_add_verification(
+        cfd_steady_scalar_transport_convergence
+        verification/SteadyScalarTransportConvergence.cpp
     )
 
     cfd_add_verification(
@@ -421,6 +428,18 @@ if(BUILD_TESTING)
         cfd_eigen_bicgstab_solver_tests
         eigen_bicgstab_solver
         tests/EigenBiCGSTABSolverTests.cpp
+    )
+
+    cfd_add_test(
+        cfd_scalar_transport_assembler_tests
+        scalar_transport_assembler
+        tests/ScalarTransportAssemblerTests.cpp
+    )
+
+    cfd_add_test(
+        cfd_steady_scalar_transport_solver_tests
+        steady_scalar_transport_solver
+        tests/SteadyScalarTransportSolverTests.cpp
     )
 
     cfd_add_test(
