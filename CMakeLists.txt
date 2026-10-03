@@ -200,6 +200,11 @@ if(BUILD_VERIFICATION)
     )
 
     cfd_add_verification(
+        cfd_graded_quad_least_squares_gradient_convergence
+        verification/GradedQuadLeastSquaresGradientConvergence.cpp
+    )
+
+    cfd_add_verification(
         cfd_controlled_quad_transition_convergence
         verification/ControlledQuadTransitionConvergence.cpp
     )
