@@ -267,7 +267,7 @@ int main(const int argc, char *argv[])
             .velocity_relative_tolerance = 1.0e-10,
             .rhie_chow_flux_relative_tolerance = 1.0e-10,
             .continuity_relative_tolerance = 1.0e-10,
-            .momentum_linear_solver = {.relative_tolerance = 1.0e-12, .maximum_iterations = 5000},
+            .momentum_linear_solver = {.relative_tolerance = 1.0e-6, .maximum_iterations = 5000},
             .pressure_correction_linear_solver = {.relative_tolerance = 1.0e-3, .maximum_iterations = 5000},
         };
         cfd::IncompressibleSimpleSolver solver{mesh, density, dynamic_viscosity, cfd::ScalarConvectionScheme::Linear,
