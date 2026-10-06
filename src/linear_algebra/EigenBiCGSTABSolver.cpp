@@ -4,6 +4,7 @@
 #include "cfd/mesh/Face.hpp"
 #include "cfd/mesh/Mesh.hpp"
 
+#include <algorithm>
 #include <cmath>
 #include <functional>
 #include <limits>
@@ -162,8 +163,24 @@ LinearSolveResult EigenBiCGSTABSolver::solve(const std::span<const double> rhs, 
     {
         throw std::invalid_argument("Eigen BiCGSTAB RHS and solution spans must not overlap.");
     }
-    require_finite(rhs, "Eigen BiCGSTAB RHS must contain only finite values.");
+    bool rhs_is_zero{true};
+    for (const double value : rhs)
+    {
+        if (!std::isfinite(value))
+        {
+            throw std::invalid_argument("Eigen BiCGSTAB RHS must contain only finite values.");
+        }
+        rhs_is_zero = rhs_is_zero && value == 0.0;
+    }
     require_finite(solution, "Eigen BiCGSTAB initial guess must contain only finite values.");
+
+    // A*x = 0 is solved exactly by x = 0. Eigen's zero-RHS return leaves
+    // its iteration count and error estimate at their configured limits.
+    if (rhs_is_zero)
+    {
+        std::fill(solution.begin(), solution.end(), 0.0);
+        return {true, 0, 0.0};
+    }
 
     const Eigen::Index size{to_eigen_index(matrix_size_)};
     const Eigen::Map<const Eigen::VectorXd> rhs_map{rhs.data(), size};

@@ -192,6 +192,28 @@ void test_solves_known_nonsymmetric_system_and_reuses_matrix()
             "Repeated BiCGSTAB solution has an excessive explicit normalized residual.");
 }
 
+void test_reports_exact_zero_rhs_solve()
+{
+    cfd::MeshBuildResult build_result{cfd::build_mesh(make_three_cell_mesh())};
+    cfd::ScalarLinearSystem system{build_result.mesh};
+    set_nonsymmetric_matrix(system);
+    cfd::EigenBiCGSTABSolver solver{{1.0e-10, 5000}};
+    solver.compute_matrix(system);
+    const std::array rhs{0.0, -0.0, 0.0};
+    std::array solution{1.0, -2.0, 3.0};
+
+    const cfd::LinearSolveResult result{solver.solve(rhs, solution)};
+
+    require(result.converged, "Eigen BiCGSTAB did not report success for an exactly zero RHS.");
+    for (const double value : solution)
+    {
+        require_near(value, 0.0, 0.0, "Eigen BiCGSTAB did not return a zero solution for an exactly zero RHS.");
+    }
+    require(result.iteration_count == 0, "Eigen BiCGSTAB reported iterations for an exactly zero RHS.");
+    require_near(result.estimated_relative_error, 0.0, 0.0,
+                 "Eigen BiCGSTAB reported a nonzero error for an exactly zero RHS.");
+}
+
 void test_uses_caller_initial_guess()
 {
     cfd::MeshBuildResult build_result{cfd::build_mesh(make_three_cell_mesh())};
@@ -341,6 +363,8 @@ int main()
                                          test_distinguishes_iteration_and_sparse_storage_index_ranges);
     failure_count += cfd::test::run_test("Eigen BiCGSTAB known nonsymmetric systems and matrix reuse",
                                          test_solves_known_nonsymmetric_system_and_reuses_matrix);
+    failure_count +=
+        cfd::test::run_test("Eigen BiCGSTAB exactly zero RHS reporting", test_reports_exact_zero_rhs_solve);
     failure_count += cfd::test::run_test("Eigen BiCGSTAB caller initial guess", test_uses_caller_initial_guess);
     failure_count += cfd::test::run_test("Eigen BiCGSTAB boundary storage", test_ignores_boundary_off_diagonal_storage);
     failure_count +=
