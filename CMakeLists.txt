@@ -135,6 +135,7 @@ cfd_enable_warnings(cfd_core)
 add_executable(
     CFD_solver
     src/main.cpp
+    src/app/IncompressibleCaseInitialization.cpp
     src/app/LiveConvergenceLauncher.cpp
 )
 
@@ -299,6 +300,20 @@ if(BUILD_TESTING)
             COMMAND ${target_name}
         )
     endfunction()
+
+    cfd_add_test(
+        cfd_incompressible_case_initialization_tests
+        incompressible_case_initialization
+        tests/IncompressibleCaseInitializationTests.cpp
+    )
+    target_sources(
+        cfd_incompressible_case_initialization_tests
+        PRIVATE src/app/IncompressibleCaseInitialization.cpp
+    )
+    target_include_directories(
+        cfd_incompressible_case_initialization_tests
+        PRIVATE ${PROJECT_SOURCE_DIR}/src
+    )
 
     cfd_add_test(
         cfd_cell_field_transfer_tests

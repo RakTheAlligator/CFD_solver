@@ -1,3 +1,4 @@
+#include "app/IncompressibleCaseInitialization.hpp"
 #include "app/LiveConvergenceLauncher.hpp"
 
 #include "cfd/field/CellScalarField.hpp"
@@ -99,79 +100,6 @@ void require_field_metadata(const cfd::input::ScalarFieldInput &field_input,
     }
 }
 
-[[nodiscard]]
-cfd::PressureCorrectionBoundaryConditions make_pressure_correction_boundary_conditions(
-    const cfd::ScalarBoundaryConditions &pressure_boundary_conditions)
-{
-    std::vector<cfd::PressureCorrectionBoundaryConditionType> conditions;
-    conditions.reserve(pressure_boundary_conditions.size());
-
-    for (cfd::BoundaryId boundary_id = 0; boundary_id < pressure_boundary_conditions.size(); ++boundary_id)
-    {
-        switch (pressure_boundary_conditions[boundary_id].type)
-        {
-        case cfd::ScalarBoundaryConditionType::Dirichlet:
-            conditions.push_back(cfd::PressureCorrectionBoundaryConditionType::FixedPressure);
-            break;
-
-        case cfd::ScalarBoundaryConditionType::Neumann:
-            conditions.push_back(cfd::PressureCorrectionBoundaryConditionType::FixedMassFlux);
-            break;
-        }
-    }
-
-    return {pressure_boundary_conditions.size(), std::move(conditions)};
-}
-
-void initialize_fixed_mass_flux_boundaries(
-    const cfd::Mesh &mesh, const double density, const cfd::ScalarBoundaryConditions &u_boundary_conditions,
-    const cfd::ScalarBoundaryConditions &v_boundary_conditions,
-    const cfd::PressureCorrectionBoundaryConditions &pressure_correction_boundary_conditions,
-    cfd::FaceFluxField &mass_flux)
-{
-    const auto face_adjacencies{mesh.face_adjacencies()};
-    const auto face_boundary_ids{mesh.face_boundary_ids()};
-    const auto face_area_vectors{mesh.face_area_vectors()};
-    const auto boundary_groups{mesh.boundary_groups()};
-
-    for (cfd::Index face_id = 0; face_id < mesh.face_count(); ++face_id)
-    {
-        if (!face_adjacencies[face_id].is_boundary())
-        {
-            continue;
-        }
-
-        const cfd::BoundaryId boundary_id{face_boundary_ids[face_id]};
-        switch (pressure_correction_boundary_conditions[boundary_id])
-        {
-        case cfd::PressureCorrectionBoundaryConditionType::FixedMassFlux: {
-            const cfd::ScalarBoundaryCondition &u_condition{u_boundary_conditions[boundary_id]};
-            const cfd::ScalarBoundaryCondition &v_condition{v_boundary_conditions[boundary_id]};
-            if (u_condition.type != cfd::ScalarBoundaryConditionType::Dirichlet ||
-                v_condition.type != cfd::ScalarBoundaryConditionType::Dirichlet)
-            {
-                throw std::invalid_argument("FixedMassFlux boundary '" + boundary_groups[boundary_id].name +
-                                            "' requires fixedValue conditions for both u and v.");
-            }
-
-            const cfd::Vector2 &area_vector{face_area_vectors[face_id]};
-            const double boundary_mass_flux{density *
-                                            (u_condition.value * area_vector.x + v_condition.value * area_vector.y)};
-            if (!std::isfinite(boundary_mass_flux))
-            {
-                throw std::runtime_error("Computed mass flux is non-finite on boundary '" +
-                                         boundary_groups[boundary_id].name + "'.");
-            }
-            mass_flux[face_id] = boundary_mass_flux;
-            break;
-        }
-
-        case cfd::PressureCorrectionBoundaryConditionType::FixedPressure:
-            break;
-        }
-    }
-}
-
 } // namespace
 
 int main(const int argc, char *argv[])
@@ -237,7 +165,7 @@ int main(const int argc, char *argv[])
         const cfd::ScalarBoundaryConditions pressure_boundary_conditions{
             cfd::input::resolve_boundary_conditions(mesh, pressure_input)};
         const cfd::PressureCorrectionBoundaryConditions pressure_correction_boundary_conditions{
-            make_pressure_correction_boundary_conditions(pressure_boundary_conditions)};
+            cfd::app::make_pressure_correction_boundary_conditions(pressure_boundary_conditions)};
 
         const cfd::MeshStatistics mesh_statistics{cfd::compute_mesh_statistics(mesh)};
         cfd::write_mesh_report(std::cout, mesh, mesh_statistics, mesh_build_result.timings);
@@ -246,18 +174,8 @@ int main(const int argc, char *argv[])
                                         cfd::Vector2{u_input.internal_value, v_input.internal_value}};
         cfd::CellScalarField pressure{mesh.cell_count(), pressure_input.internal_value};
         cfd::FaceFluxField mass_flux{mesh.face_count()};
-        initialize_fixed_mass_flux_boundaries(mesh, density, u_boundary_conditions, v_boundary_conditions,
-                                              pressure_correction_boundary_conditions, mass_flux);
-
-        const std::filesystem::path output_directory{case_directory / "results"};
-        const std::filesystem::path convergence_output_file{output_directory / "convergence.csv"};
-        const std::filesystem::path solution_output_file{output_directory / "solution.vtu"};
-        std::filesystem::create_directories(output_directory);
-        if (control_input.live_convergence)
-        {
-            cfd::app::launch_live_convergence_plotter(convergence_output_file);
-        }
-        cfd::SimpleConvergenceCsvWriter convergence_writer{convergence_output_file};
+        cfd::app::initialize_fixed_mass_flux_boundaries(mesh, density, u_boundary_conditions, v_boundary_conditions,
+                                                        pressure_correction_boundary_conditions, mass_flux);
 
         const cfd::IncompressibleSimpleOptions simple_options{
             .maximum_iterations = 2000,
@@ -270,6 +188,42 @@ int main(const int argc, char *argv[])
             .momentum_linear_solver = {.relative_tolerance = 1.0e-6, .maximum_iterations = 5000},
             .pressure_correction_linear_solver = {.relative_tolerance = 1.0e-3, .maximum_iterations = 5000},
         };
+        const cfd::app::CoarseInitializationResult initialization{cfd::app::initialize_from_coarse_mesh(
+            mesh, mesh_input, control_input.initialization, u_input, v_input, pressure_input, density,
+            dynamic_viscosity, cfd::ScalarConvectionScheme::Linear, simple_options, velocity, pressure)};
+        std::cout << std::fixed << std::setprecision(6) << "\n[Initialization]\n"
+                  << "  Initialization    : "
+                  << (control_input.initialization.type == cfd::input::InitializationType::Zero ? "zero" : "coarseMesh")
+                  << '\n';
+        if (control_input.initialization.type == cfd::input::InitializationType::CoarseMesh)
+        {
+            std::cout << "  Final cells       : " << mesh.cell_count() << '\n'
+                      << "  Target coarse cells: " << initialization.plan.target_cell_count << '\n'
+                      << "  Actual coarse cells: " << initialization.actual_cell_count << '\n'
+                      << "  Coarse mesh size  : " << initialization.plan.mesh_size << " m\n";
+            if (initialization.automatic_fallback)
+            {
+                std::cout << "  Automatic fallback: " << initialization.fallback_reason << '\n'
+                          << "  Using historical initialization\n";
+            }
+            else
+            {
+                std::cout << "  Coarse SIMPLE iterations: " << initialization.iteration_count << '\n'
+                          << "  Coarse solve time : " << initialization.solve_seconds << " s\n"
+                          << "  Transfer time     : " << initialization.transfer_seconds << " s\n";
+            }
+        }
+
+        const std::filesystem::path output_directory{case_directory / "results"};
+        const std::filesystem::path convergence_output_file{output_directory / "convergence.csv"};
+        const std::filesystem::path solution_output_file{output_directory / "solution.vtu"};
+        std::filesystem::create_directories(output_directory);
+        if (control_input.live_convergence)
+        {
+            cfd::app::launch_live_convergence_plotter(convergence_output_file);
+        }
+        cfd::SimpleConvergenceCsvWriter convergence_writer{convergence_output_file};
+
         cfd::IncompressibleSimpleSolver solver{mesh, density, dynamic_viscosity, cfd::ScalarConvectionScheme::Linear,
                                                simple_options};
         const cfd::IncompressibleSimpleResult simple_result{solver.solve(

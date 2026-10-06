@@ -230,6 +230,9 @@ void test_missing_control_dict_enables_live_convergence()
     const cfd::input::ControlInput input{cfd::input::read_control_dict(file_path)};
 
     require(input.live_convergence, "A missing controlDict did not enable live convergence by default.");
+    require(input.initialization.type == cfd::input::InitializationType::CoarseMesh,
+            "A missing controlDict did not default to coarseMesh.");
+    require(!input.initialization.target_coarse_cell_count.has_value(), "Unexpected default coarse target.");
 }
 
 void test_control_dict_without_monitoring_enables_live_convergence()
@@ -243,6 +246,48 @@ futureSettings
     const cfd::input::ControlInput input{read_control_input(content)};
 
     require(input.live_convergence, "A controlDict without monitoring did not enable live convergence by default.");
+    require(input.initialization.type == cfd::input::InitializationType::CoarseMesh,
+            "An absent initialization block did not default to coarseMesh.");
+}
+
+void test_reads_initialization_modes_and_target()
+{
+    const auto coarse{read_control_input(make_control_dictionary("initialization { type coarseMesh; }"))};
+    require(coarse.initialization.type == cfd::input::InitializationType::CoarseMesh, "Wrong coarseMesh mode.");
+    require(!coarse.initialization.target_coarse_cell_count.has_value(), "Unexpected automatic target override.");
+    const auto zero{read_control_input(make_control_dictionary("initialization { type zero; }"))};
+    require(zero.initialization.type == cfd::input::InitializationType::Zero, "Wrong zero mode.");
+    const auto explicit_target{read_control_input(make_control_dictionary(
+        "initialization { targetCoarseCellCount 15000; type coarseMesh; } monitoring { liveConvergence false; }"))};
+    require(explicit_target.initialization.target_coarse_cell_count == 15000, "Wrong explicit coarse target.");
+    require(!explicit_target.live_convergence, "Initialization interfered with monitoring.");
+}
+
+void test_rejects_invalid_initialization()
+{
+    constexpr std::array invalid_entries{
+        "initialization { type unknown; }",
+        "initialization { type coarseMesh; targetCoarseCellCount 0; }",
+        "initialization { type coarseMesh; targetCoarseCellCount -1; }",
+        "initialization { type coarseMesh; targetCoarseCellCount 1.5; }",
+        "initialization { type coarseMesh; targetCoarseCellCount 1e100; }",
+        "initialization { type coarseMesh; targetCoarseCellCount many; }",
+        "initialization { type zero; targetCoarseCellCount 1; }",
+        "initialization { type zero; type coarseMesh; }",
+        "initialization { type coarseMesh; targetCoarseCellCount 1; targetCoarseCellCount 2; }",
+        "initialization { type zero; } initialization { type zero; }",
+        "initialization { targetCoarseCellCount 1; }",
+        "initialization {}",
+        "initialization { type coarseMesh; extra true; }",
+        "initialization { type zero }",
+        "initialization { type zero;",
+    };
+    for (const auto *entry : invalid_entries)
+    {
+        require_throws<std::runtime_error>(
+            [entry]() { static_cast<void>(read_control_input(make_control_dictionary(entry))); },
+            "Accepted malformed initialization: " + std::string{entry});
+    }
 }
 
 void test_monitoring_without_live_convergence_enables_it()
@@ -1184,6 +1229,9 @@ mesh
 int main()
 {
     int failure_count{};
+
+    failure_count += cfd::test::run_test("read case initialization", test_reads_initialization_modes_and_target);
+    failure_count += cfd::test::run_test("reject invalid case initialization", test_rejects_invalid_initialization);
 
     failure_count += cfd::test::run_test("default missing controlDict live convergence",
                                          test_missing_control_dict_enables_live_convergence);

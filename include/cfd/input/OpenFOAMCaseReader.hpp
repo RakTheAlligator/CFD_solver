@@ -5,7 +5,9 @@
 #include "cfd/meshing/GmshMesher.hpp"
 
 #include <array>
+#include <cstdint>
 #include <filesystem>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -19,10 +21,28 @@ class Mesh;
 namespace cfd::input
 {
 
+/// User-case initialization policy, independent of the single-Mesh SIMPLE solver.
+enum class InitializationType : std::uint8_t
+{
+    Zero,
+    CoarseMesh
+};
+
+/// Optional `initialization` settings in `system/controlDict`.
+///
+/// An absent block selects coarseMesh. The optional positive cell-count target
+/// is not an exact meshing constraint and is incompatible with `type zero`.
+struct InitializationInput
+{
+    InitializationType type{InitializationType::CoarseMesh};
+    std::optional<Index> target_coarse_cell_count{};
+};
+
 /// Application control settings read from `system/controlDict`.
 struct ControlInput
 {
     bool live_convergence{true};
+    InitializationInput initialization{};
 };
 
 /// Geometry and mesh-generation settings read from `system/meshDict`.
@@ -56,7 +76,9 @@ struct ScalarFieldInput
 /// Reads the supported CFD_solver `controlDict` subset.
 ///
 /// A missing file returns the default control settings. Live convergence is
-/// enabled when its monitoring entry is absent.
+/// enabled when its monitoring entry is absent. Initialization defaults to
+/// `coarseMesh`; `initialization { type zero; }` preserves the historical
+/// internalField/target-flux initialization without a coarse solve.
 ///
 /// @throws std::runtime_error If an existing file cannot be read or does not
 ///         conform to the supported syntax.

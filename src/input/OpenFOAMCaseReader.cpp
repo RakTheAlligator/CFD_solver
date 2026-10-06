@@ -90,10 +90,24 @@ class CaseParser
         static_cast<void>(parse_foam_header("dictionary", "controlDict"));
 
         bool monitoring_seen{};
+        bool initialization_seen{};
         std::optional<bool> live_convergence;
+        InitializationInput initialization;
         while (current_.kind != TokenKind::End)
         {
             const Token key{take_key("controlDict")};
+            if (key.text == "initialization")
+            {
+                if (initialization_seen)
+                {
+                    fail(key.line, "Duplicate initialization dictionary.");
+                }
+                initialization_seen = true;
+                expect(TokenKind::LeftBrace, "'{'");
+                initialization = parse_initialization();
+                expect(TokenKind::RightBrace, "'}'");
+                continue;
+            }
             if (key.text != "monitoring")
             {
                 skip_control_entry(key);
@@ -111,7 +125,7 @@ class CaseParser
             expect(TokenKind::RightBrace, "'}'");
         }
 
-        return {.live_convergence = live_convergence.value_or(true)};
+        return {.live_convergence = live_convergence.value_or(true), .initialization = initialization};
     }
 
     [[nodiscard]]
@@ -673,6 +687,55 @@ class CaseParser
             advance();
         }
         expect(TokenKind::Semicolon, "';'");
+    }
+
+    [[nodiscard]]
+    InitializationInput parse_initialization()
+    {
+        std::optional<Token> type;
+        std::optional<Index> target;
+        while (current_.kind != TokenKind::RightBrace)
+        {
+            const Token key{take_key("initialization")};
+            if (key.text == "type")
+            {
+                if (type.has_value())
+                {
+                    fail(key.line, "Duplicate initialization type entry.");
+                }
+                type = take_word("an initialization type");
+            }
+            else if (key.text == "targetCoarseCellCount")
+            {
+                if (target.has_value())
+                {
+                    fail(key.line, "Duplicate targetCoarseCellCount entry.");
+                }
+                target = positive_index(take_number("a positive targetCoarseCellCount"), "targetCoarseCellCount");
+            }
+            else
+            {
+                fail(key.line, "Unsupported initialization entry '" + std::string{key.text} + "'.");
+            }
+            expect(TokenKind::Semicolon, "';'");
+        }
+        if (!type.has_value())
+        {
+            fail_current("initialization requires type.");
+        }
+        if (type->text == "zero")
+        {
+            if (target.has_value())
+            {
+                fail(type->line, "targetCoarseCellCount is incompatible with initialization type zero.");
+            }
+            return {.type = InitializationType::Zero, .target_coarse_cell_count = std::nullopt};
+        }
+        if (type->text != "coarseMesh")
+        {
+            fail(type->line, "Unsupported initialization type '" + std::string{type->text} + "'.");
+        }
+        return {.type = InitializationType::CoarseMesh, .target_coarse_cell_count = target};
     }
 
     [[nodiscard]]
