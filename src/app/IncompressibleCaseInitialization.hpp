@@ -66,6 +66,8 @@ void initialize_fixed_mass_flux_boundaries(
 
 /// Optionally overwrites final u/v/p from one converged, independently generated
 /// coarse mesh, using source boundary data and unlimited linear WLS reconstruction.
+/// The first coarse state uses boundary-based bulk initialization, with
+/// internalField values as fallbacks, before its single-Mesh SIMPLE solve.
 ///
 /// Zero mode leaves caller-initialized fields unchanged. Automatic coarse sizing
 /// falls back unchanged if coarse meshing fails or produces a mesh that is not

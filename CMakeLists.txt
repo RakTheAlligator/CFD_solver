@@ -135,6 +135,7 @@ cfd_enable_warnings(cfd_core)
 add_executable(
     CFD_solver
     src/main.cpp
+    src/app/BoundaryBasedInitialization.cpp
     src/app/IncompressibleCaseInitialization.cpp
     src/app/LiveConvergenceLauncher.cpp
 )
@@ -308,10 +309,24 @@ if(BUILD_TESTING)
     )
     target_sources(
         cfd_incompressible_case_initialization_tests
-        PRIVATE src/app/IncompressibleCaseInitialization.cpp
+        PRIVATE src/app/IncompressibleCaseInitialization.cpp src/app/BoundaryBasedInitialization.cpp
     )
     target_include_directories(
         cfd_incompressible_case_initialization_tests
+        PRIVATE ${PROJECT_SOURCE_DIR}/src
+    )
+
+    cfd_add_test(
+        cfd_boundary_based_initialization_tests
+        boundary_based_initialization
+        tests/BoundaryBasedInitializationTests.cpp
+    )
+    target_sources(
+        cfd_boundary_based_initialization_tests
+        PRIVATE src/app/BoundaryBasedInitialization.cpp
+    )
+    target_include_directories(
+        cfd_boundary_based_initialization_tests
         PRIVATE ${PROJECT_SOURCE_DIR}/src
     )
 

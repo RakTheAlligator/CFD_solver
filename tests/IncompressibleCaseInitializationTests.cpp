@@ -1,3 +1,4 @@
+#include "app/BoundaryBasedInitialization.hpp"
 #include "app/IncompressibleCaseInitialization.hpp"
 
 #include "cfd/field/CellScalarField.hpp"
@@ -238,6 +239,8 @@ void test_single_coarse_solve_linear_transfer_and_final_solution()
     cfd::CellVelocityField source_velocity{source.cell_count()};
     cfd::CellScalarField source_pressure{source.cell_count()};
     cfd::FaceFluxField source_flux{source.face_count()};
+    cfd::app::initialize_from_boundary_conditions(source, source_u_boundary, source_v_boundary, source_p_boundary,
+                                                  source_correction, {}, 0.0, source_velocity, source_pressure);
     cfd::app::initialize_fixed_mass_flux_boundaries(source, density, source_u_boundary, source_v_boundary,
                                                     source_correction, source_flux);
     {

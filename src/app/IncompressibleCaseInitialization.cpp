@@ -1,4 +1,5 @@
 #include "app/IncompressibleCaseInitialization.hpp"
+#include "app/BoundaryBasedInitialization.hpp"
 
 #include "cfd/field/CellScalarField.hpp"
 #include "cfd/field/CellVectorField.hpp"
@@ -190,6 +191,9 @@ CoarseInitializationResult initialize_from_coarse_mesh(const Mesh &final_mesh, c
     CellVelocityField coarse_velocity{coarse_mesh.cell_count(),
                                       Vector2{u_input.internal_value, v_input.internal_value}};
     CellScalarField coarse_pressure{coarse_mesh.cell_count(), pressure_input.internal_value};
+    initialize_from_boundary_conditions(coarse_mesh, u_boundary, v_boundary, pressure_boundary, correction_boundary,
+                                        {u_input.internal_value, v_input.internal_value}, pressure_input.internal_value,
+                                        coarse_velocity, coarse_pressure);
     {
         FaceFluxField coarse_flux{coarse_mesh.face_count()};
         initialize_fixed_mass_flux_boundaries(coarse_mesh, density, u_boundary, v_boundary, correction_boundary,
