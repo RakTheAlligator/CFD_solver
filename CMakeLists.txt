@@ -89,6 +89,7 @@ add_library(
     src/mesh_build/TopologyBuilder.cpp
     src/mesh_build/TopologyValidation.cpp
 
+    src/numerics/CellFieldTransfer.cpp
     src/numerics/FiniteVolumeFaceGeometry.cpp
     src/numerics/IncompressibleMomentumAssembler.cpp
     src/numerics/IncompressiblePressureCorrectionAssembler.cpp
@@ -298,6 +299,12 @@ if(BUILD_TESTING)
             COMMAND ${target_name}
         )
     endfunction()
+
+    cfd_add_test(
+        cfd_cell_field_transfer_tests
+        cell_field_transfer
+        tests/CellFieldTransferTests.cpp
+    )
 
     cfd_add_test(
         cfd_cell_scalar_field_tests
