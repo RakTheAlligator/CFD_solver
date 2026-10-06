@@ -75,6 +75,7 @@ add_library(
 
     src/linear_algebra/EigenBiCGSTABSolver.cpp
     src/linear_algebra/EigenConjugateGradientSolver.cpp
+    src/linear_algebra/EigenSparseMatrixPattern.cpp
     src/linear_algebra/ScalarLinearSystem.cpp
 
     src/mesh/MeshBuilder.cpp
@@ -422,6 +423,12 @@ if(BUILD_TESTING)
         cfd_scalar_linear_system_tests
         scalar_linear_system
         tests/ScalarLinearSystemTests.cpp
+    )
+
+    cfd_add_test(
+        cfd_eigen_sparse_matrix_pattern_tests
+        eigen_sparse_matrix_pattern
+        tests/EigenSparseMatrixPatternTests.cpp
     )
 
     cfd_add_test(

@@ -1,15 +1,13 @@
 #include "cfd/linear_algebra/EigenConjugateGradientSolver.hpp"
 
+#include "cfd/linear_algebra/EigenSparseMatrixPattern.hpp"
 #include "cfd/linear_algebra/ScalarLinearSystem.hpp"
-#include "cfd/mesh/Face.hpp"
-#include "cfd/mesh/Mesh.hpp"
 
 #include <cmath>
 #include <functional>
 #include <limits>
 #include <stdexcept>
 #include <utility>
-#include <vector>
 
 namespace cfd
 {
@@ -55,24 +53,6 @@ Eigen::Index to_eigen_index(const Index value)
     return static_cast<Eigen::Index>(value);
 }
 
-template <typename StorageIndex>
-[[nodiscard]]
-Index checked_sparse_entry_count(const Index cell_count, const Index internal_face_count)
-{
-    constexpr auto maximum_storage_index{std::numeric_limits<StorageIndex>::max()};
-    static_assert(std::in_range<Index>(maximum_storage_index));
-    constexpr Index maximum_sparse_entry_count{static_cast<Index>(maximum_storage_index)};
-    if (cell_count > maximum_sparse_entry_count)
-    {
-        throw std::invalid_argument("Scalar linear system cardinality exceeds the Eigen sparse storage index range.");
-    }
-    if (internal_face_count > (maximum_sparse_entry_count - cell_count) / 2)
-    {
-        throw std::invalid_argument("Scalar linear system entry count exceeds the Eigen sparse storage index range.");
-    }
-    return cell_count + 2 * internal_face_count;
-}
-
 } // namespace
 
 EigenConjugateGradientSolver::EigenConjugateGradientSolver(const ConjugateGradientOptions options) : options_(options)
@@ -92,58 +72,48 @@ EigenConjugateGradientSolver::EigenConjugateGradientSolver(const ConjugateGradie
     solver_.setMaxIterations(static_cast<Eigen::Index>(options_.maximum_iterations));
 }
 
+EigenConjugateGradientSolver::EigenConjugateGradientSolver(std::shared_ptr<const EigenSparseMatrixPattern> pattern,
+                                                           const ConjugateGradientOptions options)
+    : EigenConjugateGradientSolver(options)
+{
+    if (!pattern)
+    {
+        throw std::invalid_argument("Eigen sparse pattern must not be null.");
+    }
+    pattern_ = std::move(pattern);
+    fixed_pattern_ = true;
+}
+
 void EigenConjugateGradientSolver::compute_matrix(const ScalarLinearSystem &system)
 {
-    using StorageIndex = SparseMatrix::StorageIndex;
-    using Triplet = Eigen::Triplet<double, StorageIndex>;
-
     matrix_is_prepared_ = false;
-    require_finite(system.diagonal(), "Scalar linear system diagonal must contain only finite values.");
-    require_finite(system.owner_neighbor_coefficients(),
-                   "Scalar linear system owner-neighbor coefficients must contain only finite values.");
-    require_finite(system.neighbor_owner_coefficients(),
-                   "Scalar linear system neighbor-owner coefficients must contain only finite values.");
-
-    const Eigen::Index cell_count{to_eigen_index(system.cell_count())};
-    Index internal_face_count{};
-    for (const FaceAdjacency &adjacency : system.mesh().face_adjacencies())
+    if (!pattern_ || !pattern_->matches(system.mesh()))
     {
-        internal_face_count += static_cast<Index>(!adjacency.is_boundary());
-    }
-    const Index sparse_entry_count{checked_sparse_entry_count<StorageIndex>(system.cell_count(), internal_face_count)};
-
-    std::vector<Triplet> entries;
-    entries.reserve(sparse_entry_count);
-    for (Index cell_id = 0; cell_id < system.cell_count(); ++cell_id)
-    {
-        const StorageIndex sparse_cell_id{static_cast<StorageIndex>(cell_id)};
-        entries.emplace_back(sparse_cell_id, sparse_cell_id, system.diagonal()[cell_id]);
-    }
-
-    const auto face_adjacencies{system.mesh().face_adjacencies()};
-    for (Index face_id = 0; face_id < system.face_count(); ++face_id)
-    {
-        const FaceAdjacency &adjacency{face_adjacencies[face_id]};
-        if (adjacency.is_boundary())
+        if (fixed_pattern_)
         {
-            continue;
+            throw std::invalid_argument(
+                "Eigen sparse pattern requires the same unchanged Mesh and system cardinalities.");
         }
-
-        entries.emplace_back(static_cast<StorageIndex>(adjacency.owner), static_cast<StorageIndex>(adjacency.neighbor),
-                             system.owner_neighbor_coefficients()[face_id]);
-        entries.emplace_back(static_cast<StorageIndex>(adjacency.neighbor), static_cast<StorageIndex>(adjacency.owner),
-                             system.neighbor_owner_coefficients()[face_id]);
+        auto pattern{std::make_shared<EigenSparseMatrixPattern>(system.mesh())};
+        SparseMatrix initialized{pattern->create_matrix(system)};
+        matrix_.swap(initialized);
+        pattern_ = std::move(pattern);
     }
-
-    matrix_.resize(cell_count, cell_count);
-    matrix_.setFromTriplets(entries.begin(), entries.end());
-    matrix_.makeCompressed();
+    else if (matrix_.rows() == 0)
+    {
+        SparseMatrix initialized{pattern_->create_matrix(system)};
+        matrix_.swap(initialized);
+    }
+    else
+    {
+        pattern_->validate_system(system);
+        pattern_->update_values(system, matrix_);
+    }
     solver_.compute(matrix_);
     if (solver_.info() != Eigen::Success)
     {
         throw std::runtime_error("Eigen conjugate-gradient matrix preparation failed.");
     }
-
     matrix_size_ = system.cell_count();
     matrix_is_prepared_ = true;
 }

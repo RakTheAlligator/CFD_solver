@@ -6,12 +6,14 @@
 #include <Eigen/IterativeLinearSolvers>
 #include <Eigen/SparseCore>
 
+#include <memory>
 #include <span>
 
 namespace cfd
 {
 
 class ScalarLinearSystem;
+class EigenSparseMatrixPattern;
 
 /// Runtime controls for the Eigen conjugate-gradient backend.
 struct ConjugateGradientOptions
@@ -25,10 +27,18 @@ struct ConjugateGradientOptions
 /// `compute_matrix()` copies the finite-volume coefficients into Eigen sparse
 /// storage and prepares a diagonal preconditioner. Repeated `solve()` calls
 /// reuse both objects and use the supplied solution as the initial guess.
+///
+/// @note The Mesh associated with the cached pattern is not owned and must
+///       remain alive, unmoved and unreplaced until that pattern is released.
 class EigenConjugateGradientSolver
 {
   public:
     explicit EigenConjugateGradientSolver(ConjugateGradientOptions options = {});
+
+    /// Shares an immutable pattern; numerical storage and preconditioner remain private.
+    /// @throws std::invalid_argument If the pattern is null or options are invalid.
+    EigenConjugateGradientSolver(std::shared_ptr<const EigenSparseMatrixPattern> pattern,
+                                 ConjugateGradientOptions options);
 
     EigenConjugateGradientSolver(const EigenConjugateGradientSolver &) = delete;
     EigenConjugateGradientSolver &operator=(const EigenConjugateGradientSolver &) = delete;
@@ -37,14 +47,18 @@ class EigenConjugateGradientSolver
 
     ~EigenConjugateGradientSolver() = default;
 
-    /// Converts and prepares a matrix for subsequent solves.
+    /// Updates coefficients and prepares a matrix for subsequent solves.
+    ///
+    /// Reuses compressed storage for an unchanged Mesh, retaining explicit zeros.
+    /// Without an explicit shared pattern, another Mesh rebuilds the pattern.
     ///
     /// Directed off-diagonal coefficients are copied without symmetrization.
     /// The caller is responsible for satisfying the symmetric
     /// positive-definite precondition of conjugate gradient.
     ///
     /// @throws std::invalid_argument If a matrix coefficient is non-finite or
-    ///         the matrix cardinality is unsupported by Eigen.
+    ///         the matrix cardinality is unsupported by Eigen, or the system
+    ///         does not match an explicitly shared pattern.
     /// @throws std::runtime_error If Eigen cannot prepare the matrix.
     void compute_matrix(const ScalarLinearSystem &system);
 
@@ -66,6 +80,8 @@ class EigenConjugateGradientSolver
         Eigen::ConjugateGradient<SparseMatrix, Eigen::Lower | Eigen::Upper, Eigen::DiagonalPreconditioner<double>>;
 
     ConjugateGradientOptions options_;
+    std::shared_ptr<const EigenSparseMatrixPattern> pattern_;
+    bool fixed_pattern_{};
     SparseMatrix matrix_;
     Solver solver_;
     Index matrix_size_{};

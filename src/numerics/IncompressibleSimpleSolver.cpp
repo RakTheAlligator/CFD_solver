@@ -3,6 +3,7 @@
 #include "cfd/field/FaceFluxField.hpp"
 #include "cfd/field/PressureCorrectionBoundaryConditions.hpp"
 #include "cfd/field/ScalarBoundaryConditions.hpp"
+#include "cfd/linear_algebra/EigenSparseMatrixPattern.hpp"
 #include "cfd/linear_algebra/LinearSolveResult.hpp"
 #include "cfd/math/Vector2.hpp"
 #include "cfd/mesh/Face.hpp"
@@ -377,9 +378,10 @@ IncompressibleSimpleSolver::IncompressibleSimpleSolver(const Mesh &mesh, const d
                                                        const ScalarConvectionLimiter convection_limiter,
                                                        IncompressibleSimpleOptions options)
     : mesh_(&mesh), density_(validate_positive_physical_coefficient(density, "SIMPLE density")),
-      options_(validate_options(options)), u_momentum_solver_(options_.momentum_linear_solver),
-      v_momentum_solver_(options_.momentum_linear_solver),
-      pressure_correction_solver_(options_.pressure_correction_linear_solver),
+      options_(validate_options(options)), matrix_pattern_(std::make_shared<EigenSparseMatrixPattern>(mesh)),
+      u_momentum_solver_(matrix_pattern_, options_.momentum_linear_solver),
+      v_momentum_solver_(matrix_pattern_, options_.momentum_linear_solver),
+      pressure_correction_solver_(matrix_pattern_, options_.pressure_correction_linear_solver),
       momentum_assembler_(mesh, validate_positive_physical_coefficient(dynamic_viscosity, "SIMPLE dynamic viscosity"),
                           convection_scheme, convection_limiter),
       internal_face_interpolation_(mesh, density_), boundary_face_interpolation_(mesh, density_),

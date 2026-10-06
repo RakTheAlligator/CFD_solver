@@ -18,6 +18,7 @@
 #include "cfd/numerics/ScalarConvectionOperator.hpp"
 
 #include <functional>
+#include <memory>
 #include <vector>
 
 namespace cfd
@@ -81,7 +82,7 @@ using SimpleIterationCallback = std::function<void(const SimpleIterationInfo &)>
 /// Cumulative wall-clock timings for one steady SIMPLE solve.
 ///
 /// Durations are measured with a monotonic clock and reported in seconds.
-/// Matrix preparation covers sparse reconstruction and Eigen `compute()`;
+/// Matrix preparation covers coefficient updates and Eigen `compute()`;
 /// linear-solve timings cover only the subsequent iterative `solve()` calls.
 /// `total_seconds` covers the complete `solve()` execution, including optional
 /// iteration-callback execution and orchestration not represented by the
@@ -140,6 +141,7 @@ struct IncompressibleSimpleResult
 /// provisional face-flux relaxation, not Majumdar momentum under-relaxation.
 ///
 /// @note The referenced Mesh is not owned and must outlive this solver.
+///       It must not be moved from or replaced while the solver is in use.
 /// @note Construction allocates the field and system workspace. Outer
 ///       iterations do not allocate field-sized temporary arrays; Eigen sparse
 ///       matrix preparation may allocate as documented by the linear backends.
@@ -214,6 +216,7 @@ class IncompressibleSimpleSolver
     double density_;
     IncompressibleSimpleOptions options_;
 
+    std::shared_ptr<const EigenSparseMatrixPattern> matrix_pattern_;
     EigenBiCGSTABSolver u_momentum_solver_;
     EigenBiCGSTABSolver v_momentum_solver_;
     EigenConjugateGradientSolver pressure_correction_solver_;
