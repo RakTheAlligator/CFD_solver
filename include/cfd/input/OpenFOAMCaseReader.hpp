@@ -31,7 +31,8 @@ enum class InitializationType : std::uint8_t
 /// Optional `initialization` settings in `system/controlDict`.
 ///
 /// An absent block selects coarseMesh. The optional positive cell-count target
-/// is not an exact meshing constraint and is incompatible with `type zero`.
+/// applies to the coarsest grid-sequencing level, is not an exact meshing
+/// constraint and is incompatible with `type zero`.
 struct InitializationInput
 {
     InitializationType type{InitializationType::CoarseMesh};

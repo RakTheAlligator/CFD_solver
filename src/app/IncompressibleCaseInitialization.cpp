@@ -17,6 +17,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <memory>
 #include <optional>
 #include <stdexcept>
 #include <string>
@@ -99,36 +100,8 @@ void initialize_fixed_mass_flux_boundaries(
     }
 }
 
-CoarseMeshPlan make_coarse_mesh_plan(Index final_cell_count, double final_mesh_size,
-                                     const input::InitializationInput &initialization)
-{
-    if (final_cell_count == 0 || !std::isfinite(final_mesh_size) || !(final_mesh_size > 0.0))
-    {
-        throw std::invalid_argument(
-            "Coarse initialization requires a nonempty final mesh and positive finite mesh size.");
-    }
-    const Index target{initialization.target_coarse_cell_count.value_or(std::max(Index{1}, final_cell_count / 4))};
-    if (target == 0 || (initialization.target_coarse_cell_count.has_value() && target >= final_cell_count))
-    {
-        throw std::invalid_argument("targetCoarseCellCount must be positive and smaller than the final cell count.");
-    }
-    const double mesh_size{final_mesh_size *
-                           std::sqrt(static_cast<double>(final_cell_count) / static_cast<double>(target))};
-    if (!std::isfinite(mesh_size) || !(mesh_size > 0.0))
-    {
-        throw std::invalid_argument("Computed coarse mesh size must be finite and positive.");
-    }
-    return {.target_cell_count = target, .mesh_size = mesh_size};
-}
-
-CoarseInitializationResult initialize_from_coarse_mesh(const Mesh &final_mesh, const input::MeshInput &mesh_input,
-                                                       const input::InitializationInput &initialization,
-                                                       const input::ScalarFieldInput &u_input,
-                                                       const input::ScalarFieldInput &v_input,
-                                                       const input::ScalarFieldInput &pressure_input, double density,
-                                                       double dynamic_viscosity, ScalarConvectionScheme scheme,
-                                                       const IncompressibleSimpleOptions &simple_options,
-                                                       CellVelocityField &velocity, CellScalarField &pressure)
+std::vector<GridLevelPlan> make_grid_sequencing_plan(Index final_cell_count, double final_mesh_size,
+                                                     const input::InitializationInput &initialization)
 {
     switch (initialization.type)
     {
@@ -143,81 +116,221 @@ CoarseInitializationResult initialize_from_coarse_mesh(const Mesh &final_mesh, c
     default:
         throw std::invalid_argument("Unsupported case initialization type.");
     }
-    CoarseInitializationResult result;
-    result.plan =
-        make_coarse_mesh_plan(final_mesh.cell_count(), mesh_input.generation_options.mesh_size, initialization);
-    if (result.plan.target_cell_count >= final_mesh.cell_count())
+    if (final_cell_count == 0 || !std::isfinite(final_mesh_size) || !(final_mesh_size > 0.0))
     {
-        result.automatic_fallback = true;
-        result.fallback_reason = "The final mesh has only one cell.";
+        throw std::invalid_argument("Grid sequencing requires a nonempty final mesh and positive finite mesh size.");
+    }
+    constexpr Index level_count{3};
+    const auto target{initialization.target_coarse_cell_count};
+    if (target.has_value() && (*target == 0 || *target >= final_cell_count))
+    {
+        throw std::invalid_argument("targetCoarseCellCount must be positive and smaller than the final cell count.");
+    }
+    const double first_size{target.has_value() ? final_mesh_size * std::sqrt(static_cast<double>(final_cell_count) /
+                                                                             static_cast<double>(*target))
+                                               : final_mesh_size * std::pow(2.0, static_cast<double>(level_count - 1))};
+    if (!std::isfinite(first_size) || !(first_size > final_mesh_size))
+    {
+        throw std::invalid_argument("Grid-sequencing mesh sizes must be finite and strictly decreasing.");
+    }
+    const double ratio{std::pow(first_size / final_mesh_size, 1.0 / static_cast<double>(level_count - 1))};
+    std::vector<GridLevelPlan> plan;
+    plan.reserve(level_count);
+    for (Index level = 0; level < level_count; ++level)
+    {
+        const bool final_level{level + 1 == level_count};
+        const double size{final_level ? final_mesh_size : first_size / std::pow(ratio, static_cast<double>(level))};
+        if (!std::isfinite(size) || !(size > 0.0) || (!plan.empty() && !(plan.back().mesh_size > size)))
+        {
+            throw std::invalid_argument("Grid-sequencing mesh sizes must be finite and strictly decreasing.");
+        }
+        const long double scale{static_cast<long double>(size) / final_mesh_size};
+        const long double estimate{static_cast<long double>(final_cell_count) / (scale * scale)};
+        // Clamp before conversion so the final Index range is never narrowed through floating point.
+        Index count{estimate >= static_cast<long double>(final_cell_count)
+                        ? final_cell_count
+                        : static_cast<Index>(std::max(1.0L, std::floor(estimate)))};
+        if (level == 0 && target.has_value())
+        {
+            count = *target;
+        }
+        if (final_level)
+        {
+            count = final_cell_count;
+        }
+        plan.push_back({count, size});
+    }
+    return plan;
+}
+
+namespace
+{
+
+struct GridLevelState
+{
+    MeshBuildResult built;
+    ScalarBoundaryConditions u_boundary;
+    ScalarBoundaryConditions v_boundary;
+    ScalarBoundaryConditions pressure_boundary;
+    PressureCorrectionBoundaryConditions correction_boundary;
+    CellVelocityField velocity;
+    CellScalarField pressure;
+
+    GridLevelState(MeshBuildResult build, const input::ScalarFieldInput &u_input,
+                   const input::ScalarFieldInput &v_input, const input::ScalarFieldInput &pressure_input)
+        : built(std::move(build)), u_boundary(input::resolve_boundary_conditions(built.mesh, u_input)),
+          v_boundary(input::resolve_boundary_conditions(built.mesh, v_input)),
+          pressure_boundary(input::resolve_boundary_conditions(built.mesh, pressure_input)),
+          correction_boundary(make_pressure_correction_boundary_conditions(pressure_boundary)),
+          velocity(built.mesh.cell_count(), Vector2{u_input.internal_value, v_input.internal_value}),
+          pressure(built.mesh.cell_count(), pressure_input.internal_value)
+    {
+    }
+};
+
+void hierarchy_failure(GridSequencingResult &result, const input::InitializationInput &initialization,
+                       const std::string &reason)
+{
+    if (initialization.target_coarse_cell_count.has_value())
+    {
+        throw std::invalid_argument("Explicit targetCoarseCellCount cannot form a usable increasing grid hierarchy: " +
+                                    reason);
+    }
+    result.automatic_fallback = true;
+    result.fallback_reason = reason;
+}
+
+void solve_auxiliary_level(GridLevelState &state, GridLevelReport &report, Index level, double density,
+                           double dynamic_viscosity, ScalarConvectionScheme scheme,
+                           const IncompressibleSimpleOptions &options)
+{
+    FaceFluxField flux{state.built.mesh.face_count()};
+    initialize_fixed_mass_flux_boundaries(state.built.mesh, density, state.u_boundary, state.v_boundary,
+                                          state.correction_boundary, flux);
+    IncompressibleSimpleSolver solver{state.built.mesh, density, dynamic_viscosity, scheme, options};
+    const auto solved{solver.solve(state.u_boundary, state.v_boundary, state.pressure_boundary,
+                                   state.correction_boundary, state.velocity, state.pressure, flux)};
+    if (!solved.converged)
+    {
+        throw std::runtime_error("Grid-sequencing SIMPLE level " + std::to_string(level) + " did not converge within " +
+                                 std::to_string(solved.iteration_count) + " iterations.");
+    }
+    report.iteration_count.emplace(solved.iteration_count);
+    report.solve_seconds = solved.timings.total_seconds;
+}
+
+} // namespace
+
+GridSequencingResult initialize_with_grid_sequencing(const Mesh &final_mesh, const input::MeshInput &mesh_input,
+                                                     const input::InitializationInput &initialization,
+                                                     const input::ScalarFieldInput &u_input,
+                                                     const input::ScalarFieldInput &v_input,
+                                                     const input::ScalarFieldInput &pressure_input, double density,
+                                                     double dynamic_viscosity, ScalarConvectionScheme scheme,
+                                                     const IncompressibleSimpleOptions &simple_options,
+                                                     CellVelocityField &velocity, CellScalarField &pressure)
+{
+    GridSequencingResult result;
+    const auto plan{
+        make_grid_sequencing_plan(final_mesh.cell_count(), mesh_input.generation_options.mesh_size, initialization)};
+    if (plan.empty())
+    {
         return result;
     }
-    MeshGenerationOptions coarse_options{mesh_input.generation_options};
-    coarse_options.mesh_size = result.plan.mesh_size;
-    std::optional<MeshBuildResult> built;
-    try
+    result.levels.reserve(plan.size());
+    for (const auto &level : plan)
     {
-        built.emplace(build_mesh(generate_mesh(mesh_input.geometry, coarse_options, mesh_input.automatic_meshing,
-                                               mesh_input.backward_facing_step_meshing)));
+        result.levels.push_back({.plan = level});
     }
-    catch (const std::runtime_error &error)
+    result.levels.back().actual_cell_count = final_mesh.cell_count();
+    if (final_mesh.cell_count() < plan.size())
     {
-        if (initialization.target_coarse_cell_count.has_value())
-        {
-            throw std::invalid_argument("Explicit targetCoarseCellCount could not produce a usable coarse mesh: " +
-                                        std::string{error.what()});
-        }
-        result.automatic_fallback = true;
-        result.fallback_reason = error.what();
+        hierarchy_failure(result, initialization, "Too few final cells for a strictly increasing hierarchy.");
         return result;
     }
-    const Mesh &coarse_mesh{built->mesh};
-    result.actual_cell_count = coarse_mesh.cell_count();
-    if (coarse_mesh.cell_count() >= final_mesh.cell_count())
+    if (velocity.size() != final_mesh.cell_count() || pressure.size() != final_mesh.cell_count())
     {
-        if (initialization.target_coarse_cell_count.has_value())
-        {
-            throw std::invalid_argument("Explicit targetCoarseCellCount did not produce a smaller coarse mesh.");
-        }
-        result.automatic_fallback = true;
-        result.fallback_reason = "The generated coarse mesh is not smaller than the final mesh.";
-        return result;
+        throw std::invalid_argument("Grid-sequencing output cardinalities must match the final Mesh.");
     }
-    const ScalarBoundaryConditions u_boundary{input::resolve_boundary_conditions(coarse_mesh, u_input)};
-    const ScalarBoundaryConditions v_boundary{input::resolve_boundary_conditions(coarse_mesh, v_input)};
-    const ScalarBoundaryConditions pressure_boundary{input::resolve_boundary_conditions(coarse_mesh, pressure_input)};
-    const PressureCorrectionBoundaryConditions correction_boundary{
-        make_pressure_correction_boundary_conditions(pressure_boundary)};
-    CellVelocityField coarse_velocity{coarse_mesh.cell_count(),
-                                      Vector2{u_input.internal_value, v_input.internal_value}};
-    CellScalarField coarse_pressure{coarse_mesh.cell_count(), pressure_input.internal_value};
-    initialize_from_boundary_conditions(coarse_mesh, u_boundary, v_boundary, pressure_boundary, correction_boundary,
-                                        {u_input.internal_value, v_input.internal_value}, pressure_input.internal_value,
-                                        coarse_velocity, coarse_pressure);
+
+    // Moving only owning pointers keeps Mesh addresses stable while transfer borrows them.
+    std::unique_ptr<GridLevelState> source;
+    for (Index level = 0; level < plan.size(); ++level)
     {
-        FaceFluxField coarse_flux{coarse_mesh.face_count()};
-        initialize_fixed_mass_flux_boundaries(coarse_mesh, density, u_boundary, v_boundary, correction_boundary,
-                                              coarse_flux);
-        IncompressibleSimpleSolver coarse_solver{coarse_mesh, density, dynamic_viscosity, scheme, simple_options};
-        const IncompressibleSimpleResult coarse_result{coarse_solver.solve(u_boundary, v_boundary, pressure_boundary,
-                                                                           correction_boundary, coarse_velocity,
-                                                                           coarse_pressure, coarse_flux)};
-        if (!coarse_result.converged)
+        const bool final_level{level + 1 == plan.size()};
+        std::unique_ptr<GridLevelState> target;
+        if (!final_level)
         {
-            throw std::runtime_error("Coarse SIMPLE did not converge within " +
-                                     std::to_string(coarse_result.iteration_count) + " iterations.");
+            std::optional<MeshBuildResult> built;
+            try
+            {
+                MeshGenerationOptions options{mesh_input.generation_options};
+                options.mesh_size = plan.at(level).mesh_size;
+                built.emplace(build_mesh(generate_mesh(mesh_input.geometry, options, mesh_input.automatic_meshing,
+                                                       mesh_input.backward_facing_step_meshing)));
+            }
+            catch (const std::runtime_error &error)
+            {
+                hierarchy_failure(result, initialization,
+                                  "Meshing level " + std::to_string(level) + ": " + error.what());
+                return result;
+            }
+            const Index actual{built->mesh.cell_count()};
+            result.levels.at(level).actual_cell_count = actual;
+            if (actual >= final_mesh.cell_count() || (source && actual <= source->built.mesh.cell_count()))
+            {
+                hierarchy_failure(result, initialization,
+                                  "Actual cell counts are not strictly increasing below the final Mesh.");
+                return result;
+            }
+            target = std::make_unique<GridLevelState>(std::move(*built), u_input, v_input, pressure_input);
+            if (level == 0)
+            {
+                initialize_from_boundary_conditions(target->built.mesh, target->u_boundary, target->v_boundary,
+                                                    target->pressure_boundary, target->correction_boundary,
+                                                    {u_input.internal_value, v_input.internal_value},
+                                                    pressure_input.internal_value, target->velocity, target->pressure);
+            }
         }
-        result.iteration_count = coarse_result.iteration_count;
-        result.solve_seconds = coarse_result.timings.total_seconds;
+        if (source)
+        {
+            const Mesh &target_mesh{final_level ? final_mesh : target->built.mesh};
+            CellVelocityField &target_velocity{final_level ? velocity : target->velocity};
+            CellScalarField &target_pressure{final_level ? pressure : target->pressure};
+            const auto transfer_start{std::chrono::steady_clock::now()};
+            {
+                std::optional<CellFieldTransfer> mapping;
+                try
+                {
+                    // Coverage is validated before touching target fields, including the final ones.
+                    mapping.emplace(source->built.mesh, target_mesh);
+                }
+                catch (const std::runtime_error &error)
+                {
+                    hierarchy_failure(result, initialization,
+                                      "Transfer to level " + std::to_string(level) + ": " + error.what());
+                    return result;
+                }
+                CellVectorField workspace{source->built.mesh.cell_count()};
+                mapping->apply_linear_reconstruction(source->velocity.u(), source->u_boundary, workspace,
+                                                     target_velocity.u());
+                mapping->apply_linear_reconstruction(source->velocity.v(), source->v_boundary, workspace,
+                                                     target_velocity.v());
+                mapping->apply_linear_reconstruction(source->pressure, source->pressure_boundary, workspace,
+                                                     target_pressure);
+            }
+            result.levels.at(level - 1).transfer_seconds =
+                std::chrono::duration<double>(std::chrono::steady_clock::now() - transfer_start).count();
+        }
+        // The old source, its fields and BCs are freed before solving the new level.
+        source = std::move(target);
+        if (!final_level)
+        {
+            solve_auxiliary_level(*source, result.levels.at(level), level, density, dynamic_viscosity, scheme,
+                                  simple_options);
+        }
     }
-    const auto transfer_start{std::chrono::steady_clock::now()};
-    const CellFieldTransfer mapping{coarse_mesh, final_mesh};
-    CellVectorField gradient_workspace{coarse_mesh.cell_count()};
-    mapping.apply_linear_reconstruction(coarse_velocity.u(), u_boundary, gradient_workspace, velocity.u());
-    mapping.apply_linear_reconstruction(coarse_velocity.v(), v_boundary, gradient_workspace, velocity.v());
-    mapping.apply_linear_reconstruction(coarse_pressure, pressure_boundary, gradient_workspace, pressure);
-    result.transfer_seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - transfer_start).count();
-    result.used_coarse_mesh = true;
+    result.used_grid_sequencing = true;
     return result;
 }
 

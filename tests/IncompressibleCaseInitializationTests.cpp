@@ -17,6 +17,7 @@
 
 #include <algorithm>
 #include <limits>
+#include <memory>
 #include <span>
 #include <vector>
 
@@ -32,7 +33,7 @@ constexpr double viscosity{0.1};
 cfd::input::MeshInput mesh_input()
 {
     return {.geometry = cfd::RectangleGeometry{2.0, 1.0},
-            .generation_options = {.mesh_size = 0.2, .cell_type = cfd::CellType::Quadrilateral},
+            .generation_options = {.mesh_size = 0.1, .cell_type = cfd::CellType::Quadrilateral},
             .automatic_meshing = {},
             .backward_facing_step_meshing = {}};
 }
@@ -88,26 +89,50 @@ void require_values_near(std::span<const double> actual, std::span<const double>
     }
 }
 
-void test_coarse_mesh_plan()
+void test_grid_level_report_completion_is_explicit()
 {
-    const cfd::input::InitializationInput automatic;
-    const auto plan{cfd::app::make_coarse_mesh_plan(100, 0.2, automatic)};
-    require(plan.target_cell_count == 25, "Automatic target is not Nf/4.");
-    require_near(plan.mesh_size, 0.4, 1.0e-12, "Automatic coarse size is not 2h.");
-    require(cfd::app::make_coarse_mesh_plan(7, 0.2, automatic).target_cell_count == 1,
-            "Automatic target did not use integer division.");
-    require(cfd::app::make_coarse_mesh_plan(1, 0.2, automatic).target_cell_count == 1,
-            "Automatic target did not retain the lower bound of one.");
-    const cfd::input::InitializationInput explicit_target{.target_coarse_cell_count = 4};
-    require_near(cfd::app::make_coarse_mesh_plan(100, 0.2, explicit_target).mesh_size, 1.0, 1.0e-12,
-                 "Explicit target conversion is incorrect.");
-    for (const cfd::Index target : {cfd::Index{0}, cfd::Index{100}, cfd::Index{101}})
+    cfd::app::GridLevelReport report;
+    require(!report.iteration_count.has_value(), "A new report claims a completed solve.");
+    report.iteration_count.emplace(0);
+    require(report.iteration_count.has_value() && *report.iteration_count == 0,
+            "A completed zero-iteration solve is indistinguishable from an unexecuted level.");
+}
+
+void test_grid_sequencing_plan()
+{
+    const auto plan{cfd::app::make_grid_sequencing_plan(1600, 0.1, {})};
+    require(plan.size() == 3, "Expected three levels including the final Mesh.");
+    require(plan.at(0).target_cell_count == 100 && plan.at(1).target_cell_count == 400 &&
+                plan.at(2).target_cell_count == 1600,
+            "Wrong automatic cell targets.");
+    require_near(plan.at(0).mesh_size, 0.4, 1e-12, "Wrong first automatic size.");
+    require_near(plan.at(1).mesh_size, 0.2, 1e-12, "Wrong intermediate automatic size.");
+    require_near(plan.at(2).mesh_size, 0.1, 1e-12, "Final size changed.");
+    const auto small{cfd::app::make_grid_sequencing_plan(7, 0.1, {})};
+    require(small.at(0).target_cell_count == 1 && small.at(1).target_cell_count == 1,
+            "Cell targets did not retain the lower bound of one.");
+    const auto explicit_plan{cfd::app::make_grid_sequencing_plan(1600, 0.1, {.target_coarse_cell_count = 25})};
+    require(explicit_plan.at(0).target_cell_count == 25, "Explicit target is not the coarsest target.");
+    require_near(explicit_plan.at(0).mesh_size, 0.8, 1e-12, "Wrong explicit first size.");
+    require_near(explicit_plan.at(0).mesh_size / explicit_plan.at(1).mesh_size,
+                 explicit_plan.at(1).mesh_size / explicit_plan.at(2).mesh_size, 1e-12,
+                 "Explicit sizes are not geometrically spaced.");
+    require(explicit_plan.at(1).target_cell_count == 200, "Wrong explicit intermediate target.");
+    require(cfd::app::make_grid_sequencing_plan(1600, 0.1, {.type = cfd::input::InitializationType::Zero}).empty(),
+            "Zero mode constructed a plan.");
+    for (const cfd::Index target : {cfd::Index{0}, cfd::Index{1600}, cfd::Index{1601}})
     {
         require_throws_with_message<std::invalid_argument>(
             [target]() {
-                static_cast<void>(cfd::app::make_coarse_mesh_plan(100, 0.2, {.target_coarse_cell_count = target}));
+                static_cast<void>(cfd::app::make_grid_sequencing_plan(1600, 0.1, {.target_coarse_cell_count = target}));
             },
             "smaller than the final", "Accepted invalid explicit target.");
+    }
+    for (double size : {0.0, -1.0, std::numeric_limits<double>::infinity(), std::numeric_limits<double>::quiet_NaN()})
+    {
+        require_throws_with_message<std::invalid_argument>(
+            [size]() { static_cast<void>(cfd::app::make_grid_sequencing_plan(1600, size, {})); }, "positive finite",
+            "Accepted an invalid final mesh size.");
     }
 }
 
@@ -130,10 +155,10 @@ void test_zero_preserves_historical_initialization()
     cfd::FaceFluxField flux{mesh.face_count()};
     cfd::app::initialize_fixed_mass_flux_boundaries(mesh, density, u_boundary, v_boundary, correction, flux);
     const cfd::FaceFluxField original_flux{flux};
-    const auto result{cfd::app::initialize_from_coarse_mesh(
+    const auto result{cfd::app::initialize_with_grid_sequencing(
         mesh, input, {.type = cfd::input::InitializationType::Zero}, u_input, v_input, p_input, density, viscosity,
         cfd::ScalarConvectionScheme::Linear, simple_options(), velocity, pressure)};
-    require(!result.used_coarse_mesh && !result.automatic_fallback && result.actual_cell_count == 0,
+    require(!result.used_grid_sequencing && !result.automatic_fallback && result.levels.empty(),
             "Zero mode generated a coarse mesh.");
     for (cfd::Index cell = 0; cell < mesh.cell_count(); ++cell)
     {
@@ -144,6 +169,19 @@ void test_zero_preserves_historical_initialization()
     require_values_near(flux.values(), original_flux.values(), 0.0, "Zero mode changed target flux.");
 }
 
+cfd::Mesh make_small_mesh()
+{
+    cfd::RawMeshData raw;
+    raw.nodes = {{0, 0}, {0.5, 0}, {1, 0}, {0, 0.5}, {0.5, 0.5}, {1, 0.5}, {0, 1}, {0.5, 1}, {1, 1}};
+    raw.cell_types = std::vector<cfd::CellType>(4, cfd::CellType::Quadrilateral);
+    raw.cell_nodes = {0, 1, 4, 3, 1, 2, 5, 4, 3, 4, 7, 6, 4, 5, 8, 7};
+    raw.cell_node_offsets = {0, 4, 8, 12, 16};
+    raw.boundary_groups = {{0, "wall"}};
+    raw.boundary_edges = {{{0, 1}, 0}, {{1, 2}, 0}, {{2, 5}, 0}, {{5, 8}, 0},
+                          {{8, 7}, 0}, {{7, 6}, 0}, {{6, 3}, 0}, {{3, 0}, 0}};
+    return cfd::build_mesh(std::move(raw)).mesh;
+}
+
 void test_automatic_fallback_and_explicit_target_errors()
 {
     const auto input{mesh_input()};
@@ -152,59 +190,79 @@ void test_automatic_fallback_and_explicit_target_errors()
     const auto p_input{pressure_input()};
     cfd::CellVelocityField velocity{single.cell_count(), {2.0, 3.0}};
     cfd::CellScalarField pressure{single.cell_count(), 4.0};
-    const auto fallback{cfd::app::initialize_from_coarse_mesh(single, input, {}, u_input, u_input, p_input, density,
-                                                              viscosity, cfd::ScalarConvectionScheme::Linear,
-                                                              simple_options(), velocity, pressure)};
-    require(fallback.automatic_fallback && !fallback.used_coarse_mesh, "One-cell mesh did not fall back.");
-    require(velocity.u()[0] == 2.0 && velocity.v()[0] == 3.0 && pressure[0] == 4.0,
-            "Fallback changed the initial fields.");
+    const auto fallback{cfd::app::initialize_with_grid_sequencing(single, input, {}, u_input, u_input, p_input, density,
+                                                                  viscosity, cfd::ScalarConvectionScheme::Linear,
+                                                                  simple_options(), velocity, pressure)};
+    require(fallback.automatic_fallback && !fallback.used_grid_sequencing, "One-cell mesh did not fall back.");
+    require(std::ranges::all_of(fallback.levels, [](const auto &level) { return !level.iteration_count.has_value(); }),
+            "An early fallback reported a completed level.");
+    require(velocity.u()[0] == 2.0 && velocity.v()[0] == 3.0 && pressure[0] == 4.0, "Fallback changed fields.");
     require_throws_with_message<std::invalid_argument>(
         [&]() {
-            static_cast<void>(cfd::app::initialize_from_coarse_mesh(
+            static_cast<void>(cfd::app::initialize_with_grid_sequencing(
                 single, input, {.target_coarse_cell_count = 1}, u_input, u_input, p_input, density, viscosity,
                 cfd::ScalarConvectionScheme::Linear, simple_options(), velocity, pressure));
         },
-        "smaller than the final", "Accepted target equal to final cell count.");
+        "smaller than the final", "Accepted target equal to final count.");
 
-    // Deliberately inconsistent final resolution exercises the generated-size guard.
-    const auto small{cfd::build_mesh(cfd::test::make_two_triangle_raw_mesh()).mesh};
+    // An inconsistent supplied final resolution deterministically exercises the actual-count guard.
+    const auto small{make_small_mesh()};
     auto inconsistent_input{input};
     inconsistent_input.generation_options.cell_type = cfd::CellType::Triangle;
     cfd::CellVelocityField small_velocity{small.cell_count(), {2.0, 3.0}};
     cfd::CellScalarField small_pressure{small.cell_count(), 4.0};
-    const auto generated_fallback{cfd::app::initialize_from_coarse_mesh(
+    const auto generated_fallback{cfd::app::initialize_with_grid_sequencing(
         small, inconsistent_input, {}, u_input, u_input, p_input, density, viscosity,
         cfd::ScalarConvectionScheme::Linear, simple_options(), small_velocity, small_pressure)};
-    require(generated_fallback.automatic_fallback && generated_fallback.actual_cell_count >= small.cell_count(),
-            "Generated coarse mesh that is not smaller did not fall back.");
+    require(generated_fallback.automatic_fallback &&
+                generated_fallback.levels.front().actual_cell_count >= small.cell_count(),
+            "Actual-count failure did not fall back.");
+    require(std::ranges::all_of(generated_fallback.levels,
+                                [](const auto &level) { return !level.iteration_count.has_value(); }),
+            "A constructed but rejected level was reported as completed.");
     require_throws_with_message<std::invalid_argument>(
         [&]() {
-            static_cast<void>(cfd::app::initialize_from_coarse_mesh(
+            static_cast<void>(cfd::app::initialize_with_grid_sequencing(
                 small, inconsistent_input, {.target_coarse_cell_count = 1}, u_input, u_input, p_input, density,
                 viscosity, cfd::ScalarConvectionScheme::Linear, simple_options(), small_velocity, small_pressure));
         },
-        "did not produce a smaller", "Explicit target silently accepted a non-smaller mesh.");
+        "increasing grid hierarchy", "An inconsistent explicit hierarchy was accepted.");
 
-    // Gmsh can reject very coarse all-QUAD requests. Automatic mode must not
-    // make an otherwise usable final mesh depend on this auxiliary mesh.
     auto coarse_quad_request{input};
     coarse_quad_request.generation_options.mesh_size = 1.0;
-    const auto coarse_failure{cfd::app::initialize_from_coarse_mesh(
+    const auto failed_meshing{cfd::app::initialize_with_grid_sequencing(
         small, coarse_quad_request, {}, u_input, u_input, p_input, density, viscosity,
         cfd::ScalarConvectionScheme::Linear, simple_options(), small_velocity, small_pressure)};
-    require(coarse_failure.automatic_fallback && !coarse_failure.used_coarse_mesh &&
-                !coarse_failure.fallback_reason.empty(),
-            "Unusable automatic coarse meshing did not fall back with an explanation.");
-    require_throws_with_message<std::invalid_argument>(
-        [&]() {
-            static_cast<void>(cfd::app::initialize_from_coarse_mesh(
-                small, coarse_quad_request, {.target_coarse_cell_count = 1}, u_input, u_input, p_input, density,
-                viscosity, cfd::ScalarConvectionScheme::Linear, simple_options(), small_velocity, small_pressure));
-        },
-        "coarse mesh", "Unusable explicit coarse meshing was silently accepted.");
+    require(failed_meshing.automatic_fallback && !failed_meshing.fallback_reason.empty(),
+            "Unusable meshing did not fall back.");
+    for (cfd::Index cell = 0; cell < small.cell_count(); ++cell)
+        require(small_velocity.u()[cell] == 2.0 && small_velocity.v()[cell] == 3.0 && small_pressure[cell] == 4.0,
+                "A hierarchy fallback changed the historical fields.");
 }
 
-void test_single_coarse_solve_linear_transfer_and_final_solution()
+struct ReferenceLevel
+{
+    cfd::Mesh mesh;
+    cfd::ScalarBoundaryConditions u_boundary;
+    cfd::ScalarBoundaryConditions v_boundary;
+    cfd::ScalarBoundaryConditions p_boundary;
+    cfd::PressureCorrectionBoundaryConditions correction;
+    cfd::CellVelocityField velocity;
+    cfd::CellScalarField pressure;
+
+    ReferenceLevel(const cfd::input::MeshInput &input, const cfd::input::ScalarFieldInput &u,
+                   const cfd::input::ScalarFieldInput &v, const cfd::input::ScalarFieldInput &p)
+        : mesh(build_case_mesh(input)), u_boundary(cfd::input::resolve_boundary_conditions(mesh, u)),
+          v_boundary(cfd::input::resolve_boundary_conditions(mesh, v)),
+          p_boundary(cfd::input::resolve_boundary_conditions(mesh, p)),
+          correction(cfd::app::make_pressure_correction_boundary_conditions(p_boundary)),
+          velocity(mesh.cell_count(), {u.internal_value, v.internal_value}),
+          pressure(mesh.cell_count(), p.internal_value)
+    {
+    }
+};
+
+void test_multilevel_linear_transfer_and_final_solution()
 {
     const auto input{mesh_input()};
     const auto target{build_case_mesh(input)};
@@ -221,72 +279,129 @@ void test_single_coarse_solve_linear_transfer_and_final_solution()
     cfd::FaceFluxField warm_flux{target.face_count()};
     cfd::app::initialize_fixed_mass_flux_boundaries(target, density, u_boundary, v_boundary, correction, warm_flux);
     const cfd::FaceFluxField target_initial_flux{warm_flux};
-    const auto initialized{cfd::app::initialize_from_coarse_mesh(target, input, {}, u_input, v_input, p_input, density,
-                                                                 viscosity, cfd::ScalarConvectionScheme::Linear,
-                                                                 options, warm_velocity, warm_pressure)};
-    require(initialized.used_coarse_mesh && initialized.actual_cell_count < target.cell_count(),
-            "Coarse initialization was not used.");
+    const auto initialized{cfd::app::initialize_with_grid_sequencing(
+        target, input, {}, u_input, v_input, p_input, density, viscosity, cfd::ScalarConvectionScheme::Linear, options,
+        warm_velocity, warm_pressure)};
+    require(initialized.used_grid_sequencing && initialized.levels.size() == 3,
+            "Multilevel initialization was not used.");
+    require(initialized.levels.at(0).actual_cell_count < initialized.levels.at(1).actual_cell_count &&
+                initialized.levels.at(1).actual_cell_count < target.cell_count(),
+            "Hierarchy is not strictly increasing.");
+    require(initialized.levels.back().actual_cell_count == target.cell_count() &&
+                !initialized.levels.back().iteration_count.has_value(),
+            "The existing final Mesh was solved or replaced.");
+    require_values_near(warm_flux.values(), target_initial_flux.values(), 0.0, "Final target flux changed.");
 
-    // Independent single-Mesh solve gives the expected source state, with no sequencing.
-    auto coarse_input{input};
-    coarse_input.generation_options.mesh_size = initialized.plan.mesh_size;
-    const auto source{build_case_mesh(coarse_input)};
-    require(initialized.actual_cell_count == source.cell_count(), "Coarse meshing options changed.");
-    const auto source_u_boundary{cfd::input::resolve_boundary_conditions(source, u_input)};
-    const auto source_v_boundary{cfd::input::resolve_boundary_conditions(source, v_input)};
-    const auto source_p_boundary{cfd::input::resolve_boundary_conditions(source, p_input)};
-    const auto source_correction{cfd::app::make_pressure_correction_boundary_conditions(source_p_boundary)};
-    cfd::CellVelocityField source_velocity{source.cell_count()};
-    cfd::CellScalarField source_pressure{source.cell_count()};
-    cfd::FaceFluxField source_flux{source.face_count()};
-    cfd::app::initialize_from_boundary_conditions(source, source_u_boundary, source_v_boundary, source_p_boundary,
-                                                  source_correction, {}, 0.0, source_velocity, source_pressure);
-    cfd::app::initialize_fixed_mass_flux_boundaries(source, density, source_u_boundary, source_v_boundary,
-                                                    source_correction, source_flux);
+    // An independent level-by-level reference uses BC initialization only once
+    // and creates fresh target fluxes at each solve. Counts and transferred
+    // fields protect both that ordering and the absence of recursive sequencing.
+    std::unique_ptr<ReferenceLevel> source;
+    for (cfd::Index level = 0; level + 1 < initialized.levels.size(); ++level)
     {
-        cfd::IncompressibleSimpleSolver source_solver{source, density, viscosity, cfd::ScalarConvectionScheme::Linear,
-                                                      options};
-        const auto result{source_solver.solve(source_u_boundary, source_v_boundary, source_p_boundary,
-                                              source_correction, source_velocity, source_pressure, source_flux)};
-        require(result.converged && result.iteration_count == initialized.iteration_count,
-                "Initialization did not use the direct nonrecursive coarse solve.");
+        auto level_input{input};
+        level_input.generation_options.mesh_size = initialized.levels.at(level).plan.mesh_size;
+        auto state{std::make_unique<ReferenceLevel>(level_input, u_input, v_input, p_input)};
+        require(state->mesh.cell_count() == initialized.levels.at(level).actual_cell_count,
+                "Meshing settings changed.");
+        if (!source)
+        {
+            cfd::app::initialize_from_boundary_conditions(state->mesh, state->u_boundary, state->v_boundary,
+                                                          state->p_boundary, state->correction, {}, 0.0,
+                                                          state->velocity, state->pressure);
+        }
+        else
+        {
+            const cfd::CellFieldTransfer mapping{source->mesh, state->mesh};
+            cfd::CellVectorField workspace{source->mesh.cell_count()};
+            mapping.apply_linear_reconstruction(source->velocity.u(), source->u_boundary, workspace,
+                                                state->velocity.u());
+            mapping.apply_linear_reconstruction(source->velocity.v(), source->v_boundary, workspace,
+                                                state->velocity.v());
+            mapping.apply_linear_reconstruction(source->pressure, source->p_boundary, workspace, state->pressure);
+        }
+        source.reset();
+        cfd::FaceFluxField flux{state->mesh.face_count()};
+        cfd::app::initialize_fixed_mass_flux_boundaries(state->mesh, density, state->u_boundary, state->v_boundary,
+                                                        state->correction, flux);
+        cfd::IncompressibleSimpleSolver solver{state->mesh, density, viscosity, cfd::ScalarConvectionScheme::Linear,
+                                               options};
+        const auto result{solver.solve(state->u_boundary, state->v_boundary, state->p_boundary, state->correction,
+                                       state->velocity, state->pressure, flux)};
+        const auto &reported_iterations{initialized.levels.at(level).iteration_count};
+        require(result.converged && reported_iterations.has_value() && result.iteration_count == *reported_iterations,
+                "Auxiliary solve did not use the expected single initialization and target flux.");
+        source = std::move(state);
     }
     cfd::CellVelocityField expected_velocity{target.cell_count()};
     cfd::CellScalarField expected_pressure{target.cell_count()};
-    cfd::CellVectorField workspace{source.cell_count()};
-    const cfd::CellFieldTransfer mapping{source, target};
-    mapping.apply_linear_reconstruction(source_velocity.u(), source_u_boundary, workspace, expected_velocity.u());
-    mapping.apply_linear_reconstruction(source_velocity.v(), source_v_boundary, workspace, expected_velocity.v());
-    mapping.apply_linear_reconstruction(source_pressure, source_p_boundary, workspace, expected_pressure);
-    require_values_near(warm_velocity.u().values(), expected_velocity.u().values(), 1.0e-12, "Incorrect u transfer.");
-    require_values_near(warm_velocity.v().values(), expected_velocity.v().values(), 1.0e-12, "Incorrect v transfer.");
-    require_values_near(warm_pressure.values(), expected_pressure.values(), 1.0e-12, "Incorrect p transfer.");
-    require_values_near(warm_flux.values(), target_initial_flux.values(), 0.0, "Source flux was transferred.");
-    require(std::ranges::any_of(source_flux.values(), [](double value) { return value != 0.0; }),
-            "Source flux test did not exercise nonzero converged flux.");
+    {
+        const cfd::CellFieldTransfer mapping{source->mesh, target};
+        cfd::CellVectorField workspace{source->mesh.cell_count()};
+        mapping.apply_linear_reconstruction(source->velocity.u(), source->u_boundary, workspace, expected_velocity.u());
+        mapping.apply_linear_reconstruction(source->velocity.v(), source->v_boundary, workspace, expected_velocity.v());
+        mapping.apply_linear_reconstruction(source->pressure, source->p_boundary, workspace, expected_pressure);
+    }
+    source.reset();
+    require_values_near(warm_velocity.u().values(), expected_velocity.u().values(), 1e-12,
+                        "Incorrect multilevel u transfer.");
+    require_values_near(warm_velocity.v().values(), expected_velocity.v().values(), 1e-12,
+                        "Incorrect multilevel v transfer.");
+    require_values_near(warm_pressure.values(), expected_pressure.values(), 1e-12, "Incorrect multilevel p transfer.");
 
     cfd::CellVelocityField zero_velocity{target.cell_count()};
     cfd::CellScalarField zero_pressure{target.cell_count()};
     cfd::FaceFluxField zero_flux{target_initial_flux};
     {
-        cfd::IncompressibleSimpleSolver zero_solver{target, density, viscosity, cfd::ScalarConvectionScheme::Linear,
-                                                    options};
+        cfd::IncompressibleSimpleSolver solver{target, density, viscosity, cfd::ScalarConvectionScheme::Linear,
+                                               options};
         const auto result{
-            zero_solver.solve(u_boundary, v_boundary, p_boundary, correction, zero_velocity, zero_pressure, zero_flux)};
-        require(result.converged, "Historical zero-start solution did not converge.");
+            solver.solve(u_boundary, v_boundary, p_boundary, correction, zero_velocity, zero_pressure, zero_flux)};
+        require(result.converged, "Historical zero-start did not converge.");
     }
     {
-        cfd::IncompressibleSimpleSolver warm_solver{target, density, viscosity, cfd::ScalarConvectionScheme::Linear,
-                                                    options};
+        cfd::IncompressibleSimpleSolver solver{target, density, viscosity, cfd::ScalarConvectionScheme::Linear,
+                                               options};
         const auto result{
-            warm_solver.solve(u_boundary, v_boundary, p_boundary, correction, warm_velocity, warm_pressure, warm_flux)};
-        require(result.converged, "Sequenced target solution did not converge.");
+            solver.solve(u_boundary, v_boundary, p_boundary, correction, warm_velocity, warm_pressure, warm_flux)};
+        require(result.converged, "Multilevel final solution did not converge.");
     }
-    // Inner solves stop at 1e-6: compare physical fixed points, not bitwise trajectories.
-    require_values_near(warm_velocity.u().values(), zero_velocity.u().values(), 2.0e-5, "Final u changed.");
-    require_values_near(warm_velocity.v().values(), zero_velocity.v().values(), 2.0e-5, "Final v changed.");
-    require_values_near(warm_pressure.values(), zero_pressure.values(), 2.0e-5, "Final p changed.");
-    require_values_near(warm_flux.values(), zero_flux.values(), 2.0e-5, "Final flux changed.");
+    require_values_near(warm_velocity.u().values(), zero_velocity.u().values(), 2e-5, "Final u changed.");
+    require_values_near(warm_velocity.v().values(), zero_velocity.v().values(), 2e-5, "Final v changed.");
+    require_values_near(warm_pressure.values(), zero_pressure.values(), 2e-5, "Final p changed.");
+    require_values_near(warm_flux.values(), zero_flux.values(), 2e-5, "Final flux changed.");
+}
+
+void test_late_coverage_failure_preserves_final_fields()
+{
+    const auto input{mesh_input()};
+    auto raw{cfd::generate_mesh(input.geometry, input.generation_options, input.automatic_meshing,
+                                input.backward_facing_step_meshing)};
+    for (auto &point : raw.nodes)
+        point.x += 10.0;
+    const auto target{cfd::build_mesh(std::move(raw)).mesh};
+    const auto u_input{velocity_input()};
+    const auto p_input{pressure_input()};
+    cfd::CellVelocityField velocity{target.cell_count(), {2.0, 3.0}};
+    cfd::CellScalarField pressure{target.cell_count(), 4.0};
+    const auto fallback{cfd::app::initialize_with_grid_sequencing(target, input, {}, u_input, u_input, p_input, density,
+                                                                  viscosity, cfd::ScalarConvectionScheme::Linear,
+                                                                  simple_options(), velocity, pressure)};
+    require(fallback.automatic_fallback && !fallback.used_grid_sequencing, "Missing final coverage was accepted.");
+    require(fallback.levels.at(0).iteration_count.has_value() && fallback.levels.at(1).iteration_count.has_value(),
+            "The coverage test did not exercise a late failure.");
+    require(!fallback.levels.back().iteration_count.has_value(),
+            "A late fallback reported the unexecuted final solve as completed.");
+    require(fallback.fallback_reason.find("Transfer to level 2") != std::string::npos, "Unclear coverage failure.");
+    for (cfd::Index cell = 0; cell < target.cell_count(); ++cell)
+        require(velocity.u()[cell] == 2.0 && velocity.v()[cell] == 3.0 && pressure[cell] == 4.0,
+                "Coverage fallback partially changed final fields.");
+    require_throws_with_message<std::invalid_argument>(
+        [&]() {
+            static_cast<void>(cfd::app::initialize_with_grid_sequencing(
+                target, input, {.target_coarse_cell_count = target.cell_count() / 16}, u_input, u_input, p_input,
+                density, viscosity, cfd::ScalarConvectionScheme::Linear, simple_options(), velocity, pressure));
+        },
+        "Transfer to level 2", "Explicit coverage failure silently fell back.");
 }
 
 void test_nonconverged_coarse_solve_is_rejected()
@@ -301,11 +416,11 @@ void test_nonconverged_coarse_solve_is_rejected()
     cfd::CellScalarField pressure{mesh.cell_count()};
     require_throws_with_message<std::runtime_error>(
         [&]() {
-            static_cast<void>(cfd::app::initialize_from_coarse_mesh(mesh, input, {}, u_input, u_input, p_input, density,
-                                                                    viscosity, cfd::ScalarConvectionScheme::Linear,
-                                                                    options, velocity, pressure));
+            static_cast<void>(cfd::app::initialize_with_grid_sequencing(
+                mesh, input, {}, u_input, u_input, p_input, density, viscosity, cfd::ScalarConvectionScheme::Linear,
+                options, velocity, pressure));
         },
-        "Coarse SIMPLE did not converge", "Nonconverged coarse state was accepted.");
+        "Grid-sequencing SIMPLE level 0 did not converge", "Nonconverged coarse state was accepted.");
     for (cfd::Index cell = 0; cell < mesh.cell_count(); ++cell)
     {
         require(velocity.u()[cell] == 0.0 && velocity.v()[cell] == 0.0 && pressure[cell] == 0.0,
@@ -317,12 +432,14 @@ void test_nonconverged_coarse_solve_is_rejected()
 int main()
 {
     int failures{};
-    failures += cfd::test::run_test("coarse mesh planning", test_coarse_mesh_plan);
+    failures += cfd::test::run_test("explicit level completion", test_grid_level_report_completion_is_explicit);
+    failures += cfd::test::run_test("grid sequencing plan", test_grid_sequencing_plan);
     failures += cfd::test::run_test("historical zero initialization", test_zero_preserves_historical_initialization);
     failures +=
         cfd::test::run_test("coarse fallback and target errors", test_automatic_fallback_and_explicit_target_errors);
-    failures += cfd::test::run_test("single coarse solve and linear sequencing",
-                                    test_single_coarse_solve_linear_transfer_and_final_solution);
+    failures += cfd::test::run_test("multilevel linear sequencing", test_multilevel_linear_transfer_and_final_solution);
     failures += cfd::test::run_test("reject unconverged coarse solve", test_nonconverged_coarse_solve_is_rejected);
+    failures +=
+        cfd::test::run_test("late transfer coverage fallback", test_late_coverage_failure_preserves_final_fields);
     return cfd::test::finish_tests(failures, "IncompressibleCaseInitialization");
 }

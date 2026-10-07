@@ -188,7 +188,7 @@ int main(const int argc, char *argv[])
             .momentum_linear_solver = {.relative_tolerance = 1.0e-6, .maximum_iterations = 5000},
             .pressure_correction_linear_solver = {.relative_tolerance = 1.0e-3, .maximum_iterations = 5000},
         };
-        const cfd::app::CoarseInitializationResult initialization{cfd::app::initialize_from_coarse_mesh(
+        const cfd::app::GridSequencingResult initialization{cfd::app::initialize_with_grid_sequencing(
             mesh, mesh_input, control_input.initialization, u_input, v_input, pressure_input, density,
             dynamic_viscosity, cfd::ScalarConvectionScheme::Linear, simple_options, velocity, pressure)};
         std::cout << std::fixed << std::setprecision(6) << "\n[Initialization]\n"
@@ -197,20 +197,26 @@ int main(const int argc, char *argv[])
                   << '\n';
         if (control_input.initialization.type == cfd::input::InitializationType::CoarseMesh)
         {
-            std::cout << "  Final cells       : " << mesh.cell_count() << '\n'
-                      << "  Target coarse cells: " << initialization.plan.target_cell_count << '\n'
-                      << "  Actual coarse cells: " << initialization.actual_cell_count << '\n'
-                      << "  Coarse mesh size  : " << initialization.plan.mesh_size << " m\n";
+            std::cout << "  Final cells       : " << mesh.cell_count() << '\n';
+            for (cfd::Index level = 0; level + 1 < initialization.levels.size(); ++level)
+            {
+                const auto &report{initialization.levels.at(level)};
+                if (!report.iteration_count.has_value())
+                {
+                    continue;
+                }
+                std::cout << "  Level " << level << ":\n"
+                          << "    Target cells    : " << report.plan.target_cell_count << '\n'
+                          << "    Actual cells    : " << report.actual_cell_count << '\n'
+                          << "    Mesh size       : " << report.plan.mesh_size << " m\n"
+                          << "    SIMPLE iterations: " << *report.iteration_count << '\n'
+                          << "    Solve time      : " << report.solve_seconds << " s\n"
+                          << "    Transfer to next: " << report.transfer_seconds << " s\n";
+            }
             if (initialization.automatic_fallback)
             {
                 std::cout << "  Automatic fallback: " << initialization.fallback_reason << '\n'
                           << "  Using historical initialization\n";
-            }
-            else
-            {
-                std::cout << "  Coarse SIMPLE iterations: " << initialization.iteration_count << '\n'
-                          << "  Coarse solve time : " << initialization.solve_seconds << " s\n"
-                          << "  Transfer time     : " << initialization.transfer_seconds << " s\n";
             }
         }
 
