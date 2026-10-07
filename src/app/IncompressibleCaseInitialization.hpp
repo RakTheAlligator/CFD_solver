@@ -3,6 +3,7 @@
 #include "cfd/mesh/Types.hpp"
 
 #include <cstdint>
+#include <functional>
 #include <optional>
 #include <string>
 #include <vector>
@@ -63,6 +64,12 @@ struct GridSequencingResult
     std::vector<GridLevelReport> levels;
 };
 
+/// Synchronous observer of a converged auxiliary level, after its report is filled.
+/// All references are borrowed only for this call and must not be retained.
+/// The flux is the level's corrected mass flux, not a quantity to transfer.
+using GridLevelConvergedCallback =
+    std::function<void(Index, const Mesh &, const CellVelocityField &, const CellScalarField &, const FaceFluxField &)>;
+
 /// Maps physical scalar pressure conditions to the current p' boundary semantics.
 [[nodiscard]]
 PressureCorrectionBoundaryConditions make_pressure_correction_boundary_conditions(
@@ -88,14 +95,15 @@ void initialize_fixed_mass_flux_boundaries(
 /// and receiving target states coexist; source resources are released before
 /// the next solve. The existing final Mesh is borrowed and never regenerated.
 /// All auxiliary resources are released before returning to the final caller.
+/// The optional observer runs once per converged auxiliary level, before any
+/// outgoing transfer. It is never called for zero mode or the final Mesh.
+/// Observer exceptions propagate without fallback or cleanup of prior exports.
 [[nodiscard]]
-GridSequencingResult initialize_with_grid_sequencing(const Mesh &final_mesh, const input::MeshInput &mesh_input,
-                                                     const input::InitializationInput &initialization,
-                                                     const input::ScalarFieldInput &u_input,
-                                                     const input::ScalarFieldInput &v_input,
-                                                     const input::ScalarFieldInput &pressure_input, double density,
-                                                     double dynamic_viscosity, ScalarConvectionScheme scheme,
-                                                     const IncompressibleSimpleOptions &simple_options,
-                                                     CellVelocityField &velocity, CellScalarField &pressure);
+GridSequencingResult initialize_with_grid_sequencing(
+    const Mesh &final_mesh, const input::MeshInput &mesh_input, const input::InitializationInput &initialization,
+    const input::ScalarFieldInput &u_input, const input::ScalarFieldInput &v_input,
+    const input::ScalarFieldInput &pressure_input, double density, double dynamic_viscosity,
+    ScalarConvectionScheme scheme, const IncompressibleSimpleOptions &simple_options, CellVelocityField &velocity,
+    CellScalarField &pressure, const GridLevelConvergedCallback &level_callback = {});
 
 } // namespace cfd::app

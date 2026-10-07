@@ -188,9 +188,34 @@ int main(const int argc, char *argv[])
             .momentum_linear_solver = {.relative_tolerance = 1.0e-6, .maximum_iterations = 5000},
             .pressure_correction_linear_solver = {.relative_tolerance = 1.0e-3, .maximum_iterations = 5000},
         };
+        const std::filesystem::path output_directory{case_directory / "results"};
+        std::filesystem::remove_all(output_directory / "initialization");
+        std::filesystem::remove(output_directory / "solution.vtu");
+        std::filesystem::remove(output_directory / "convergence.csv");
         const cfd::app::GridSequencingResult initialization{cfd::app::initialize_with_grid_sequencing(
             mesh, mesh_input, control_input.initialization, u_input, v_input, pressure_input, density,
-            dynamic_viscosity, cfd::ScalarConvectionScheme::Linear, simple_options, velocity, pressure)};
+            dynamic_viscosity, cfd::ScalarConvectionScheme::Linear, simple_options, velocity, pressure,
+            [&output_directory](cfd::Index level, const cfd::Mesh &level_mesh,
+                                const cfd::CellVelocityField &level_velocity,
+                                const cfd::CellScalarField &level_pressure, const cfd::FaceFluxField &level_flux) {
+                const std::filesystem::path initialization_directory{output_directory / "initialization"};
+                std::filesystem::create_directories(initialization_directory);
+                const std::filesystem::path file{initialization_directory /
+                                                 ("level_" + std::to_string(level) + ".vtu")};
+                cfd::CellScalarField imbalance{level_mesh.cell_count()};
+                cfd::compute_cell_mass_imbalance(level_mesh, level_flux, imbalance);
+                const std::array<cfd::VtkCellScalarData, 4> scalars{
+                    cfd::VtkCellScalarData{"u", level_velocity.u().values()},
+                    cfd::VtkCellScalarData{"v", level_velocity.v().values()},
+                    cfd::VtkCellScalarData{"p", level_pressure.values()},
+                    cfd::VtkCellScalarData{"mass_imbalance", imbalance.values()},
+                };
+                const std::array<cfd::VtkCellVectorComponentData, 1> vectors{
+                    cfd::VtkCellVectorComponentData{"U", level_velocity.u().values(), level_velocity.v().values()},
+                };
+                cfd::write_vtu(level_mesh, file, cfd::VtkCellData{.scalars = scalars, .component_vectors = vectors});
+                std::cout << "Initialization level " << level << " written: " << file.string() << '\n';
+            })};
         std::cout << std::fixed << std::setprecision(6) << "\n[Initialization]\n"
                   << "  Initialization    : "
                   << (control_input.initialization.type == cfd::input::InitializationType::Zero ? "zero" : "coarseMesh")
@@ -220,7 +245,6 @@ int main(const int argc, char *argv[])
             }
         }
 
-        const std::filesystem::path output_directory{case_directory / "results"};
         const std::filesystem::path convergence_output_file{output_directory / "convergence.csv"};
         const std::filesystem::path solution_output_file{output_directory / "solution.vtu"};
         std::filesystem::create_directories(output_directory);

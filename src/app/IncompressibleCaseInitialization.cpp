@@ -202,7 +202,7 @@ void hierarchy_failure(GridSequencingResult &result, const input::Initialization
 
 void solve_auxiliary_level(GridLevelState &state, GridLevelReport &report, Index level, double density,
                            double dynamic_viscosity, ScalarConvectionScheme scheme,
-                           const IncompressibleSimpleOptions &options)
+                           const IncompressibleSimpleOptions &options, const GridLevelConvergedCallback &level_callback)
 {
     FaceFluxField flux{state.built.mesh.face_count()};
     initialize_fixed_mass_flux_boundaries(state.built.mesh, density, state.u_boundary, state.v_boundary,
@@ -217,18 +217,20 @@ void solve_auxiliary_level(GridLevelState &state, GridLevelReport &report, Index
     }
     report.iteration_count.emplace(solved.iteration_count);
     report.solve_seconds = solved.timings.total_seconds;
+    if (level_callback)
+    {
+        level_callback(level, state.built.mesh, state.velocity, state.pressure, flux);
+    }
 }
 
 } // namespace
 
-GridSequencingResult initialize_with_grid_sequencing(const Mesh &final_mesh, const input::MeshInput &mesh_input,
-                                                     const input::InitializationInput &initialization,
-                                                     const input::ScalarFieldInput &u_input,
-                                                     const input::ScalarFieldInput &v_input,
-                                                     const input::ScalarFieldInput &pressure_input, double density,
-                                                     double dynamic_viscosity, ScalarConvectionScheme scheme,
-                                                     const IncompressibleSimpleOptions &simple_options,
-                                                     CellVelocityField &velocity, CellScalarField &pressure)
+GridSequencingResult initialize_with_grid_sequencing(
+    const Mesh &final_mesh, const input::MeshInput &mesh_input, const input::InitializationInput &initialization,
+    const input::ScalarFieldInput &u_input, const input::ScalarFieldInput &v_input,
+    const input::ScalarFieldInput &pressure_input, double density, double dynamic_viscosity,
+    ScalarConvectionScheme scheme, const IncompressibleSimpleOptions &simple_options, CellVelocityField &velocity,
+    CellScalarField &pressure, const GridLevelConvergedCallback &level_callback)
 {
     GridSequencingResult result;
     const auto plan{
@@ -327,7 +329,7 @@ GridSequencingResult initialize_with_grid_sequencing(const Mesh &final_mesh, con
         if (!final_level)
         {
             solve_auxiliary_level(*source, result.levels.at(level), level, density, dynamic_viscosity, scheme,
-                                  simple_options);
+                                  simple_options, level_callback);
         }
     }
     result.used_grid_sequencing = true;
