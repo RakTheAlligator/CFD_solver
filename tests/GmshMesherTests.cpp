@@ -740,6 +740,72 @@ void test_generates_quadrilateral_backward_facing_step()
     verify_backward_facing_step_mesh(cfd::CellType::Quadrilateral, true);
 }
 
+void test_backward_facing_step_near_uniform_refinement()
+{
+    constexpr cfd::BackwardFacingStepGeometry geometry{1.0, 4.0, 1.0, 0.5};
+    constexpr double tolerance{1.0e-10};
+    const double almost_uniform{std::nextafter(1.0, 0.0)};
+    const std::array refinement_factors{
+        std::pair{1.0, 1.0},
+        std::pair{almost_uniform, 1.0},
+        std::pair{1.0, almost_uniform},
+        std::pair{almost_uniform, almost_uniform},
+        std::pair{0.5, 0.5},
+    };
+
+    for (const double mesh_size : std::array{0.1, 0.2})
+    {
+        for (const auto &[wall_factor, step_factor] : refinement_factors)
+        {
+            const cfd::MeshGenerationOptions generation{.mesh_size = mesh_size,
+                                                        .cell_type = cfd::CellType::Quadrilateral};
+            const cfd::AutomaticMeshingOptions automatic{
+                .enabled = true,
+                .maximum_growth_rate = 1.2,
+                .wall_refinement_factor = wall_factor,
+                .wall_refinement_layers = 4,
+            };
+            const cfd::BackwardFacingStepMeshingOptions step_options{
+                .step_refinement_factor = step_factor,
+                .step_refinement_layers = 6,
+            };
+            cfd::RawMeshData raw_mesh{cfd::generate_mesh(geometry, generation, automatic, step_options)};
+            cfd::validate_raw_mesh(raw_mesh);
+            require(!raw_mesh.cell_types.empty(), "Near-uniform backward-facing-step mesh contains no cells.");
+            for (const cfd::CellType cell_type : raw_mesh.cell_types)
+            {
+                require(cell_type == cfd::CellType::Quadrilateral,
+                        "Near-uniform backward-facing-step mesh contains a non-quadrilateral cell.");
+            }
+
+            const cfd::MeshBuildResult build_result{cfd::build_mesh(std::move(raw_mesh))};
+            const cfd::Mesh &mesh{build_result.mesh};
+            double total_area{};
+            for (const double area : mesh.cell_areas())
+            {
+                require(std::isfinite(area) && area > 0.0,
+                        "Near-uniform backward-facing-step mesh contains an invalid cell area.");
+                total_area += area;
+            }
+            require_near(total_area, 4.5, tolerance, "Near-uniform backward-facing-step total area is incorrect.");
+            require(mesh.boundary_groups().size() == 3,
+                    "Near-uniform backward-facing-step mesh has incorrect boundary groups.");
+            const cfd::BoundaryId inlet_id{find_boundary_id(mesh, "inlet")};
+            const cfd::BoundaryId wall_id{find_boundary_id(mesh, "wall")};
+            const cfd::BoundaryId outlet_id{find_boundary_id(mesh, "outlet")};
+            require(inlet_id != cfd::invalid_boundary_id && wall_id != cfd::invalid_boundary_id &&
+                        outlet_id != cfd::invalid_boundary_id,
+                    "Near-uniform backward-facing-step mesh is missing a boundary group.");
+            require_near(compute_boundary_length(mesh, inlet_id), 0.5, tolerance,
+                         "Near-uniform backward-facing-step inlet length is incorrect.");
+            require_near(compute_boundary_length(mesh, outlet_id), 1.0, tolerance,
+                         "Near-uniform backward-facing-step outlet length is incorrect.");
+            require_near(compute_boundary_length(mesh, wall_id), 10.5, tolerance,
+                         "Near-uniform backward-facing-step wall length is incorrect.");
+        }
+    }
+}
+
 void test_backward_facing_step_refinement_options_change_spacing()
 {
     constexpr cfd::BackwardFacingStepGeometry geometry{
@@ -974,6 +1040,8 @@ int main()
         cfd::test::run_test("generate triangular backward-facing step", test_generates_triangular_backward_facing_step);
     failure_count += cfd::test::run_test("generate quadrilateral backward-facing step",
                                          test_generates_quadrilateral_backward_facing_step);
+    failure_count += cfd::test::run_test("backward-facing-step near-uniform refinement",
+                                         test_backward_facing_step_near_uniform_refinement);
     failure_count += cfd::test::run_test("backward-facing-step refinement options change spacing",
                                          test_backward_facing_step_refinement_options_change_spacing);
     failure_count += cfd::test::run_test("backward-facing-step internal-interface refinement relaxes downstream",

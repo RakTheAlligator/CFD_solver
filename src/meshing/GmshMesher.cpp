@@ -426,11 +426,18 @@ StreamwiseLayout make_streamwise_layout(const BackwardFacingStepGeometry &geomet
     const double first_cell_size{transition_width / geometric_series_sum(1.0, downstream_transition.progression,
                                                                          downstream_transition.cell_count)};
     const double requested_relaxation_width{std::min(wall_transition.nominal_width, transition_width)};
-    const double layer_count_value{
-        std::ceil(std::log1p(requested_relaxation_width * (downstream_transition.progression - 1.0) / first_cell_size) /
+    // Unit progression uses the uniform-spacing limit of the geometric series.
+    const double layer_count_value{std::ceil(
+        downstream_transition.progression == 1.0
+            ? requested_relaxation_width / first_cell_size
+            : std::log1p(requested_relaxation_width * (downstream_transition.progression - 1.0) / first_cell_size) /
                   std::log(downstream_transition.progression))};
+    if (!std::isfinite(layer_count_value))
+    {
+        throw std::invalid_argument("Requested mesh wall relaxation cell count must be finite.");
+    }
     const int relaxation_cell_count{
-        std::clamp(static_cast<int>(layer_count_value), 1, downstream_transition.cell_count)};
+        static_cast<int>(std::clamp(layer_count_value, 1.0, static_cast<double>(downstream_transition.cell_count)))};
     const double relaxation_width{
         geometric_series_sum(first_cell_size, downstream_transition.progression, relaxation_cell_count)};
     layout.downstream_wall_relaxation_end = geometry.upstream_length + relaxation_width;
