@@ -130,6 +130,10 @@ IncompressibleSimpleOptions validate_options(IncompressibleSimpleOptions options
     {
         throw std::invalid_argument("SIMPLE continuity relative tolerance must be finite and in (0, 1).");
     }
+    if (!std::isfinite(options.momentum_absolute_tolerance) || options.momentum_absolute_tolerance < 0.0)
+    {
+        throw std::invalid_argument("SIMPLE momentum absolute tolerance must be finite and non-negative.");
+    }
     return options;
 }
 
@@ -359,6 +363,51 @@ double normalized_equation_imbalance(const ScalarLinearSystem &system, const std
         return 0.0;
     }
     return static_cast<double>(imbalance_sum / normalization_sum);
+}
+
+struct MomentumResidual
+{
+    double absolute{};
+    double relative{};
+};
+
+[[nodiscard]]
+std::pair<MomentumResidual, MomentumResidual> physical_momentum_residuals(
+    const ScalarLinearSystem &u_system, const ScalarLinearSystem &v_system, const CellVelocityField &velocity,
+    const std::span<double> matrix_product_workspace)
+{
+    const auto component_imbalance = [&](const ScalarLinearSystem &system,
+                                         const std::span<const double> values) -> MomentumResidual {
+        system.apply_matrix(values, matrix_product_workspace);
+        long double imbalance_sum{};
+        long double physical_scale{};
+        const auto rhs{system.rhs()};
+        for (Index cell_id = 0; cell_id < system.cell_count(); ++cell_id)
+        {
+            const long double rhs_value{rhs[cell_id]};
+            const long double matrix_product{matrix_product_workspace[cell_id]};
+            if (!std::isfinite(rhs_value) || !std::isfinite(matrix_product))
+            {
+                throw std::runtime_error("SIMPLE physical momentum residual contains non-finite values.");
+            }
+            imbalance_sum += std::abs(rhs_value - matrix_product);
+            physical_scale += std::abs(rhs_value) + std::abs(matrix_product);
+        }
+        if (!std::isfinite(imbalance_sum) || !std::isfinite(physical_scale) ||
+            imbalance_sum > static_cast<long double>(std::numeric_limits<double>::max()))
+        {
+            throw std::runtime_error("SIMPLE physical momentum residual contains non-finite values.");
+        }
+        const double absolute{static_cast<double>(imbalance_sum)};
+        const double relative{physical_scale == 0.0L
+                                  ? (imbalance_sum == 0.0L ? 0.0 : std::numeric_limits<double>::infinity())
+                                  : static_cast<double>(imbalance_sum / physical_scale)};
+        return {absolute, relative};
+    };
+
+    const MomentumResidual u_residual{component_imbalance(u_system, velocity.u().values())};
+    const MomentumResidual v_residual{component_imbalance(v_system, velocity.v().values())};
+    return {u_residual, v_residual};
 }
 
 } // namespace
@@ -592,6 +641,37 @@ IncompressibleSimpleResult IncompressibleSimpleSolver::solve(
                            result.rhie_chow_flux_relative_residual <= options_.rhie_chow_flux_relative_tolerance &&
                            result.provisional_continuity_relative_residual <= options_.continuity_relative_tolerance;
         timings.convergence_diagnostics_seconds += elapsed_seconds_since(convergence_diagnostics_start);
+        if (result.converged)
+        {
+            const SimpleClock::time_point current_velocity_gradient_start{SimpleClock::now()};
+            compute_least_squares_gradient(*mesh_, velocity.u(), u_boundary_conditions, u_gradient_);
+            compute_least_squares_gradient(*mesh_, velocity.v(), v_boundary_conditions, v_gradient_);
+            timings.velocity_gradient_reconstruction_seconds += elapsed_seconds_since(current_velocity_gradient_start);
+
+            const SimpleClock::time_point current_pressure_gradient_start{SimpleClock::now()};
+            compute_least_squares_gradient(*mesh_, pressure, pressure_boundary_conditions, pressure_gradient_);
+            timings.pressure_gradient_reconstruction_seconds += elapsed_seconds_since(current_pressure_gradient_start);
+
+            const SimpleClock::time_point physical_assembly_start{SimpleClock::now()};
+            momentum_assembler_.assemble(velocity, u_gradient_, v_gradient_, pressure_gradient_, u_boundary_conditions,
+                                         v_boundary_conditions, mass_flux, 1.0, u_momentum_system_, v_momentum_system_);
+            timings.momentum_assembly_seconds += elapsed_seconds_since(physical_assembly_start);
+
+            const SimpleClock::time_point physical_residual_start{SimpleClock::now()};
+            const auto [u_residual, v_residual]{physical_momentum_residuals(
+                u_momentum_system_, v_momentum_system_, velocity, momentum_matrix_product_workspace_)};
+            result.x_momentum_relative_residual = u_residual.relative;
+            result.y_momentum_relative_residual = v_residual.relative;
+            result.x_momentum_absolute_residual = u_residual.absolute;
+            result.y_momentum_absolute_residual = v_residual.absolute;
+            const auto component_converged = [this](const MomentumResidual &residual) {
+                return std::isfinite(residual.relative) && std::isfinite(residual.absolute) &&
+                       (residual.relative <= options_.velocity_relative_tolerance ||
+                        residual.absolute <= options_.momentum_absolute_tolerance);
+            };
+            result.converged = component_converged(u_residual) && component_converged(v_residual);
+            timings.momentum_residual_diagnostics_seconds += elapsed_seconds_since(physical_residual_start);
+        }
         const SimpleIterationInfo iteration_info{
             .iteration = iteration_count,
             .u_solve = u_solve,
@@ -604,6 +684,10 @@ IncompressibleSimpleResult IncompressibleSimpleSolver::solve(
             .provisional_continuity_relative_residual = result.provisional_continuity_relative_residual,
             .corrected_continuity_relative_residual = result.continuity_relative_residual,
             .maximum_pressure_correction = result.maximum_pressure_correction,
+            .x_momentum_relative_residual = result.x_momentum_relative_residual,
+            .y_momentum_relative_residual = result.y_momentum_relative_residual,
+            .x_momentum_absolute_residual = result.x_momentum_absolute_residual,
+            .y_momentum_absolute_residual = result.y_momentum_absolute_residual,
         };
         if (iteration_callback)
         {

@@ -275,6 +275,25 @@ void test_constructor_and_options_validation()
             },
             "SIMPLE accepted an invalid Rhie-Chow flux relative tolerance.");
     }
+    for (const double invalid_absolute_tolerance :
+         {-1.0, std::numeric_limits<double>::quiet_NaN(), std::numeric_limits<double>::infinity(),
+          -std::numeric_limits<double>::infinity()})
+    {
+        options = test_options();
+        options.momentum_absolute_tolerance = invalid_absolute_tolerance;
+        require_throws_with_message<std::invalid_argument>(
+            [&]() {
+                cfd::IncompressibleSimpleSolver solver{mesh, 1.0, 0.1, cfd::ScalarConvectionScheme::Linear, options};
+            },
+            "momentum absolute tolerance", "SIMPLE accepted an invalid momentum absolute tolerance.");
+    }
+    for (const double absolute_tolerance : std::array{0.0, 1.0e-12, 2.0})
+    {
+        options = test_options();
+        options.momentum_absolute_tolerance = absolute_tolerance;
+        const cfd::IncompressibleSimpleSolver solver{mesh, 1.0, 0.1, cfd::ScalarConvectionScheme::Linear, options};
+        static_cast<void>(solver);
+    }
 }
 
 void test_rejects_disconnected_cell_domain()
@@ -396,6 +415,11 @@ void test_fixed_pressure_anchored_zero_flow_path()
 
     require(result.converged, "FixedPressure-anchored zero-flow case did not converge without an artificial gauge.");
     require(result.maximum_mass_imbalance == 0.0, "FixedPressure-anchored zero flow created mass imbalance.");
+    require(result.x_momentum_relative_residual.value_or(std::numeric_limits<double>::infinity()) == 0.0 &&
+                result.y_momentum_relative_residual.value_or(std::numeric_limits<double>::infinity()) == 0.0 &&
+                result.x_momentum_absolute_residual.value_or(std::numeric_limits<double>::infinity()) == 0.0 &&
+                result.y_momentum_absolute_residual.value_or(std::numeric_limits<double>::infinity()) == 0.0,
+            "Zero-scale momentum equations must have zero relative and absolute residuals.");
 }
 
 void test_input_validation_precedes_iterations()
@@ -657,6 +681,29 @@ void test_reports_each_completed_iteration()
             "Final SIMPLE callback pressure-correction diagnostic differs from the returned result.");
     require(final_info.rhie_chow_flux_relative_residual == result.rhie_chow_flux_relative_residual,
             "Final SIMPLE callback Rhie-Chow flux diagnostic differs from the returned result.");
+    require(final_info.x_momentum_relative_residual == result.x_momentum_relative_residual &&
+                final_info.y_momentum_relative_residual == result.y_momentum_relative_residual,
+            "Final SIMPLE callback physical momentum diagnostics differ from the returned result.");
+    require(final_info.x_momentum_absolute_residual == result.x_momentum_absolute_residual &&
+                final_info.y_momentum_absolute_residual == result.y_momentum_absolute_residual,
+            "Final SIMPLE callback absolute momentum diagnostics differ from the returned result.");
+    require(result.x_momentum_relative_residual.has_value() && result.y_momentum_relative_residual.has_value() &&
+                result.x_momentum_absolute_residual.has_value() && result.y_momentum_absolute_residual.has_value(),
+            "Converged SIMPLE callback has no physical momentum check.");
+    require(std::isfinite(result.x_momentum_relative_residual.value_or(std::numeric_limits<double>::infinity())) &&
+                std::isfinite(result.y_momentum_relative_residual.value_or(std::numeric_limits<double>::infinity())) &&
+                std::isfinite(result.x_momentum_absolute_residual.value_or(std::numeric_limits<double>::infinity())) &&
+                std::isfinite(result.y_momentum_absolute_residual.value_or(std::numeric_limits<double>::infinity())),
+            "Converged SIMPLE callback has non-finite physical momentum residuals.");
+    require((result.x_momentum_relative_residual.value_or(std::numeric_limits<double>::infinity()) <=
+                 options.velocity_relative_tolerance ||
+             result.x_momentum_absolute_residual.value_or(std::numeric_limits<double>::infinity()) <=
+                 options.momentum_absolute_tolerance) &&
+                (result.y_momentum_relative_residual.value_or(std::numeric_limits<double>::infinity()) <=
+                     options.velocity_relative_tolerance ||
+                 result.y_momentum_absolute_residual.value_or(std::numeric_limits<double>::infinity()) <=
+                     options.momentum_absolute_tolerance),
+            "Converged SIMPLE callback has unresolved physical momentum.");
     const cfd::SimpleTimingBreakdown &timings{result.timings};
     const std::array phase_durations{
         timings.velocity_gradient_reconstruction_seconds,
@@ -775,6 +822,10 @@ void test_maximum_iteration_nonconvergence_and_channel_convergence()
             solve_pressure_driven_channel(mesh, options, velocity, pressure, mass_flux)};
         require(!result.converged && result.iteration_count == 1,
                 "SIMPLE did not report maximum-iteration non-convergence.");
+        require(!result.x_momentum_relative_residual.has_value() && !result.y_momentum_relative_residual.has_value() &&
+                    !result.x_momentum_absolute_residual.has_value() &&
+                    !result.y_momentum_absolute_residual.has_value(),
+                "Physical momentum was checked on a non-candidate iteration.");
     }
     {
         cfd::CellVelocityField velocity{mesh.cell_count()};
@@ -869,6 +920,227 @@ void test_does_not_converge_while_pressure_correction_remains_large()
     require(!result.converged, "SIMPLE reported convergence while pressure correction remains substantial.");
 }
 
+struct SingleCellMomentumResult
+{
+    cfd::IncompressibleSimpleResult result;
+    double u{};
+    double v{};
+};
+
+[[nodiscard]]
+SingleCellMomentumResult solve_single_cell_momentum(
+    const double initial_u, const double alpha_u, const double linear_tolerance, const double outer_tolerance,
+    const cfd::Index maximum_iterations, const bool vertical_channel = false,
+    const double absolute_tolerance = cfd::IncompressibleSimpleOptions{}.momentum_absolute_tolerance)
+{
+    cfd::RawMeshData raw_mesh{make_channel_raw_mesh(1, 1, 1.0, 1.0)};
+    if (vertical_channel)
+    {
+        for (cfd::Node &node : raw_mesh.nodes)
+        {
+            const double old_x{node.x};
+            node.x = 1.0 - node.y;
+            node.y = old_x;
+        }
+    }
+    cfd::MeshBuildResult build_result{cfd::build_mesh(std::move(raw_mesh))};
+    const cfd::Mesh &mesh{build_result.mesh};
+    const cfd::ScalarBoundaryConditions velocity_conditions{channel_velocity_conditions(mesh)};
+    const cfd::ScalarBoundaryConditions pressure_conditions{channel_pressure_conditions(mesh, 1.0, 0.0)};
+    const cfd::PressureCorrectionBoundaryConditions pressure_correction_conditions{
+        channel_pressure_correction_conditions(mesh)};
+    cfd::CellVelocityField velocity{mesh.cell_count()};
+    if (vertical_channel)
+    {
+        velocity.v()[0] = initial_u;
+    }
+    else
+    {
+        velocity.u()[0] = initial_u;
+    }
+    cfd::CellScalarField pressure{mesh.cell_count(), 0.5};
+    cfd::FaceFluxField mass_flux{mesh.face_count()};
+    for (cfd::Index face_id = 0; face_id < mesh.face_count(); ++face_id)
+    {
+        mass_flux[face_id] =
+            initial_u * (vertical_channel ? mesh.face_area_vectors()[face_id].y : mesh.face_area_vectors()[face_id].x);
+    }
+    cfd::IncompressibleSimpleOptions options{test_options()};
+    options.maximum_iterations = maximum_iterations;
+    options.momentum_relaxation_factor = alpha_u;
+    options.velocity_relative_tolerance = outer_tolerance;
+    options.rhie_chow_flux_relative_tolerance = outer_tolerance;
+    options.continuity_relative_tolerance = outer_tolerance;
+    options.momentum_linear_solver.relative_tolerance = linear_tolerance;
+    options.momentum_absolute_tolerance = absolute_tolerance;
+    cfd::IncompressibleSimpleSolver solver{mesh, 1.0, 1.0, cfd::ScalarConvectionScheme::Linear, options};
+    const cfd::IncompressibleSimpleResult result{solver.solve(velocity_conditions, velocity_conditions,
+                                                              pressure_conditions, pressure_correction_conditions,
+                                                              velocity, pressure, mass_flux)};
+    return {result, velocity.u()[0], velocity.v()[0]};
+}
+
+void test_rejects_stagnant_momentum_with_loose_inner_tolerance()
+{
+    for (const double alpha_u : std::array{1.0, 0.7})
+    {
+        const SingleCellMomentumResult run{solve_single_cell_momentum(0.3, alpha_u, 0.3, 1.0e-10, 3)};
+        // Two wall faces each contribute 2*u; grad(p) = (-1, 0).
+        // Balanced opening fluxes cancel convection: the independent equation is 4*u = 1.
+        require(std::abs(4.0 * run.u - 1.0) > 0.1, "Loose inner solve no longer reproduces unresolved momentum.");
+        require(!run.result.converged, "SIMPLE accepted stagnant u=0.3 with unresolved physical momentum.");
+        require(run.result.iteration_count == 3, "SIMPLE stopped before exhausting unresolved momentum iterations.");
+        require(run.result.x_momentum_relative_residual.has_value(), "Unresolved momentum check was not reported.");
+        require_near(run.result.x_momentum_relative_residual.value_or(std::numeric_limits<double>::infinity()),
+                     0.2 / 2.2, test_tolerance, "Physical momentum residual contains artificial relaxation terms.");
+    }
+}
+
+void test_rejects_stagnant_momentum_with_tiny_relaxation()
+{
+    for (const double alpha_u : std::array{1.0e-8, 1.0e-12})
+    {
+        const SingleCellMomentumResult run{solve_single_cell_momentum(1.0, alpha_u, 1.0e-6, 1.0e-5, 3)};
+        require(std::abs(4.0 * run.u - 1.0) > 1.0, "Tiny relaxation no longer reproduces unresolved momentum.");
+        require(!run.result.converged, "SIMPLE accepted stagnant u=1 with unresolved physical momentum.");
+        require(run.result.iteration_count == 3, "SIMPLE stopped before exhausting unresolved momentum iterations.");
+        require(run.result.x_momentum_relative_residual.has_value(), "Unresolved momentum check was not reported.");
+        require_near(run.result.x_momentum_relative_residual.value_or(std::numeric_limits<double>::infinity()),
+                     3.0 / 5.0, test_tolerance, "Physical momentum residual was masked by tiny relaxation.");
+    }
+}
+
+void test_rejects_unresolved_y_momentum()
+{
+    const SingleCellMomentumResult run{solve_single_cell_momentum(0.3, 0.7, 0.3, 1.0e-10, 3, true)};
+    require(std::abs(4.0 * run.v - 1.0) > 0.1, "Vertical channel no longer reproduces unresolved y momentum.");
+    require(!run.result.converged, "SIMPLE ignored unresolved y momentum while x momentum was satisfied.");
+    require(run.result.x_momentum_relative_residual.has_value() && run.result.y_momentum_relative_residual.has_value(),
+            "Vertical channel has no physical momentum residual checks.");
+    require_near(run.result.x_momentum_relative_residual.value_or(std::numeric_limits<double>::infinity()), 0.0,
+                 test_tolerance, "Vertical channel has an unexpected x momentum imbalance.");
+    require_near(run.result.y_momentum_relative_residual.value_or(std::numeric_limits<double>::infinity()), 0.2 / 2.2,
+                 test_tolerance, "Vertical physical momentum residual contains artificial relaxation terms.");
+}
+
+void test_independent_momentum_scales_with_absolute_tolerance()
+{
+    cfd::MeshBuildResult build_result{cfd::build_mesh(make_channel_raw_mesh(1, 1, 1.0, 1.0))};
+    const cfd::Mesh &mesh{build_result.mesh};
+    for (const double wall_v : std::array{1.0e-10, 1.0e-20})
+    {
+        const cfd::ScalarBoundaryConditions u_conditions{channel_velocity_conditions(mesh)};
+        const cfd::ScalarBoundaryConditions v_conditions{mesh.boundary_groups().size(),
+                                                         {{cfd::ScalarBoundaryConditionType::Dirichlet, wall_v},
+                                                          {cfd::ScalarBoundaryConditionType::Neumann, 0.0},
+                                                          {cfd::ScalarBoundaryConditionType::Dirichlet, wall_v},
+                                                          {cfd::ScalarBoundaryConditionType::Neumann, 0.0}}};
+        const cfd::ScalarBoundaryConditions pressure_conditions{channel_pressure_conditions(mesh, 1.0, 0.0)};
+        const cfd::PressureCorrectionBoundaryConditions correction_conditions{
+            channel_pressure_correction_conditions(mesh)};
+        cfd::CellVelocityField velocity{mesh.cell_count(), {0.25, 1.1 * wall_v}};
+        cfd::CellScalarField pressure{mesh.cell_count(), 0.5};
+        cfd::FaceFluxField mass_flux{mesh.face_count()};
+        for (cfd::Index face_id = 0; face_id < mesh.face_count(); ++face_id)
+        {
+            const cfd::Vector2 &area_vector{mesh.face_area_vectors()[face_id]};
+            mass_flux[face_id] = 0.25 * area_vector.x + wall_v * area_vector.y;
+        }
+        cfd::IncompressibleSimpleOptions options{test_options()};
+        options.maximum_iterations = 3;
+        options.velocity_relative_tolerance = 1.0e-10;
+        options.rhie_chow_flux_relative_tolerance = 1.0e-10;
+        options.continuity_relative_tolerance = 1.0e-10;
+        options.momentum_linear_solver.relative_tolerance = 0.3;
+        cfd::IncompressibleSimpleSolver solver{mesh, 1.0, 1.0, cfd::ScalarConvectionScheme::Linear, options};
+        const auto result{solver.solve(u_conditions, v_conditions, pressure_conditions, correction_conditions, velocity,
+                                       pressure, mass_flux)};
+
+        // Independent equations: 4*u = 1 and 4*v = 4*wall_v. Linear boundary
+        // convection cancels on each opposite pair; each wall diffusion coefficient is 2.
+        const double u_product{4.0 * velocity.u()[0]};
+        const double v_product{4.0 * velocity.v()[0]};
+        const double u_scale{1.0 + std::abs(u_product)};
+        const double v_scale{4.0 * wall_v + std::abs(v_product)};
+        const double v_imbalance{std::abs(4.0 * wall_v - v_product)};
+        require_near(u_product, 1.0, test_tolerance, "Two-scale fixture has unresolved dominant u momentum.");
+        require(v_imbalance / (u_scale + v_scale) <= options.velocity_relative_tolerance,
+                "Two-scale fixture does not reproduce masking by a common momentum scale.");
+        require(v_imbalance / v_scale > 0.04, "Two-scale fixture no longer has a significant relative v imbalance.");
+        require(result.converged == (v_imbalance <= options.momentum_absolute_tolerance),
+                "Weak v momentum was not assessed against its explicit absolute tolerance.");
+        if (wall_v == 1.0e-10)
+        {
+            require(!result.converged, "SIMPLE accepted unresolved weak v momentum masked by the dominant u equation.");
+        }
+        else
+        {
+            // A 10% relative error at this amplitude is intentionally acceptable:
+            // the independent absolute imbalance is only about 4e-21 N/m.
+            require(result.converged, "Negligible absolute v imbalance did not pass the mixed criterion.");
+            options.momentum_absolute_tolerance = 0.0;
+            cfd::IncompressibleSimpleSolver strict_solver{mesh, 1.0, 1.0, cfd::ScalarConvectionScheme::Linear, options};
+            const auto strict_result{strict_solver.solve(u_conditions, v_conditions, pressure_conditions,
+                                                         correction_conditions, velocity, pressure, mass_flux)};
+            require(!strict_result.converged,
+                    "Zero absolute allowance must restore strict relative accuracy for a very weak component.");
+        }
+        require_near(result.y_momentum_relative_residual.value_or(std::numeric_limits<double>::infinity()),
+                     v_imbalance / v_scale, test_tolerance, "Weak v momentum does not use its own equation scale.");
+        require_near(result.y_momentum_absolute_residual.value_or(std::numeric_limits<double>::infinity()) / v_scale,
+                     v_imbalance / v_scale, test_tolerance, "Weak v absolute momentum imbalance is incorrect.");
+    }
+}
+
+void test_momentum_relative_and_absolute_thresholds()
+{
+    const SingleCellMomentumResult probe{solve_single_cell_momentum(0.3, 1.0, 0.3, 1.0e-10, 3, false, 0.0)};
+    require(!probe.result.converged, "Zero absolute tolerance accepted unresolved momentum.");
+    const double relative{probe.result.x_momentum_relative_residual.value_or(std::numeric_limits<double>::infinity())};
+    const double absolute{probe.result.x_momentum_absolute_residual.value_or(std::numeric_limits<double>::infinity())};
+    require(std::isfinite(relative) && relative > 0.0 && std::isfinite(absolute) && absolute > 0.0,
+            "Threshold fixture did not report finite nonzero momentum residuals.");
+    require_near(absolute, std::abs(4.0 * probe.u - 1.0), test_tolerance,
+                 "Threshold fixture violates its independent momentum equation.");
+    for (const double relative_tolerance :
+         std::array{std::nextafter(relative, 0.0), relative,
+                    std::nextafter(relative, std::numeric_limits<double>::infinity())})
+    {
+        const auto run{solve_single_cell_momentum(0.3, 1.0, 0.3, relative_tolerance, 3, false, 0.0)};
+        require(run.result.converged == (relative_tolerance >= relative),
+                "Momentum relative threshold must be inclusive and independent of the absolute branch.");
+    }
+    for (const double absolute_tolerance :
+         std::array{std::nextafter(absolute, 0.0), absolute,
+                    std::nextafter(absolute, std::numeric_limits<double>::infinity())})
+    {
+        const auto run{solve_single_cell_momentum(0.3, 1.0, 0.3, 1.0e-10, 3, false, absolute_tolerance)};
+        require(run.result.converged == (absolute_tolerance >= absolute),
+                "Momentum absolute threshold must be inclusive and independent of the relative branch.");
+    }
+}
+
+void test_converged_single_cell_satisfies_independent_momentum_equation()
+{
+    constexpr double outer_tolerance{1.0e-10};
+    for (const double alpha_u : std::array{1.0, 0.7})
+    {
+        const SingleCellMomentumResult run{solve_single_cell_momentum(0.3, alpha_u, 1.0e-12, outer_tolerance, 200)};
+        require(run.result.converged, "Accurate single-cell momentum solve did not converge.");
+        require_near(4.0 * run.u, 1.0, 2.0 * outer_tolerance,
+                     "Converged velocity does not satisfy the independent equation 4*u=1.");
+        require_near(run.u, 0.25, outer_tolerance, "Momentum relaxation changed the exact single-cell solution.");
+        require(run.result.x_momentum_relative_residual.has_value() &&
+                    run.result.y_momentum_relative_residual.has_value(),
+                "Converged momentum result has no physical residual checks.");
+        require(run.result.x_momentum_relative_residual.has_value() &&
+                    run.result.y_momentum_relative_residual.has_value() &&
+                    *run.result.x_momentum_relative_residual <= outer_tolerance &&
+                    *run.result.y_momentum_relative_residual <= outer_tolerance,
+                "Converged momentum result violates its physical residual tolerances.");
+    }
+}
+
 } // namespace
 
 int main()
@@ -900,5 +1172,16 @@ int main()
                                          test_does_not_converge_while_relaxed_face_flux_is_still_changing);
     failure_count += cfd::test::run_test("SIMPLE rejects convergence with a large pressure correction",
                                          test_does_not_converge_while_pressure_correction_remains_large);
+    failure_count += cfd::test::run_test("SIMPLE rejects stagnant momentum with loose inner tolerance",
+                                         test_rejects_stagnant_momentum_with_loose_inner_tolerance);
+    failure_count += cfd::test::run_test("SIMPLE rejects stagnant momentum with tiny relaxation",
+                                         test_rejects_stagnant_momentum_with_tiny_relaxation);
+    failure_count += cfd::test::run_test("SIMPLE rejects unresolved y momentum", test_rejects_unresolved_y_momentum);
+    failure_count += cfd::test::run_test("SIMPLE independent momentum scales",
+                                         test_independent_momentum_scales_with_absolute_tolerance);
+    failure_count += cfd::test::run_test("SIMPLE momentum relative/absolute thresholds",
+                                         test_momentum_relative_and_absolute_thresholds);
+    failure_count += cfd::test::run_test("SIMPLE converged independent single-cell momentum equation",
+                                         test_converged_single_cell_satisfies_independent_momentum_equation);
     return cfd::test::finish_tests(failure_count, "incompressible SIMPLE solver");
 }

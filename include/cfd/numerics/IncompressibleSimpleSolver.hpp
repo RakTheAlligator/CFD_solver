@@ -19,6 +19,7 @@
 
 #include <functional>
 #include <memory>
+#include <optional>
 #include <vector>
 
 namespace cfd
@@ -43,6 +44,7 @@ struct IncompressibleSimpleOptions
     /// `FixedMassFlux` boundary values and face pressure-response coefficients
     /// are unchanged. A value of one preserves the unrelaxed path.
     double rhie_chow_flux_relaxation_factor{1.0};
+    /// Tolerance for velocity change and both unrelaxed physical momentum residuals.
     double velocity_relative_tolerance{1.0e-8};
     /// Relative tolerance for the Rhie-Chow face-flux fixed-point residual.
     double rhie_chow_flux_relative_tolerance{1.0e-8};
@@ -50,6 +52,13 @@ struct IncompressibleSimpleOptions
     double continuity_relative_tolerance{1.0e-10};
     BiCGSTABOptions momentum_linear_solver{};
     ConjugateGradientOptions pressure_correction_linear_solver{};
+    /// Absolute tolerance for each sum of integrated unrelaxed momentum imbalances.
+    ///
+    /// Finite and non-negative; zero disables the absolute allowance for nonzero
+    /// imbalance. Units are force per unit depth (N/m for SI inputs). This is a
+    /// domain sum, not a per-cell bound; mesh-dependent accumulated errors and
+    /// physical scales require a problem-appropriate value.
+    double momentum_absolute_tolerance{1.0e-12};
 };
 
 /// Linear-solve outcomes and nonlinear diagnostics for one completed SIMPLE iteration.
@@ -58,7 +67,7 @@ struct IncompressibleSimpleOptions
 /// imbalances `sum(|b - A*x|) / (sum(|b|) + sum(|A*x|))`, evaluated with the
 /// iteration-start velocity before the corresponding linear solve. They are
 /// Fluent-like outer monitoring quantities, not Eigen inner-solver residuals
-/// and not a reproduction of another solver's exact residual scaling.
+/// or the unrelaxed physical momentum convergence checks below.
 struct SimpleIterationInfo
 {
     Index iteration{};
@@ -74,6 +83,16 @@ struct SimpleIterationInfo
     double provisional_continuity_relative_residual{};
     double corrected_continuity_relative_residual{};
     double maximum_pressure_correction{};
+    /// Current-state unrelaxed momentum checks; absent if not evaluated this iteration.
+    /// Each component uses `sum(|b - A*U|) / sum(|b| + |A*U|)` with its own
+    /// unrelaxed equation scale, without a cross-component floor. A zero scale gives zero for
+    /// zero imbalance, infinity otherwise. No algebraic relaxation terms enter.
+    std::optional<double> x_momentum_relative_residual{};
+    std::optional<double> y_momentum_relative_residual{};
+    /// Sums of absolute integrated momentum imbalances, in force per unit depth.
+    /// Present on exactly the same iterations as the relative checks.
+    std::optional<double> x_momentum_absolute_residual{};
+    std::optional<double> y_momentum_absolute_residual{};
 };
 
 /// Observer invoked after each fully completed SIMPLE outer iteration.
@@ -123,6 +142,12 @@ struct IncompressibleSimpleResult
     double maximum_mass_imbalance{};
     double maximum_pressure_correction{};
     SimpleTimingBreakdown timings{};
+    /// Current-state unrelaxed checks, with the same scaling as SimpleIterationInfo.
+    /// Evaluated only on a convergence candidate.
+    std::optional<double> x_momentum_relative_residual{};
+    std::optional<double> y_momentum_relative_residual{};
+    std::optional<double> x_momentum_absolute_residual{};
+    std::optional<double> y_momentum_absolute_residual{};
 };
 
 /// Reusable steady incompressible SIMPLE solver.
@@ -176,7 +201,13 @@ class IncompressibleSimpleSolver
 
     /// Iterates until velocity relative change, provisional continuity, and the
     /// momentum-weighted face-flux fixed-point residual simultaneously satisfy
-    /// their tolerances.
+    /// their tolerances, and each current-state unrelaxed momentum component
+    /// satisfies either `velocity_relative_tolerance` relatively or
+    /// `momentum_absolute_tolerance` absolutely. Both components must pass;
+    /// non-finite momentum residuals cannot establish convergence.
+    /// The latter checks reassemble with current corrected velocity, pressure,
+    /// face flux and reconstructed gradients, without algebraic relaxation,
+    /// only on convergence candidates.
     /// Corrected continuity remains available as a diagnostic.
     ///
     /// `FixedPressure` pressure-correction conditions must correspond to

@@ -175,7 +175,8 @@ cfd::IncompressibleSimpleOptions simple_options()
             .velocity_relative_tolerance = 1.0e-10,
             .rhie_chow_flux_relative_tolerance = 1.0e-10,
             .continuity_relative_tolerance = 1.0e-10,
-            .momentum_linear_solver = {.relative_tolerance = 1.0e-6, .maximum_iterations = 5000},
+            // Strict physical outer convergence requires an accurate inner momentum solve.
+            .momentum_linear_solver = {.relative_tolerance = 1.0e-12, .maximum_iterations = 5000},
             .pressure_correction_linear_solver = {.relative_tolerance = 1.0e-3, .maximum_iterations = 5000}};
 }
 
