@@ -3,6 +3,9 @@
 #include "cfd/linear_algebra/EigenSparseMatrixPattern.hpp"
 #include "cfd/linear_algebra/ScalarLinearSystem.hpp"
 
+#include "ExplicitLinearResidual.hpp"
+
+#include <algorithm>
 #include <cmath>
 #include <functional>
 #include <limits>
@@ -68,7 +71,10 @@ EigenConjugateGradientSolver::EigenConjugateGradientSolver(const ConjugateGradie
         throw std::invalid_argument("Conjugate-gradient maximum iterations must fit a positive Eigen index.");
     }
 
-    solver_.setTolerance(options_.relative_tolerance);
+    // Leave headroom between Eigen's recursive estimate and the explicit check.
+    // If scaling underflows, retain the positive requested tolerance.
+    const double internal_tolerance{0.9 * options_.relative_tolerance};
+    solver_.setTolerance(internal_tolerance > 0.0 ? internal_tolerance : options_.relative_tolerance);
     solver_.setMaxIterations(static_cast<Eigen::Index>(options_.maximum_iterations));
 }
 
@@ -114,6 +120,7 @@ void EigenConjugateGradientSolver::compute_matrix(const ScalarLinearSystem &syst
     {
         throw std::runtime_error("Eigen conjugate-gradient matrix preparation failed.");
     }
+    residual_workspace_.resize(matrix_.rows());
     matrix_size_ = system.cell_count();
     matrix_is_prepared_ = true;
 }
@@ -133,8 +140,23 @@ LinearSolveResult EigenConjugateGradientSolver::solve(const std::span<const doub
     {
         throw std::invalid_argument("Eigen conjugate-gradient RHS and solution spans must not overlap.");
     }
-    require_finite(rhs, "Eigen conjugate-gradient RHS must contain only finite values.");
+    bool rhs_is_zero{true};
+    for (const double value : rhs)
+    {
+        if (!std::isfinite(value))
+        {
+            throw std::invalid_argument("Eigen conjugate-gradient RHS must contain only finite values.");
+        }
+        rhs_is_zero = rhs_is_zero && value == 0.0;
+    }
     require_finite(solution, "Eigen conjugate-gradient initial guess must contain only finite values.");
+
+    // Only an exactly zero RHS has this exact solution, regardless of scale.
+    if (rhs_is_zero)
+    {
+        std::fill(solution.begin(), solution.end(), 0.0);
+        return {true, 0, 0.0};
+    }
 
     const Eigen::Index size{to_eigen_index(matrix_size_)};
     const Eigen::Map<const Eigen::VectorXd> rhs_map{rhs.data(), size};
@@ -148,12 +170,12 @@ LinearSolveResult EigenConjugateGradientSolver::solve(const std::span<const doub
     {
         throw std::runtime_error("Eigen conjugate-gradient solve failed numerically.");
     }
-    require_finite(solution, "Eigen conjugate-gradient produced a non-finite solution.");
+    const long double explicit_error{detail::explicit_relative_residual(matrix_, rhs, solution, residual_workspace_)};
 
     return {
-        information == Eigen::Success,
+        information == Eigen::Success && explicit_error <= options_.relative_tolerance,
         static_cast<Index>(solver_.iterations()),
-        estimated_relative_error,
+        static_cast<double>(explicit_error),
     };
 }
 

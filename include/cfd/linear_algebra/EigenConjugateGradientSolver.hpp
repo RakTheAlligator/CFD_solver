@@ -65,12 +65,17 @@ class EigenConjugateGradientSolver
     /// Solves the prepared system using `solution` as the initial guess.
     ///
     /// Non-convergence within the configured iteration limit is reported by a
-    /// result with `converged == false`.
+    /// result with `converged == false`. Success also requires a finite solution
+    /// whose explicit relative L2 residual does not exceed `relative_tolerance`.
+    /// Eigen targets a tighter internal tolerance where representable, leaving
+    /// roundoff headroom. The explicit check uses the requested public tolerance.
+    /// An exactly zero RHS returns the zero solution with zero iterations.
     ///
     /// @throws std::logic_error If `compute_matrix()` has not succeeded.
     /// @throws std::invalid_argument If cardinalities differ, spans overlap,
     ///         or an input value is non-finite.
-    /// @throws std::runtime_error If Eigen reports a numerical or input error.
+    /// @throws std::runtime_error If Eigen reports a numerical or input error,
+    ///         or the solution or explicit residual is non-finite/unrepresentable.
     [[nodiscard]]
     LinearSolveResult solve(std::span<const double> rhs, std::span<double> solution);
 
@@ -83,6 +88,7 @@ class EigenConjugateGradientSolver
     std::shared_ptr<const EigenSparseMatrixPattern> pattern_;
     bool fixed_pattern_{};
     SparseMatrix matrix_;
+    Eigen::VectorXd residual_workspace_;
     Solver solver_;
     Index matrix_size_{};
     bool matrix_is_prepared_{};

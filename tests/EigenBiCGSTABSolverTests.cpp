@@ -6,6 +6,7 @@
 #include "cfd/mesh/MeshBuilder.hpp"
 #include "cfd/meshing/RawMeshData.hpp"
 
+#include "support/MeshFixtures.hpp"
 #include "support/TestUtils.hpp"
 
 #include <Eigen/SparseCore>
@@ -145,15 +146,15 @@ double normalized_residual(const cfd::ScalarLinearSystem &system, const std::arr
     std::array<double, Size> matrix_product{};
     system.apply_matrix(solution, matrix_product);
 
-    double residual_squared{};
-    double rhs_squared{};
+    double residual_norm{};
+    double rhs_norm{};
     for (std::size_t index = 0; index < Size; ++index)
     {
         const double residual{matrix_product.at(index) - rhs.at(index)};
-        residual_squared += residual * residual;
-        rhs_squared += rhs.at(index) * rhs.at(index);
+        residual_norm = std::hypot(residual_norm, residual);
+        rhs_norm = std::hypot(rhs_norm, rhs.at(index));
     }
-    return std::sqrt(residual_squared / rhs_squared);
+    return residual_norm / rhs_norm;
 }
 
 void test_solves_known_nonsymmetric_system_and_reuses_matrix()
@@ -353,11 +354,153 @@ void test_rejects_invalid_options_and_usage()
         "Eigen BiCGSTAB accepted a non-finite initial guess.");
 }
 
+void test_internal_tolerance_margin_preserves_public_contract()
+{
+    cfd::MeshBuildResult build_result{cfd::build_mesh(cfd::test::make_single_quadrilateral_raw_mesh())};
+    cfd::ScalarLinearSystem system{build_result.mesh};
+    system.diagonal()[0] = 1.0;
+    constexpr double requested_tolerance{0.125};
+    cfd::EigenBiCGSTABSolver solver{{requested_tolerance, 20}};
+    solver.compute_matrix(system);
+    const std::array rhs{1.0};
+    std::array solution{0.8828125};
+    // The initial residual 0.1171875 already satisfies the public threshold,
+    // but not Eigen's stricter internal target.
+    const auto result{solver.solve(rhs, solution)};
+    const double independent_residual{std::abs(rhs[0] - solution[0]) / std::abs(rhs[0])};
+    require(result.converged && independent_residual <= requested_tolerance,
+            "Internal tolerance margin failed the public explicit-residual contract.");
+    require(solution[0] == 1.0, "Eigen did not target a stricter internal tolerance.");
+    require_near(result.estimated_relative_error, independent_residual, 0.0,
+                 "Internal margin changed the reported explicit residual.");
+
+    for (const double tiny_tolerance :
+         {std::numeric_limits<double>::denorm_min(), 2.0 * std::numeric_limits<double>::denorm_min(),
+          std::numeric_limits<double>::min()})
+    {
+        cfd::EigenBiCGSTABSolver tiny_solver{{tiny_tolerance, 20}};
+        tiny_solver.compute_matrix(system);
+        solution[0] = 1.0;
+        const auto exact_result{tiny_solver.solve(rhs, solution)};
+        require(exact_result.converged && exact_result.estimated_relative_error == 0.0 &&
+                    exact_result.iteration_count == 0 && solution[0] == 1.0,
+                "Tiny valid tolerance did not preserve an exact initial guess.");
+    }
+}
+
+void test_explicit_residual_at_extreme_rhs_scales()
+{
+    cfd::MeshBuildResult build_result{cfd::build_mesh(cfd::test::make_single_quadrilateral_raw_mesh())};
+    cfd::ScalarLinearSystem system{build_result.mesh};
+    system.diagonal()[0] = 1.0;
+    constexpr double tolerance{1.0e-10};
+    cfd::EigenBiCGSTABSolver solver{{tolerance, 20}};
+    solver.compute_matrix(system);
+
+    for (const double rhs_value : {1.0, 1.0e-200, 1.0e200, std::numeric_limits<double>::denorm_min()})
+    {
+        const std::array rhs{rhs_value};
+        std::array solution{0.0};
+        cfd::LinearSolveResult result;
+        try
+        {
+            result = solver.solve(rhs, solution);
+        }
+        catch (const std::runtime_error &)
+        {
+            require(rhs_value != 1.0, "Unit-scale solve failed numerically.");
+            continue; // Eigen may fail at extreme scales, but must never report false success.
+        }
+
+        require(std::isfinite(solution[0]), "Extreme-scale solve returned a non-finite solution.");
+        // A scalar relative residual needs no squaring, even at extreme scales.
+        const double explicit_error{
+            static_cast<double>(std::abs((static_cast<long double>(rhs_value) - solution[0]) / rhs_value))};
+        require(std::isfinite(result.estimated_relative_error), "Extreme-scale residual diagnostic is not finite.");
+        require_near(result.estimated_relative_error, explicit_error, 1.0e-14,
+                     "Returned error differs from the robust explicit residual.");
+        require(result.converged == (explicit_error <= tolerance),
+                "Extreme-scale solve reported convergence inconsistent with its explicit residual.");
+    }
+}
+
+void test_explicit_residual_uses_prepared_matrix_and_initial_guess()
+{
+    cfd::MeshBuildResult build_result{cfd::build_mesh(cfd::test::make_single_quadrilateral_raw_mesh())};
+    cfd::ScalarLinearSystem system{build_result.mesh};
+    system.diagonal()[0] = 1.0;
+    cfd::EigenBiCGSTABSolver solver{{1.0e-10, 20}};
+    solver.compute_matrix(system);
+    system.diagonal()[0] = 2.0; // Residual validation must not read the unprepared FV coefficients.
+
+    for (const double rhs_value : {1.0, 1.0e-100, 1.0e100})
+    {
+        const std::array rhs{rhs_value};
+        std::array solution{rhs_value};
+        const auto result{solver.solve(rhs, solution)};
+        require(result.converged && result.iteration_count == 0 && result.estimated_relative_error == 0.0,
+                "Exact nonzero initial guess was not recognized against the prepared matrix.");
+        require(solution[0] == rhs_value, "Solve changed an exact caller-provided initial guess.");
+    }
+
+    const std::array rhs{-0.0};
+    std::array solution{7.0};
+    const auto result{solver.solve(rhs, solution)};
+    require(result.converged && result.iteration_count == 0 && result.estimated_relative_error == 0.0 &&
+                solution[0] == 0.0,
+            "Exactly zero RHS did not return an exact zero solution and diagnostic.");
+}
+
+void test_explicit_residual_respects_tolerance()
+{
+    cfd::MeshBuildResult build_result{cfd::build_mesh(cfd::test::make_single_quadrilateral_raw_mesh())};
+    cfd::ScalarLinearSystem system{build_result.mesh};
+    system.diagonal()[0] = 1.0;
+    constexpr double tolerance{0.125};
+    cfd::EigenBiCGSTABSolver solver{{tolerance, 20}};
+    solver.compute_matrix(system);
+
+    for (const double rhs_value : {1.0, 1.0e-160, 1.0e150})
+    {
+        for (const double initial_error :
+             {0.0625, std::nextafter(tolerance, 0.0), tolerance, std::nextafter(tolerance, 1.0), 0.25})
+        {
+            const std::array rhs{rhs_value};
+            std::array solution{(1.0 - initial_error) * rhs_value};
+            cfd::LinearSolveResult result;
+            try
+            {
+                result = solver.solve(rhs, solution);
+            }
+            catch (const std::runtime_error &)
+            {
+                require(rhs_value == 1.0e-160, "Tolerance-threshold solve unexpectedly failed numerically.");
+                continue;
+            }
+            const long double explicit_error{std::abs((static_cast<long double>(rhs_value) - solution[0]) / rhs_value)};
+            require_near(result.estimated_relative_error, static_cast<double>(explicit_error), 1.0e-14,
+                         "Tolerance-threshold error is not the explicit residual.");
+            require(!result.converged || (std::isfinite(explicit_error) && explicit_error <= tolerance),
+                    "Solve accepted a residual above the configured tolerance.");
+        }
+    }
+}
+
 } // namespace
 
 int main()
 {
     int failure_count{};
+
+    failure_count += cfd::test::run_test("Eigen BiCGSTAB internal margin and public tolerance",
+                                         test_internal_tolerance_margin_preserves_public_contract);
+
+    failure_count += cfd::test::run_test("Eigen BiCGSTAB extreme-scale explicit residual",
+                                         test_explicit_residual_at_extreme_rhs_scales);
+    failure_count += cfd::test::run_test("Eigen BiCGSTAB prepared matrix and exact initial guess",
+                                         test_explicit_residual_uses_prepared_matrix_and_initial_guess);
+    failure_count +=
+        cfd::test::run_test("Eigen BiCGSTAB explicit residual tolerance", test_explicit_residual_respects_tolerance);
 
     failure_count += cfd::test::run_test("Eigen BiCGSTAB iteration and sparse storage index distinction",
                                          test_distinguishes_iteration_and_sparse_storage_index_ranges);

@@ -3,6 +3,8 @@
 #include "cfd/linear_algebra/EigenSparseMatrixPattern.hpp"
 #include "cfd/linear_algebra/ScalarLinearSystem.hpp"
 
+#include "ExplicitLinearResidual.hpp"
+
 #include <algorithm>
 #include <cmath>
 #include <functional>
@@ -69,7 +71,10 @@ EigenBiCGSTABSolver::EigenBiCGSTABSolver(const BiCGSTABOptions options) : option
         throw std::invalid_argument("BiCGSTAB maximum iterations must fit a positive Eigen index.");
     }
 
-    solver_.setTolerance(options_.relative_tolerance);
+    // Leave headroom between Eigen's recursive estimate and the explicit check.
+    // If scaling underflows, retain the positive requested tolerance.
+    const double internal_tolerance{0.9 * options_.relative_tolerance};
+    solver_.setTolerance(internal_tolerance > 0.0 ? internal_tolerance : options_.relative_tolerance);
     solver_.setMaxIterations(static_cast<Eigen::Index>(options_.maximum_iterations));
 }
 
@@ -115,6 +120,7 @@ void EigenBiCGSTABSolver::compute_matrix(const ScalarLinearSystem &system)
     {
         throw std::runtime_error("Eigen BiCGSTAB matrix preparation failed.");
     }
+    residual_workspace_.resize(matrix_.rows());
     matrix_size_ = system.cell_count();
     matrix_is_prepared_ = true;
 }
@@ -164,12 +170,12 @@ LinearSolveResult EigenBiCGSTABSolver::solve(const std::span<const double> rhs, 
     {
         throw std::runtime_error("Eigen BiCGSTAB solve failed numerically.");
     }
-    require_finite(solution, "Eigen BiCGSTAB produced a non-finite solution.");
+    const long double explicit_error{detail::explicit_relative_residual(matrix_, rhs, solution, residual_workspace_)};
 
     return {
-        information == Eigen::Success,
+        information == Eigen::Success && explicit_error <= options_.relative_tolerance,
         static_cast<Index>(solver_.iterations()),
-        estimated_relative_error,
+        static_cast<double>(explicit_error),
     };
 }
 
