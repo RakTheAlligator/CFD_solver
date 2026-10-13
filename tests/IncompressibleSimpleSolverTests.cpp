@@ -678,6 +678,33 @@ void test_all_fixed_mass_flux_compatibility_and_gauge_path()
     }
 }
 
+void test_closed_single_cell_zero_flow_gauge_path()
+{
+    cfd::MeshBuildResult build_result{cfd::build_mesh(make_channel_raw_mesh(1, 1))};
+    const cfd::Mesh &mesh{build_result.mesh};
+    const auto velocity_conditions{uniform_scalar_conditions(mesh, cfd::ScalarBoundaryConditionType::Dirichlet)};
+    const auto pressure_conditions{uniform_scalar_conditions(mesh, cfd::ScalarBoundaryConditionType::Neumann)};
+    const auto pressure_correction_conditions{
+        uniform_pressure_correction_conditions(mesh, cfd::PressureCorrectionBoundaryConditionType::FixedMassFlux)};
+    cfd::CellVelocityField velocity{mesh.cell_count()};
+    cfd::CellScalarField pressure{mesh.cell_count(), 3.25};
+    cfd::FaceFluxField mass_flux{mesh.face_count()};
+    cfd::IncompressibleSimpleSolver solver{mesh, 1.0, 0.1, cfd::ScalarConvectionScheme::Linear, test_options()};
+    const auto result{solver.solve(velocity_conditions, velocity_conditions, pressure_conditions,
+                                   pressure_correction_conditions, velocity, pressure, mass_flux)};
+    require(result.converged && result.iteration_count == 1,
+            "Closed single-cell zero-flow SIMPLE did not converge in one iteration.");
+    require(velocity.u()[0] == 0.0 && velocity.v()[0] == 0.0 && pressure[0] == 3.25,
+            "Closed single-cell gauge changed zero velocity or constant physical pressure.");
+    require(result.maximum_mass_imbalance == 0.0 && result.maximum_pressure_correction == 0.0 &&
+                result.provisional_continuity_relative_residual == 0.0 && result.continuity_relative_residual == 0.0,
+            "Closed single-cell gauge created a pressure correction or mass imbalance.");
+    for (const double flux : mass_flux.values())
+    {
+        require(flux == 0.0, "Closed single-cell gauge changed the imposed zero boundary flux.");
+    }
+}
+
 void test_fixed_pressure_anchored_zero_flow_path()
 {
     cfd::MeshBuildResult build_result{cfd::build_mesh(make_channel_raw_mesh(2, 2))};
@@ -1465,6 +1492,8 @@ int main()
                                          test_velocity_compatibility_checks_each_orientation_in_a_boundary_group);
     failure_count += cfd::test::run_test("SIMPLE all-FixedMassFlux compatibility and gauge",
                                          test_all_fixed_mass_flux_compatibility_and_gauge_path);
+    failure_count +=
+        cfd::test::run_test("SIMPLE closed single-cell zero-flow gauge", test_closed_single_cell_zero_flow_gauge_path);
     failure_count +=
         cfd::test::run_test("SIMPLE FixedPressure anchored path", test_fixed_pressure_anchored_zero_flow_path);
     failure_count += cfd::test::run_test("SIMPLE solve input validation", test_input_validation_precedes_iterations);

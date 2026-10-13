@@ -13,6 +13,7 @@
 #include "cfd/meshing/RawMeshData.hpp"
 #include "cfd/numerics/IncompressiblePressureCorrectionAssembler.hpp"
 
+#include "support/MeshFixtures.hpp"
 #include "support/TestUtils.hpp"
 
 #include <array>
@@ -319,6 +320,108 @@ void test_all_fixed_mass_flux_system_solves_after_zero_reference()
             "Gauge-fixed pressure-correction solution has an excessive algebraic residual.");
 }
 
+void test_single_cell_fixed_mass_flux_system_solves_after_zero_reference()
+{
+    cfd::MeshBuildResult build_result{cfd::build_mesh(cfd::test::make_single_quadrilateral_raw_mesh())};
+    const cfd::Mesh &mesh{build_result.mesh};
+    const cfd::IncompressiblePressureCorrectionAssembler assembler{mesh};
+    const cfd::FaceFluxField provisional_mass_flux{mesh.face_count()};
+    const cfd::FacePressureResponseField face_pressure_response{mesh.face_count()};
+    const cfd::PressureCorrectionBoundaryConditions boundary_conditions{
+        mesh.boundary_groups().size(), {cfd::PressureCorrectionBoundaryConditionType::FixedMassFlux}};
+    cfd::ScalarLinearSystem system{mesh};
+    assembler.add_internal_face_contributions(provisional_mass_flux, face_pressure_response, system);
+    assembler.add_boundary_provisional_flux_rhs(provisional_mass_flux, system);
+    assembler.add_boundary_pressure_response(boundary_conditions, face_pressure_response, system);
+    require(system.diagonal()[0] == 0.0 && system.rhs()[0] == 0.0,
+            "Closed single-cell zero-flow assembly did not produce A = [0], b = [0].");
+    for (cfd::Index face_id = 0; face_id < mesh.face_count(); ++face_id)
+    {
+        system.owner_neighbor_coefficients()[face_id] = 101.0 + static_cast<double>(face_id);
+        system.neighbor_owner_coefficients()[face_id] = -201.0 - static_cast<double>(face_id);
+    }
+
+    cfd::apply_zero_pressure_correction_reference(0, system);
+    require(system.diagonal()[0] == 1.0 && system.rhs()[0] == 0.0,
+            "Closed single-cell gauge did not produce A = [1], b = [0].");
+    for (cfd::Index face_id = 0; face_id < mesh.face_count(); ++face_id)
+    {
+        require(system.owner_neighbor_coefficients()[face_id] == 101.0 + static_cast<double>(face_id) &&
+                    system.neighbor_owner_coefficients()[face_id] == -201.0 - static_cast<double>(face_id),
+                "Single-cell gauge modified unused boundary coefficients.");
+    }
+    cfd::EigenConjugateGradientSolver solver{{1.0e-14, 20}};
+    solver.compute_matrix(system);
+    std::array solution{1.0};
+    const cfd::LinearSolveResult result{solver.solve(system.rhs(), solution)};
+    require(result.converged && solution[0] == 0.0,
+            "CG did not solve the gauge-fixed closed single-cell system with p' = 0.");
+}
+
+void test_single_cell_invalid_reference_is_transactional()
+{
+    cfd::MeshBuildResult build_result{cfd::build_mesh(cfd::test::make_single_quadrilateral_raw_mesh())};
+    const cfd::Mesh &mesh{build_result.mesh};
+    cfd::ScalarLinearSystem system{mesh};
+    for (cfd::Index face_id = 0; face_id < mesh.face_count(); ++face_id)
+    {
+        system.owner_neighbor_coefficients()[face_id] = 101.0 + static_cast<double>(face_id);
+        system.neighbor_owner_coefficients()[face_id] = -201.0 - static_cast<double>(face_id);
+    }
+    require_throws<std::invalid_argument>([&]() { cfd::apply_zero_pressure_correction_reference(1, system); },
+                                          "Single-cell zero system accepted an out-of-domain reference.");
+    require(system.diagonal()[0] == 0.0 && system.rhs()[0] == 0.0,
+            "Invalid single-cell reference changed the zero system.");
+
+    const auto require_unchanged = [&](const double diagonal, const double rhs) {
+        require((std::isnan(diagonal) ? std::isnan(system.diagonal()[0]) : system.diagonal()[0] == diagonal) &&
+                    (std::isnan(rhs) ? std::isnan(system.rhs()[0]) : system.rhs()[0] == rhs),
+                "Rejected single-cell gauge changed the diagonal or RHS.");
+        for (cfd::Index face_id = 0; face_id < mesh.face_count(); ++face_id)
+        {
+            require(system.owner_neighbor_coefficients()[face_id] == 101.0 + static_cast<double>(face_id) &&
+                        system.neighbor_owner_coefficients()[face_id] == -201.0 - static_cast<double>(face_id),
+                    "Rejected single-cell gauge changed boundary coefficients.");
+        }
+    };
+    for (const double rhs : {1.0, -1.0, std::numeric_limits<double>::quiet_NaN(),
+                             std::numeric_limits<double>::infinity(), -std::numeric_limits<double>::infinity()})
+    {
+        system.rhs()[0] = rhs;
+        require_throws<std::runtime_error>([&]() { cfd::apply_zero_pressure_correction_reference(0, system); },
+                                           "Single-cell zero diagonal accepted a nonzero or non-finite RHS.");
+        require_unchanged(0.0, rhs);
+    }
+    system.rhs()[0] = 0.0;
+    for (const double diagonal : {-1.0, std::numeric_limits<double>::quiet_NaN(),
+                                  std::numeric_limits<double>::infinity(), -std::numeric_limits<double>::infinity()})
+    {
+        system.diagonal()[0] = diagonal;
+        require_throws<std::runtime_error>([&]() { cfd::apply_zero_pressure_correction_reference(0, system); },
+                                           "Single-cell gauge accepted a negative or non-finite diagonal.");
+        require_unchanged(diagonal, 0.0);
+    }
+}
+
+void test_multicell_zero_system_is_rejected()
+{
+    cfd::MeshBuildResult build_result{cfd::build_mesh(make_two_cell_rectangle_raw_mesh(false))};
+    cfd::ScalarLinearSystem system{build_result.mesh};
+    require_throws<std::runtime_error>([&]() { cfd::apply_zero_pressure_correction_reference(0, system); },
+                                       "Multicell zero system incorrectly used the single-cell gauge exception.");
+    for (cfd::Index cell_id = 0; cell_id < system.cell_count(); ++cell_id)
+    {
+        require(system.diagonal()[cell_id] == 0.0 && system.rhs()[cell_id] == 0.0,
+                "Rejected multicell zero system was modified.");
+    }
+    for (cfd::Index face_id = 0; face_id < system.face_count(); ++face_id)
+    {
+        require(system.owner_neighbor_coefficients()[face_id] == 0.0 &&
+                    system.neighbor_owner_coefficients()[face_id] == 0.0,
+                "Rejected multicell zero system couplings were modified.");
+    }
+}
+
 void test_fixed_pressure_response_anchors_system_without_reference()
 {
     cfd::MeshBuildResult build_result{cfd::build_mesh(make_two_cell_rectangle_raw_mesh(true))};
@@ -374,6 +477,12 @@ int main()
                                          test_zero_reference_rejects_invalid_inputs_before_mutation);
     failure_count += cfd::test::run_test("all-FixedMassFlux pressure-correction CG solve",
                                          test_all_fixed_mass_flux_system_solves_after_zero_reference);
+    failure_count += cfd::test::run_test("single-cell all-FixedMassFlux pressure-correction CG solve",
+                                         test_single_cell_fixed_mass_flux_system_solves_after_zero_reference);
+    failure_count += cfd::test::run_test("single-cell gauge transactional validation",
+                                         test_single_cell_invalid_reference_is_transactional);
+    failure_count += cfd::test::run_test("multicell zero pressure-correction system rejection",
+                                         test_multicell_zero_system_is_rejected);
     failure_count += cfd::test::run_test("FixedPressure-anchored pressure-correction CG solve",
                                          test_fixed_pressure_response_anchors_system_without_reference);
 

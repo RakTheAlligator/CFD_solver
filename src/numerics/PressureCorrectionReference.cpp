@@ -16,6 +16,17 @@ void apply_zero_pressure_correction_reference(const Index reference_cell, Scalar
     {
         throw std::invalid_argument("Pressure-correction reference cell must be inside the linear system.");
     }
+    if (system.cell_count() == 1 && system.diagonal()[reference_cell] == 0.0)
+    {
+        if (system.rhs()[reference_cell] != 0.0)
+        {
+            throw std::runtime_error("Single-cell zero pressure-correction diagonal requires an exactly zero RHS.");
+        }
+        // The compatible equation 0 = 0 leaves only the gauge constraint p' = 0.
+        system.diagonal()[reference_cell] = 1.0;
+        system.rhs()[reference_cell] = 0.0;
+        return;
+    }
     if (!std::isfinite(system.diagonal()[reference_cell]) || !(system.diagonal()[reference_cell] > 0.0))
     {
         throw std::runtime_error("Pressure-correction reference diagonal must be finite and strictly positive.");

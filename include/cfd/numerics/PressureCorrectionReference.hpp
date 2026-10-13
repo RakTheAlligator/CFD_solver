@@ -13,6 +13,8 @@ class ScalarLinearSystem;
 /// are set to zero, preserving matrix symmetry. The existing positive reference
 /// diagonal is retained and its right-hand side is set to zero. All unrelated
 /// entries remain unchanged.
+/// For a single-cell system with exactly zero diagonal and RHS, the diagonal
+/// is instead set to one: this imposes the gauge, not a physical equation.
 ///
 /// This utility performs no allocation and does not decide whether a reference
 /// is required; callers should use it only for a system with an unfixed
@@ -20,7 +22,8 @@ class ScalarLinearSystem;
 ///
 /// @throws std::invalid_argument If `reference_cell` is outside the system.
 /// @throws std::runtime_error If its diagonal is not finite and strictly
-///         positive.
+///         positive, except for the compatible single-cell zero system above.
+///         A zero single-cell diagonal with nonzero or non-finite RHS is rejected.
 void apply_zero_pressure_correction_reference(Index reference_cell, ScalarLinearSystem &system);
 
 } // namespace cfd
