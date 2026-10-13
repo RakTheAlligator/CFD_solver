@@ -214,6 +214,15 @@ class IncompressibleSimpleSolver
     /// physical pressure Dirichlet conditions. `FixedMassFlux` conditions must
     /// correspond to physical pressure Neumann conditions, and their boundary
     /// mass fluxes remain exactly caller-owned and unchanged.
+    /// Compatibility is checked per boundary face before any caller-owned field
+    /// is modified. Normal velocity is fully prescribed only when every Cartesian
+    /// component with nonzero projection on that face's area vector is Dirichlet.
+    /// `FixedPressure` rejects that combination; tangent-only Dirichlet data or
+    /// mixed data leaving a normal projection free are supported.
+    /// `FixedMassFlux` with fully prescribed normal velocity requires
+    /// `F_b = rho * (u_D*S_x + v_D*S_y)` within dot-product roundoff. If normal
+    /// velocity remains free, no velocity-derived flux constraint is invented.
+    /// No angle cutoff or unit-dependent absolute flux tolerance is used.
     ///
     /// For reconstructing `grad(p')` only, `FixedPressure` maps to homogeneous
     /// scalar Dirichlet data and `FixedMassFlux` maps to homogeneous scalar
@@ -230,7 +239,7 @@ class IncompressibleSimpleSolver
     ///        including the final one. An iteration interrupted by an inner
     ///        linear-solver failure is not reported.
     /// @throws std::invalid_argument If a cardinality, initial field value, or
-    ///         boundary-condition pairing is invalid.
+    ///         boundary-condition pairing or imposed boundary flux is incompatible.
     /// @throws std::runtime_error If imposed all-`FixedMassFlux` boundary flow
     ///         is globally incompatible, an inner linear solve fails to
     ///         converge, or an existing numerical component rejects its data.
@@ -246,6 +255,7 @@ class IncompressibleSimpleSolver
     const Mesh *mesh_;
     double density_;
     IncompressibleSimpleOptions options_;
+    std::vector<Index> boundary_face_ids_;
 
     std::shared_ptr<const EigenSparseMatrixPattern> matrix_pattern_;
     EigenBiCGSTABSolver u_momentum_solver_;

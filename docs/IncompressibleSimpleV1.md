@@ -167,6 +167,26 @@ from the coupled fixed point.
 
 ## Pressure-correction boundaries
 
+Before modifying any caller-owned field, SIMPLE checks pressure/velocity/flux compatibility on each boundary face using its actual owner-oriented `S_b`. A Cartesian velocity component constrains normal velocity only when its projection is nonzero and its condition is Dirichlet. Exact zero projections contribute nothing; no angle threshold reclassifies nearly aligned faces. The same BoundaryId can cover several orientations, so compatibility is not inferred once per group.
+
+| Face orientation | Normal velocity fully prescribed by scalar Dirichlet data |
+|---|---|
+| Vertical (`S_y=0`) | u Dirichlet; v may be either type |
+| Horizontal (`S_x=0`) | v Dirichlet; u may be either type |
+| Oblique (both projections nonzero) | Both u and v Dirichlet |
+
+`FixedPressure` requires physical pressure Dirichlet and a free normal-velocity projection, because Rhie-Chow computes the normal flux without enforcing independently prescribed velocity values. Prescribing both normal velocity and pressure is rejected even if a particular zero-flow solution happens to satisfy both. Tangential Dirichlet data on aligned faces are supported. On oblique faces a single Cartesian Dirichlet component is not purely tangential, but a remaining Neumann component leaves normal velocity incompletely prescribed and is supported. Neumann specifies a derivative, not a boundary value.
+
+`FixedMassFlux` requires physical pressure Neumann. When normal velocity is fully prescribed, the supplied integrated flux must agree with `rho * (u_D*S_x + v_D*S_y)`; Cartesian components with zero projection are omitted. The comparison uses long-double arithmetic and
+
+```text
+|F_supplied - F_D| <= 64*epsilon(double) * (|F_supplied| + |rho*u_D*S_x| + |rho*v_D*S_y|)
+```
+
+This roundoff allowance scales in the flux units (kg/(m*s) for SI inputs per unit depth), includes dot-product cancellation, and has no `max(1, ...)` or absolute floor. A stationary impermeable wall therefore rejects any nonzero imposed flux. When normal velocity is not fully prescribed, SIMPLE checks no additional velocity-derived flux relation; the imposed flux remains the caller's responsibility. The all-FixedMassFlux global compatibility check still applies.
+
+Validation uses a private list of boundary-face indices constructed once from the borrowed, immutable Mesh. Each solve checks boundary groups/faces without per-call index allocation, field copies or iteration-loop overhead. Rejections identify the face and BoundaryId, leave velocity/pressure/flux exactly unchanged, and invoke no iteration callback. Compatibility alone does not establish that the momentum problem is well posed. The application initializer remains more restrictive: it currently requires both u and v fixedValue on FixedMassFlux boundaries to construct their flux. These SIMPLE-specific rules do not alter generic BC types, Mesh contracts or future compressible characteristic-boundary design.
+
 `FixedPressure` corresponds to prescribed physical pressure and imposes
 
 ```text

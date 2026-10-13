@@ -36,6 +36,23 @@ double elapsed_seconds_since(const SimpleClock::time_point start) noexcept
     return std::chrono::duration<double>(SimpleClock::now() - start).count();
 }
 
+[[nodiscard]]
+std::vector<Index> collect_boundary_face_ids(const Mesh &mesh)
+{
+    const auto adjacencies{mesh.face_adjacencies()};
+    std::vector<Index> face_ids;
+    face_ids.reserve(static_cast<Index>(
+        std::ranges::count_if(adjacencies, [](const FaceAdjacency &adjacency) { return adjacency.is_boundary(); })));
+    for (Index face_id = 0; face_id < mesh.face_count(); ++face_id)
+    {
+        if (adjacencies[face_id].is_boundary())
+        {
+            face_ids.push_back(face_id);
+        }
+    }
+    return face_ids;
+}
+
 void require_connected_cell_domain(const Mesh &mesh)
 {
     const Index cell_count{mesh.cell_count()};
@@ -224,6 +241,60 @@ bool validate_pressure_boundary_semantics(
     return has_fixed_pressure;
 }
 
+void validate_velocity_boundary_compatibility(
+    const Mesh &mesh, const std::span<const Index> boundary_face_ids, const double density,
+    const ScalarBoundaryConditions &u_boundary_conditions, const ScalarBoundaryConditions &v_boundary_conditions,
+    const PressureCorrectionBoundaryConditions &pressure_correction_boundary_conditions, const FaceFluxField &mass_flux)
+{
+    const auto boundary_ids{mesh.face_boundary_ids()};
+    const auto area_vectors{mesh.face_area_vectors()};
+    constexpr long double relative_roundoff{64.0L * std::numeric_limits<double>::epsilon()};
+    for (const Index face_id : boundary_face_ids)
+    {
+        const BoundaryId boundary_id{boundary_ids[face_id]};
+        const Vector2 &area_vector{area_vectors[face_id]};
+        const ScalarBoundaryCondition &u_condition{u_boundary_conditions[boundary_id]};
+        const ScalarBoundaryCondition &v_condition{v_boundary_conditions[boundary_id]};
+        // Only Cartesian components with a nonzero normal projection constrain
+        // normal velocity. Neumann data leave their boundary value free.
+        const bool normal_velocity_prescribed{
+            (area_vector.x == 0.0 || u_condition.type == ScalarBoundaryConditionType::Dirichlet) &&
+            (area_vector.y == 0.0 || v_condition.type == ScalarBoundaryConditionType::Dirichlet)};
+        if (!normal_velocity_prescribed)
+        {
+            continue;
+        }
+        switch (pressure_correction_boundary_conditions[boundary_id])
+        {
+        case PressureCorrectionBoundaryConditionType::FixedPressure:
+            throw std::invalid_argument("SIMPLE FixedPressure boundary face " + std::to_string(face_id) +
+                                        " (BoundaryId " + std::to_string(boundary_id) +
+                                        ") cannot also prescribe normal velocity by Dirichlet.");
+
+        case PressureCorrectionBoundaryConditionType::FixedMassFlux: {
+            const long double x_flux{
+                area_vector.x == 0.0 ? 0.0L : static_cast<long double>(density) * u_condition.value * area_vector.x};
+            const long double y_flux{
+                area_vector.y == 0.0 ? 0.0L : static_cast<long double>(density) * v_condition.value * area_vector.y};
+            const long double prescribed_flux{x_flux + y_flux};
+            const long double supplied_flux{mass_flux[face_id]};
+            // Roundoff allowance for the supplied value and the dot-product
+            // terms, including cancellation; no unit-dependent absolute floor.
+            const long double tolerance{relative_roundoff *
+                                        (std::abs(supplied_flux) + std::abs(x_flux) + std::abs(y_flux))};
+            if (!std::isfinite(prescribed_flux) || !std::isfinite(tolerance) ||
+                std::abs(supplied_flux - prescribed_flux) > tolerance)
+            {
+                throw std::invalid_argument("SIMPLE FixedMassFlux boundary face " + std::to_string(face_id) +
+                                            " (BoundaryId " + std::to_string(boundary_id) +
+                                            ") has mass flux incompatible with its prescribed normal velocity.");
+            }
+            break;
+        }
+        }
+    }
+}
+
 [[nodiscard]]
 ScalarBoundaryConditions make_pressure_correction_gradient_boundary_conditions(
     const PressureCorrectionBoundaryConditions &pressure_correction_boundary_conditions)
@@ -246,17 +317,13 @@ ScalarBoundaryConditions make_pressure_correction_gradient_boundary_conditions(
     return {pressure_correction_boundary_conditions.size(), std::move(conditions)};
 }
 
-void validate_fixed_mass_flux_compatibility(const Mesh &mesh, const FaceFluxField &mass_flux)
+void validate_fixed_mass_flux_compatibility(const std::span<const Index> boundary_face_ids,
+                                            const FaceFluxField &mass_flux)
 {
     long double boundary_flux_sum{};
     long double boundary_flux_magnitude{};
-    const auto face_adjacencies{mesh.face_adjacencies()};
-    for (Index face_id = 0; face_id < mesh.face_count(); ++face_id)
+    for (const Index face_id : boundary_face_ids)
     {
-        if (!face_adjacencies[face_id].is_boundary())
-        {
-            continue;
-        }
         const long double flux{mass_flux[face_id]};
         boundary_flux_sum += flux;
         boundary_flux_magnitude += std::abs(flux);
@@ -427,7 +494,8 @@ IncompressibleSimpleSolver::IncompressibleSimpleSolver(const Mesh &mesh, const d
                                                        const ScalarConvectionLimiter convection_limiter,
                                                        IncompressibleSimpleOptions options)
     : mesh_(&mesh), density_(validate_positive_physical_coefficient(density, "SIMPLE density")),
-      options_(validate_options(options)), matrix_pattern_(std::make_shared<EigenSparseMatrixPattern>(mesh)),
+      options_(validate_options(options)), boundary_face_ids_(collect_boundary_face_ids(mesh)),
+      matrix_pattern_(std::make_shared<EigenSparseMatrixPattern>(mesh)),
       u_momentum_solver_(matrix_pattern_, options_.momentum_linear_solver),
       v_momentum_solver_(matrix_pattern_, options_.momentum_linear_solver),
       pressure_correction_solver_(matrix_pattern_, options_.pressure_correction_linear_solver),
@@ -460,11 +528,13 @@ IncompressibleSimpleResult IncompressibleSimpleSolver::solve(
     validate_initial_values(velocity, pressure, mass_flux);
     const bool has_fixed_pressure{
         validate_pressure_boundary_semantics(pressure_boundary_conditions, pressure_correction_boundary_conditions)};
+    validate_velocity_boundary_compatibility(*mesh_, boundary_face_ids_, density_, u_boundary_conditions,
+                                             v_boundary_conditions, pressure_correction_boundary_conditions, mass_flux);
     const ScalarBoundaryConditions pressure_correction_gradient_boundary_conditions{
         make_pressure_correction_gradient_boundary_conditions(pressure_correction_boundary_conditions)};
     if (!has_fixed_pressure)
     {
-        validate_fixed_mass_flux_compatibility(*mesh_, mass_flux);
+        validate_fixed_mass_flux_compatibility(boundary_face_ids_, mass_flux);
     }
 
     IncompressibleSimpleResult result{};

@@ -20,6 +20,8 @@
 #include <cmath>
 #include <limits>
 #include <stdexcept>
+#include <string>
+#include <string_view>
 #include <type_traits>
 #include <utility>
 #include <vector>
@@ -148,13 +150,13 @@ cfd::PressureCorrectionBoundaryConditions uniform_pressure_correction_conditions
 }
 
 [[nodiscard]]
-cfd::ScalarBoundaryConditions channel_velocity_conditions(const cfd::Mesh &mesh)
+cfd::ScalarBoundaryConditions channel_velocity_conditions(const cfd::Mesh &mesh, const double wall_value = 0.0)
 {
     return {mesh.boundary_groups().size(),
             {
-                {cfd::ScalarBoundaryConditionType::Dirichlet, 0.0},
+                {cfd::ScalarBoundaryConditionType::Dirichlet, wall_value},
                 {cfd::ScalarBoundaryConditionType::Neumann, 0.0},
-                {cfd::ScalarBoundaryConditionType::Dirichlet, 0.0},
+                {cfd::ScalarBoundaryConditionType::Dirichlet, wall_value},
                 {cfd::ScalarBoundaryConditionType::Neumann, 0.0},
             }};
 }
@@ -348,6 +350,294 @@ void test_pressure_boundary_semantic_consistency()
     }
 }
 
+[[nodiscard]]
+cfd::RawMeshData make_boundary_compatibility_raw_mesh(const bool rotated)
+{
+    cfd::RawMeshData raw{make_channel_raw_mesh(1, 1, 1.0, 1.0)};
+    if (rotated)
+    {
+        for (cfd::Node &node : raw.nodes)
+        {
+            const double x{node.x};
+            node.x = 0.8 * x - 0.6 * node.y;
+            node.y = 0.6 * x + 0.8 * node.y;
+        }
+    }
+    return raw;
+}
+
+[[nodiscard]]
+cfd::Index find_boundary_face(const cfd::Mesh &mesh, const cfd::BoundaryId boundary_id)
+{
+    for (cfd::Index face_id = 0; face_id < mesh.face_count(); ++face_id)
+    {
+        if (mesh.face_boundary_ids()[face_id] == boundary_id)
+        {
+            return face_id;
+        }
+    }
+    cfd::test::fail("Boundary compatibility fixture is missing its face.");
+}
+
+void require_boundary_rejection_is_transactional(const cfd::Mesh &mesh,
+                                                 const cfd::ScalarBoundaryConditions &u_conditions,
+                                                 const cfd::ScalarBoundaryConditions &v_conditions,
+                                                 const cfd::ScalarBoundaryConditions &pressure_conditions,
+                                                 const cfd::PressureCorrectionBoundaryConditions &correction_conditions,
+                                                 const cfd::FaceFluxField &initial_flux, const std::string_view message,
+                                                 const cfd::Vector2 initial_velocity = {1.25, -0.5},
+                                                 const double initial_pressure = 0.75)
+{
+    cfd::CellVelocityField velocity{mesh.cell_count(), initial_velocity};
+    cfd::CellScalarField pressure{mesh.cell_count(), initial_pressure};
+    cfd::FaceFluxField mass_flux{initial_flux};
+    cfd::Index callback_count{};
+    cfd::IncompressibleSimpleSolver solver{mesh, 1.0, 1.0, cfd::ScalarConvectionScheme::Linear, test_options()};
+    require_throws_with_message<std::invalid_argument>(
+        [&]() {
+            static_cast<void>(solver.solve(u_conditions, v_conditions, pressure_conditions, correction_conditions,
+                                           velocity, pressure, mass_flux,
+                                           [&callback_count](const cfd::SimpleIterationInfo &) { ++callback_count; }));
+        },
+        message, "SIMPLE accepted incompatible velocity/pressure boundary data.");
+    for (cfd::Index cell_id = 0; cell_id < mesh.cell_count(); ++cell_id)
+    {
+        require(velocity.u()[cell_id] == initial_velocity.x && velocity.v()[cell_id] == initial_velocity.y &&
+                    pressure[cell_id] == initial_pressure,
+                "Boundary rejection changed a caller-owned cell field.");
+    }
+    require(std::ranges::equal(mass_flux.values(), initial_flux.values()),
+            "Boundary rejection changed caller-owned face fluxes.");
+    require(callback_count == 0, "Boundary rejection reported a completed SIMPLE iteration.");
+}
+
+void test_rejects_fixed_pressure_with_prescribed_normal_velocity()
+{
+    const auto built{cfd::build_mesh(make_channel_raw_mesh(1, 1, 1.0, 1.0))};
+    const cfd::Mesh &mesh{built.mesh};
+    const auto velocity_conditions{uniform_scalar_conditions(mesh, cfd::ScalarBoundaryConditionType::Dirichlet)};
+    const cfd::ScalarBoundaryConditions pressure_conditions{4,
+                                                            {{cfd::ScalarBoundaryConditionType::Dirichlet, 0.5},
+                                                             {cfd::ScalarBoundaryConditionType::Dirichlet, 0.0},
+                                                             {cfd::ScalarBoundaryConditionType::Dirichlet, 0.5},
+                                                             {cfd::ScalarBoundaryConditionType::Dirichlet, 1.0}}};
+    const auto correction_conditions{
+        uniform_pressure_correction_conditions(mesh, cfd::PressureCorrectionBoundaryConditionType::FixedPressure)};
+    const cfd::FaceFluxField initial_flux{mesh.face_count()};
+    require_boundary_rejection_is_transactional(mesh, velocity_conditions, velocity_conditions, pressure_conditions,
+                                                correction_conditions, initial_flux,
+                                                "cannot also prescribe normal velocity", {0.0, 0.0}, 0.5);
+}
+
+void test_fixed_pressure_mixed_velocity_conditions_by_face_orientation()
+{
+    using Type = cfd::ScalarBoundaryConditionType;
+    using Correction = cfd::PressureCorrectionBoundaryConditionType;
+    const std::array combinations{std::pair{Type::Dirichlet, Type::Dirichlet},
+                                  std::pair{Type::Dirichlet, Type::Neumann}, std::pair{Type::Neumann, Type::Dirichlet},
+                                  std::pair{Type::Neumann, Type::Neumann}};
+    for (const bool rotated : {false, true})
+    {
+        const auto built{cfd::build_mesh(make_boundary_compatibility_raw_mesh(rotated))};
+        const cfd::Mesh &mesh{built.mesh};
+        for (const cfd::BoundaryId boundary_id :
+             std::array{bottom_boundary_id, right_boundary_id, top_boundary_id, left_boundary_id})
+        {
+            for (const auto &[u_type, v_type] : combinations)
+            {
+                std::vector<cfd::ScalarBoundaryCondition> u_values(4, {Type::Dirichlet, 0.0});
+                std::vector<cfd::ScalarBoundaryCondition> v_values{u_values};
+                u_values.at(boundary_id) = {u_type, 0.0};
+                v_values.at(boundary_id) = {v_type, 0.0};
+                std::vector<cfd::ScalarBoundaryCondition> p_values(4, {Type::Neumann, 0.0});
+                p_values.at(boundary_id) = {Type::Dirichlet, 0.0};
+                std::vector<Correction> correction_values(4, Correction::FixedMassFlux);
+                correction_values.at(boundary_id) = Correction::FixedPressure;
+                const cfd::ScalarBoundaryConditions u_conditions{4, std::move(u_values)};
+                const cfd::ScalarBoundaryConditions v_conditions{4, std::move(v_values)};
+                const cfd::ScalarBoundaryConditions p_conditions{4, std::move(p_values)};
+                const cfd::PressureCorrectionBoundaryConditions correction{4, std::move(correction_values)};
+                cfd::FaceFluxField flux{mesh.face_count()};
+                const bool vertical{boundary_id == right_boundary_id || boundary_id == left_boundary_id};
+                const bool normal_prescribed{rotated ? u_type == Type::Dirichlet && v_type == Type::Dirichlet
+                                                     : (vertical ? u_type : v_type) == Type::Dirichlet};
+                if (normal_prescribed)
+                {
+                    require_boundary_rejection_is_transactional(mesh, u_conditions, v_conditions, p_conditions,
+                                                                correction, flux, "FixedPressure boundary face");
+                }
+                else
+                {
+                    cfd::CellVelocityField velocity{mesh.cell_count()};
+                    cfd::CellScalarField pressure{mesh.cell_count()};
+                    cfd::Index callbacks{};
+                    cfd::IncompressibleSimpleSolver solver{mesh, 1.0, 1.0, cfd::ScalarConvectionScheme::Linear,
+                                                           test_options()};
+                    const auto result{solver.solve(u_conditions, v_conditions, p_conditions, correction, velocity,
+                                                   pressure, flux,
+                                                   [&callbacks](const cfd::SimpleIterationInfo &) { ++callbacks; })};
+                    require(result.converged && callbacks == 1,
+                            "A pressure boundary with free normal velocity rejected a compatible zero-flow solve.");
+                }
+            }
+        }
+    }
+}
+
+void test_fixed_mass_flux_velocity_compatibility_by_face_orientation()
+{
+    using Type = cfd::ScalarBoundaryConditionType;
+    using Correction = cfd::PressureCorrectionBoundaryConditionType;
+    const std::array combinations{std::pair{Type::Dirichlet, Type::Dirichlet},
+                                  std::pair{Type::Dirichlet, Type::Neumann}, std::pair{Type::Neumann, Type::Dirichlet},
+                                  std::pair{Type::Neumann, Type::Neumann}};
+    for (const bool rotated : {false, true})
+    {
+        const auto built{cfd::build_mesh(make_boundary_compatibility_raw_mesh(rotated))};
+        const cfd::Mesh &mesh{built.mesh};
+        for (const cfd::BoundaryId boundary_id :
+             std::array{bottom_boundary_id, right_boundary_id, top_boundary_id, left_boundary_id})
+        {
+            const cfd::BoundaryId outlet_id{boundary_id == bottom_boundary_id  ? top_boundary_id
+                                            : boundary_id == top_boundary_id   ? bottom_boundary_id
+                                            : boundary_id == right_boundary_id ? left_boundary_id
+                                                                               : right_boundary_id};
+            for (const auto &[u_type, v_type] : combinations)
+            {
+                std::vector<cfd::ScalarBoundaryCondition> u_values(4, {Type::Dirichlet, 0.0});
+                std::vector<cfd::ScalarBoundaryCondition> v_values{u_values};
+                u_values.at(boundary_id) = {u_type, u_type == Type::Dirichlet ? 0.125 : 0.0};
+                v_values.at(boundary_id) = {v_type, v_type == Type::Dirichlet ? -0.25 : 0.0};
+                u_values.at(outlet_id) = {Type::Neumann, 0.0};
+                v_values.at(outlet_id) = {Type::Neumann, 0.0};
+                std::vector<cfd::ScalarBoundaryCondition> p_values(4, {Type::Neumann, 0.0});
+                p_values.at(outlet_id) = {Type::Dirichlet, 0.0};
+                std::vector<Correction> corrections(4, Correction::FixedMassFlux);
+                corrections.at(outlet_id) = Correction::FixedPressure;
+                const cfd::ScalarBoundaryConditions u_conditions{4, std::move(u_values)};
+                const cfd::ScalarBoundaryConditions v_conditions{4, std::move(v_values)};
+                const cfd::ScalarBoundaryConditions p_conditions{4, std::move(p_values)};
+                const cfd::PressureCorrectionBoundaryConditions correction{4, std::move(corrections)};
+                const cfd::Index face_id{find_boundary_face(mesh, boundary_id)};
+                const cfd::Vector2 &area{mesh.face_area_vectors()[face_id]};
+                const bool vertical{boundary_id == right_boundary_id || boundary_id == left_boundary_id};
+                const bool normal_prescribed{rotated ? u_type == Type::Dirichlet && v_type == Type::Dirichlet
+                                                     : (vertical ? u_type : v_type) == Type::Dirichlet};
+                const double supplied_flux{normal_prescribed ? u_conditions[boundary_id].value * area.x +
+                                                                   v_conditions[boundary_id].value * area.y
+                                                             : 0.03125};
+                cfd::FaceFluxField flux{mesh.face_count()};
+                flux[face_id] = supplied_flux;
+                cfd::CellVelocityField velocity{mesh.cell_count()};
+                cfd::CellScalarField pressure{mesh.cell_count()};
+                auto options{test_options()};
+                options.maximum_iterations = 1;
+                cfd::IncompressibleSimpleSolver solver{mesh, 1.0, 1.0, cfd::ScalarConvectionScheme::Linear, options};
+                static_cast<void>(
+                    solver.solve(u_conditions, v_conditions, p_conditions, correction, velocity, pressure, flux));
+                require(flux[face_id] == supplied_flux, "SIMPLE changed a compatible imposed boundary flux.");
+                if (normal_prescribed)
+                {
+                    flux[face_id] += 0.03125;
+                    require_boundary_rejection_is_transactional(mesh, u_conditions, v_conditions, p_conditions,
+                                                                correction, flux,
+                                                                "incompatible with its prescribed normal velocity");
+                }
+            }
+        }
+    }
+}
+
+void test_impermeable_wall_rejects_even_tiny_nonzero_flux()
+{
+    for (const bool rotated : {false, true})
+    {
+        const auto built{cfd::build_mesh(make_boundary_compatibility_raw_mesh(rotated))};
+        const cfd::Mesh &mesh{built.mesh};
+        const auto velocity_conditions{uniform_scalar_conditions(mesh, cfd::ScalarBoundaryConditionType::Dirichlet)};
+        const auto pressure_conditions{uniform_scalar_conditions(mesh, cfd::ScalarBoundaryConditionType::Neumann)};
+        const auto correction{
+            uniform_pressure_correction_conditions(mesh, cfd::PressureCorrectionBoundaryConditionType::FixedMassFlux)};
+        for (const cfd::BoundaryId boundary_id : std::array{bottom_boundary_id, right_boundary_id})
+        {
+            cfd::FaceFluxField flux{mesh.face_count()};
+            flux[find_boundary_face(mesh, boundary_id)] = 1.0e-20;
+            require_boundary_rejection_is_transactional(mesh, velocity_conditions, velocity_conditions,
+                                                        pressure_conditions, correction, flux,
+                                                        "incompatible with its prescribed normal velocity");
+        }
+    }
+}
+
+void test_prescribed_flux_roundoff_with_oblique_cancellation()
+{
+    const auto built{cfd::build_mesh(make_boundary_compatibility_raw_mesh(true))};
+    const cfd::Mesh &mesh{built.mesh};
+    using Type = cfd::ScalarBoundaryConditionType;
+    const cfd::ScalarBoundaryConditions u_conditions{
+        4, {{Type::Dirichlet, 4.0}, {Type::Dirichlet, 0.0}, {Type::Neumann, 0.0}, {Type::Dirichlet, 0.0}}};
+    const cfd::ScalarBoundaryConditions v_conditions{
+        4, {{Type::Dirichlet, 3.0}, {Type::Dirichlet, 0.0}, {Type::Neumann, 0.0}, {Type::Dirichlet, 0.0}}};
+    const cfd::ScalarBoundaryConditions p_conditions{
+        4, {{Type::Neumann, 0.0}, {Type::Neumann, 0.0}, {Type::Dirichlet, 0.0}, {Type::Neumann, 0.0}}};
+    using Correction = cfd::PressureCorrectionBoundaryConditionType;
+    const cfd::PressureCorrectionBoundaryConditions correction{
+        4,
+        {Correction::FixedMassFlux, Correction::FixedMassFlux, Correction::FixedPressure, Correction::FixedMassFlux}};
+    const cfd::Index face_id{find_boundary_face(mesh, bottom_boundary_id)};
+    const cfd::Vector2 &area{mesh.face_area_vectors()[face_id]};
+    const double computed_flux{4.0 * area.x + 3.0 * area.y};
+    for (const double supplied_flux :
+         std::array{computed_flux, std::nextafter(computed_flux, std::numeric_limits<double>::infinity()), 1.0e-14})
+    {
+        cfd::FaceFluxField flux{mesh.face_count()};
+        flux[face_id] = supplied_flux;
+        cfd::CellVelocityField velocity{mesh.cell_count()};
+        cfd::CellScalarField pressure{mesh.cell_count()};
+        auto options{test_options()};
+        options.maximum_iterations = 1;
+        cfd::IncompressibleSimpleSolver solver{mesh, 1.0, 1.0, cfd::ScalarConvectionScheme::Linear, options};
+        static_cast<void>(solver.solve(u_conditions, v_conditions, p_conditions, correction, velocity, pressure, flux));
+        require(flux[face_id] == supplied_flux, "SIMPLE changed a roundoff-compatible prescribed flux.");
+    }
+    cfd::FaceFluxField incompatible{mesh.face_count()};
+    incompatible[face_id] = 1.0e-8;
+    require_boundary_rejection_is_transactional(mesh, u_conditions, v_conditions, p_conditions, correction,
+                                                incompatible, "incompatible with its prescribed normal velocity");
+}
+
+void test_velocity_compatibility_checks_each_orientation_in_a_boundary_group()
+{
+    auto raw{make_boundary_compatibility_raw_mesh(false)};
+    raw.boundary_groups = {{0, "wall"}, {1, "mixed_orientation"}};
+    for (auto &edge : raw.boundary_edges)
+    {
+        edge.boundary_id = edge.boundary_id == bottom_boundary_id || edge.boundary_id == right_boundary_id ? 1 : 0;
+    }
+    const auto built{cfd::build_mesh(std::move(raw))};
+    const cfd::Mesh &mesh{built.mesh};
+    using Type = cfd::ScalarBoundaryConditionType;
+    const cfd::ScalarBoundaryConditions u_conditions{2, {{Type::Dirichlet, 0.0}, {Type::Dirichlet, 0.0}}};
+    const cfd::ScalarBoundaryConditions v_conditions{2, {{Type::Dirichlet, 0.0}, {Type::Neumann, 0.0}}};
+    const cfd::ScalarBoundaryConditions p_conditions{2, {{Type::Neumann, 0.0}, {Type::Dirichlet, 0.0}}};
+    const cfd::PressureCorrectionBoundaryConditions correction{
+        2,
+        {cfd::PressureCorrectionBoundaryConditionType::FixedMassFlux,
+         cfd::PressureCorrectionBoundaryConditionType::FixedPressure}};
+    cfd::Index vertical_face{cfd::invalid_index};
+    for (cfd::Index face_id = 0; face_id < mesh.face_count(); ++face_id)
+    {
+        if (mesh.face_boundary_ids()[face_id] == 1 && mesh.face_area_vectors()[face_id].x != 0.0)
+        {
+            vertical_face = face_id;
+        }
+    }
+    require(vertical_face != cfd::invalid_index, "Mixed-orientation group has no vertical face.");
+    const cfd::FaceFluxField flux{mesh.face_count()};
+    require_boundary_rejection_is_transactional(mesh, u_conditions, v_conditions, p_conditions, correction, flux,
+                                                "FixedPressure boundary face " + std::to_string(vertical_face));
+}
+
 void test_all_fixed_mass_flux_compatibility_and_gauge_path()
 {
     cfd::MeshBuildResult build_result{cfd::build_mesh(make_channel_raw_mesh(2, 2))};
@@ -364,10 +654,11 @@ void test_all_fixed_mass_flux_compatibility_and_gauge_path()
         cfd::CellScalarField pressure{mesh.cell_count()};
         cfd::FaceFluxField mass_flux{mesh.face_count()};
         mass_flux[0] = 1.0;
+        const auto free_velocity_conditions{uniform_scalar_conditions(mesh, cfd::ScalarBoundaryConditionType::Neumann)};
         cfd::IncompressibleSimpleSolver solver{mesh, 1.0, 0.1, cfd::ScalarConvectionScheme::Linear, test_options()};
         require_throws<std::runtime_error>(
             [&]() {
-                static_cast<void>(solver.solve(velocity_conditions, velocity_conditions, pressure_conditions,
+                static_cast<void>(solver.solve(free_velocity_conditions, free_velocity_conditions, pressure_conditions,
                                                pressure_correction_conditions, velocity, pressure, mass_flux));
             },
             "SIMPLE accepted globally incompatible all-FixedMassFlux boundary flow.");
@@ -393,6 +684,10 @@ void test_fixed_pressure_anchored_zero_flow_path()
     const cfd::Mesh &mesh{build_result.mesh};
     const cfd::ScalarBoundaryConditions velocity_conditions{
         uniform_scalar_conditions(mesh, cfd::ScalarBoundaryConditionType::Dirichlet)};
+    std::vector<cfd::ScalarBoundaryCondition> u_values(mesh.boundary_groups().size(),
+                                                       {cfd::ScalarBoundaryConditionType::Dirichlet, 0.0});
+    u_values.at(left_boundary_id) = {cfd::ScalarBoundaryConditionType::Neumann, 0.0};
+    const cfd::ScalarBoundaryConditions u_conditions{mesh.boundary_groups().size(), std::move(u_values)};
     std::vector<cfd::ScalarBoundaryCondition> pressure_values(mesh.boundary_groups().size(),
                                                               {cfd::ScalarBoundaryConditionType::Neumann, 0.0});
     pressure_values.at(left_boundary_id) = {cfd::ScalarBoundaryConditionType::Dirichlet, 0.0};
@@ -409,9 +704,9 @@ void test_fixed_pressure_anchored_zero_flow_path()
     options.maximum_iterations = 2;
     cfd::IncompressibleSimpleSolver solver{mesh, 1.0, 0.1, cfd::ScalarConvectionScheme::Linear, options};
 
-    const cfd::IncompressibleSimpleResult result{solver.solve(velocity_conditions, velocity_conditions,
-                                                              pressure_conditions, pressure_correction_conditions,
-                                                              velocity, pressure, mass_flux)};
+    const cfd::IncompressibleSimpleResult result{solver.solve(u_conditions, velocity_conditions, pressure_conditions,
+                                                              pressure_correction_conditions, velocity, pressure,
+                                                              mass_flux)};
 
     require(result.converged, "FixedPressure-anchored zero-flow case did not converge without an artificial gauge.");
     require(result.maximum_mass_imbalance == 0.0, "FixedPressure-anchored zero flow created mass imbalance.");
@@ -495,7 +790,7 @@ void test_input_validation_precedes_iterations()
 cfd::IncompressibleSimpleResult solve_pressure_driven_channel(
     const cfd::Mesh &mesh, cfd::IncompressibleSimpleOptions options, cfd::CellVelocityField &velocity,
     cfd::CellScalarField &pressure, cfd::FaceFluxField &mass_flux, const bool initialize_exact_pressure = true,
-    const cfd::SimpleIterationCallback &iteration_callback = {})
+    const cfd::SimpleIterationCallback &iteration_callback = {}, const double wall_normal_velocity = 0.0)
 {
     constexpr double length{2.0};
     constexpr double inlet_pressure{0.02};
@@ -509,12 +804,13 @@ cfd::IncompressibleSimpleResult solve_pressure_driven_channel(
         }
     }
     const cfd::ScalarBoundaryConditions velocity_conditions{channel_velocity_conditions(mesh)};
+    const cfd::ScalarBoundaryConditions v_conditions{channel_velocity_conditions(mesh, wall_normal_velocity)};
     const cfd::ScalarBoundaryConditions pressure_conditions{
         channel_pressure_conditions(mesh, inlet_pressure, outlet_pressure)};
     const cfd::PressureCorrectionBoundaryConditions pressure_correction_conditions{
         channel_pressure_correction_conditions(mesh)};
     cfd::IncompressibleSimpleSolver solver{mesh, 1.0, 0.1, cfd::ScalarConvectionScheme::Linear, options};
-    return solver.solve(velocity_conditions, velocity_conditions, pressure_conditions, pressure_correction_conditions,
+    return solver.solve(velocity_conditions, v_conditions, pressure_conditions, pressure_correction_conditions,
                         velocity, pressure, mass_flux, iteration_callback);
 }
 
@@ -527,7 +823,8 @@ struct OneIterationFluxResult
 [[nodiscard]]
 OneIterationFluxResult run_one_iteration_with_flux_relaxation(const cfd::Mesh &mesh, const double relaxation_factor,
                                                               const std::vector<double> &initial_mass_flux,
-                                                              const double momentum_relaxation_factor = 1.0)
+                                                              const double momentum_relaxation_factor = 1.0,
+                                                              const double wall_normal_velocity = 0.0)
 {
     cfd::CellVelocityField velocity{mesh.cell_count()};
     cfd::CellScalarField pressure{mesh.cell_count()};
@@ -539,7 +836,7 @@ OneIterationFluxResult run_one_iteration_with_flux_relaxation(const cfd::Mesh &m
     options.velocity_relative_tolerance = 1.0e-14;
     options.rhie_chow_flux_relaxation_factor = relaxation_factor;
     const cfd::IncompressibleSimpleResult result{
-        solve_pressure_driven_channel(mesh, options, velocity, pressure, mass_flux)};
+        solve_pressure_driven_channel(mesh, options, velocity, pressure, mass_flux, true, {}, wall_normal_velocity)};
     return {result, {mass_flux.values().begin(), mass_flux.values().end()}};
 }
 
@@ -746,10 +1043,11 @@ void test_rhie_chow_flux_relaxation_path()
     // A uniform vector dotted with every owner-oriented area vector is
     // divergence-free. The linear pressure-correction projection therefore
     // preserves the same blend that was applied to the provisional flux.
-    const OneIterationFluxResult unrelaxed{run_one_iteration_with_flux_relaxation(mesh, 1.0, initial_mass_flux)};
+    const OneIterationFluxResult unrelaxed{
+        run_one_iteration_with_flux_relaxation(mesh, 1.0, initial_mass_flux, 1.0, uniform_flux_velocity.y)};
     constexpr double relaxation_factor{0.25};
-    const OneIterationFluxResult relaxed{
-        run_one_iteration_with_flux_relaxation(mesh, relaxation_factor, initial_mass_flux)};
+    const OneIterationFluxResult relaxed{run_one_iteration_with_flux_relaxation(
+        mesh, relaxation_factor, initial_mass_flux, 1.0, uniform_flux_velocity.y)};
     require(unrelaxed.solve_result.maximum_mass_imbalance < 1.0e-12 &&
                 relaxed.solve_result.maximum_mass_imbalance < 1.0e-12,
             "Flux relaxation prevented pressure correction from restoring continuity.");
@@ -1153,6 +1451,18 @@ int main()
         cfd::test::run_test("SIMPLE connected cell-domain precondition", test_rejects_disconnected_cell_domain);
     failure_count +=
         cfd::test::run_test("SIMPLE pressure boundary semantics", test_pressure_boundary_semantic_consistency);
+    failure_count += cfd::test::run_test("SIMPLE rejects prescribed normal velocity at fixed pressure",
+                                         test_rejects_fixed_pressure_with_prescribed_normal_velocity);
+    failure_count += cfd::test::run_test("SIMPLE mixed velocity conditions at fixed pressure",
+                                         test_fixed_pressure_mixed_velocity_conditions_by_face_orientation);
+    failure_count += cfd::test::run_test("SIMPLE imposed flux and velocity compatibility",
+                                         test_fixed_mass_flux_velocity_compatibility_by_face_orientation);
+    failure_count += cfd::test::run_test("SIMPLE impermeable wall flux consistency",
+                                         test_impermeable_wall_rejects_even_tiny_nonzero_flux);
+    failure_count += cfd::test::run_test("SIMPLE oblique prescribed flux roundoff",
+                                         test_prescribed_flux_roundoff_with_oblique_cancellation);
+    failure_count += cfd::test::run_test("SIMPLE per-face orientation in a boundary group",
+                                         test_velocity_compatibility_checks_each_orientation_in_a_boundary_group);
     failure_count += cfd::test::run_test("SIMPLE all-FixedMassFlux compatibility and gauge",
                                          test_all_fixed_mass_flux_compatibility_and_gauge_path);
     failure_count +=
