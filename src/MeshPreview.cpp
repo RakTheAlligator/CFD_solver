@@ -27,7 +27,7 @@ int main(const int argc, char *argv[])
         const std::filesystem::path case_directory{arguments[1]};
         const cfd::input::MeshInput input{cfd::input::read_mesh_dict(case_directory / "system" / "meshDict")};
         cfd::RawMeshData raw_mesh{cfd::generate_mesh(input.geometry, input.generation_options, input.automatic_meshing,
-                                                     input.backward_facing_step_meshing)};
+                                                     input.backward_facing_step_meshing, input.rpa_nozzle_meshing)};
 
         std::cout << "[Mesh generation]\n"
                   << "  Nodes             : " << raw_mesh.nodes.size() << '\n'

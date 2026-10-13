@@ -141,7 +141,7 @@ cfd::input::MeshInput mesh_input()
 cfd::Mesh build_case_mesh(const cfd::input::MeshInput &input)
 {
     return cfd::build_mesh(cfd::generate_mesh(input.geometry, input.generation_options, input.automatic_meshing,
-                                              input.backward_facing_step_meshing))
+                                              input.backward_facing_step_meshing, input.rpa_nozzle_meshing))
         .mesh;
 }
 
@@ -517,7 +517,7 @@ void test_late_coverage_failure_preserves_final_fields()
     const auto results{directory.path() / "results"};
     const auto input{mesh_input()};
     auto raw{cfd::generate_mesh(input.geometry, input.generation_options, input.automatic_meshing,
-                                input.backward_facing_step_meshing)};
+                                input.backward_facing_step_meshing, input.rpa_nozzle_meshing)};
     for (auto &point : raw.nodes)
         point.x += 10.0;
     const auto target{cfd::build_mesh(std::move(raw)).mesh};

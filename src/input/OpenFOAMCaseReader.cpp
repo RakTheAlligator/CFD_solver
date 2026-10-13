@@ -52,6 +52,7 @@ struct ParsedMeshOptions
     MeshGenerationOptions generation;
     AutomaticMeshingOptions automatic;
     BackwardFacingStepMeshingOptions backward_facing_step;
+    RpaNozzleMeshingOptions rpa_nozzle;
 };
 
 [[nodiscard]]
@@ -135,7 +136,8 @@ class CaseParser
 
         GeometryInput geometry{parse_geometry()};
         const ParsedMeshOptions mesh_options{
-            parse_mesh_options(std::holds_alternative<BackwardFacingStepGeometry>(geometry))};
+            parse_mesh_options(std::holds_alternative<BackwardFacingStepGeometry>(geometry),
+                               std::holds_alternative<RpaNozzleGeometry>(geometry))};
 
         expect(TokenKind::End, "end of file");
 
@@ -144,6 +146,7 @@ class CaseParser
             .generation_options = mesh_options.generation,
             .automatic_meshing = mesh_options.automatic,
             .backward_facing_step_meshing = mesh_options.backward_facing_step,
+            .rpa_nozzle_meshing = mesh_options.rpa_nozzle,
         };
     }
 
@@ -876,6 +879,12 @@ class CaseParser
         std::optional<Token> downstream_length;
         std::optional<Token> channel_height;
         std::optional<Token> step_height;
+        std::optional<Token> cad_file;
+        std::optional<Token> cad_units;
+        std::optional<Token> geometric_tolerance;
+        constexpr std::array<std::string_view, 5> rpa_keys{"inletPosition", "outerUpstreamLength", "wallThickness",
+                                                           "downstreamLength", "farfieldRadius"};
+        std::array<std::optional<Token>, 5> rpa_values{};
 
         while (current_.kind != TokenKind::RightBrace)
         {
@@ -889,6 +898,28 @@ class CaseParser
                 }
 
                 type = take_word("the geometry type");
+            }
+            else if (key.text == "file" || key.text == "dxfUnits" || key.text == "geometricTolerance")
+            {
+                auto &entry{key.text == "file" ? cad_file : key.text == "dxfUnits" ? cad_units : geometric_tolerance};
+                if (entry.has_value())
+                {
+                    fail(key.line, "Duplicate geometry entry '" + std::string{key.text} + "'.");
+                }
+                entry = key.text == "geometricTolerance" ? take_number("a finite geometric tolerance")
+                                                         : take_word("a CAD file path or unit");
+            }
+            else if (key.text != "downstreamLength" &&
+                     std::find(rpa_keys.begin(), rpa_keys.end(), key.text) != rpa_keys.end())
+            {
+                const auto index{
+                    static_cast<std::size_t>(std::find(rpa_keys.begin(), rpa_keys.end(), key.text) - rpa_keys.begin())};
+                auto &entry{rpa_values.at(index)};
+                if (entry.has_value())
+                {
+                    fail(key.line, "Duplicate geometry entry '" + std::string{key.text} + "'.");
+                }
+                entry = take_number("a finite RPA geometry parameter");
             }
             else if (key.text == "length")
             {
@@ -957,6 +988,55 @@ class CaseParser
         if (!type.has_value())
         {
             fail_current("geometry requires a type entry.");
+        }
+
+        if (type->text == "rpaNozzle")
+        {
+            if (!cad_file.has_value() || cad_file->text.empty())
+            {
+                fail_current("rpaNozzle geometry requires a nonempty file entry.");
+            }
+            if (length || height || upstream_length || channel_height || step_height)
+            {
+                fail_current("Rectangle/backward-facing-step entries are invalid for rpaNozzle.");
+            }
+            rpa_values.at(3) = downstream_length;
+            for (std::size_t index = 1; index < rpa_values.size(); ++index)
+            {
+                const auto &entry{rpa_values.at(index)};
+                if (entry.has_value() && !(entry->number > 0.0))
+                {
+                    fail_current("RPA geometry lengths/radii must be positive.");
+                }
+            }
+            if (geometric_tolerance && !(geometric_tolerance->number > 0.0))
+            {
+                fail_current("geometricTolerance must be positive.");
+            }
+            const auto optional_number = [](const std::optional<Token> &token) -> std::optional<double> {
+                return token.has_value() ? std::optional<double>{token->number} : std::nullopt;
+            };
+            RpaNozzleGeometry result{
+                .file = std::string{cad_file->text},
+                .geometric_tolerance = geometric_tolerance ? geometric_tolerance->number : 1.0e-6,
+                .dxf_units = cad_units ? std::string{cad_units->text} : "auto",
+                .inlet_position = optional_number(rpa_values.at(0)),
+                .outer_upstream_length = optional_number(rpa_values.at(1)),
+                .wall_thickness = optional_number(rpa_values.at(2)),
+                .downstream_length = optional_number(rpa_values.at(3)),
+                .farfield_radius = optional_number(rpa_values.at(4)),
+            };
+            if (result.dxf_units != "auto" && result.dxf_units != "mm" && result.dxf_units != "cm" &&
+                result.dxf_units != "m" && result.dxf_units != "in")
+            {
+                fail_current("Unsupported dxfUnits; use auto, mm, cm, m or in.");
+            }
+            return result;
+        }
+        if (cad_file || cad_units || geometric_tolerance ||
+            std::any_of(rpa_values.begin(), rpa_values.end(), [](const auto &entry) { return entry.has_value(); }))
+        {
+            fail_current("RPA geometry entries are only valid for rpaNozzle.");
         }
 
         if (type->text == "rectangle")
@@ -1032,7 +1112,7 @@ class CaseParser
     }
 
     [[nodiscard]]
-    ParsedMeshOptions parse_mesh_options(const bool is_backward_facing_step)
+    ParsedMeshOptions parse_mesh_options(const bool is_backward_facing_step, const bool is_rpa_nozzle)
     {
         expect_keyword("mesh");
         expect(TokenKind::LeftBrace, "'{'");
@@ -1045,6 +1125,10 @@ class CaseParser
         std::optional<Token> wall_refinement_layers;
         std::optional<Token> step_refinement_factor;
         std::optional<Token> step_refinement_layers;
+        constexpr std::array<std::string_view, 8> rpa_keys{
+            "convergentRefinementFactor", "throatRefinementFactor", "divergentRefinementFactor", "exitRefinementFactor",
+            "plumeRefinementFactor",      "throatRefinementLength", "exitRefinementLength",      "nearPlumeLength"};
+        std::array<std::optional<Token>, 8> rpa_values{};
 
         while (current_.kind != TokenKind::RightBrace)
         {
@@ -1103,6 +1187,19 @@ class CaseParser
                 }
 
                 wall_refinement_layers = take_number("a wall refinement layer count");
+            }
+            else if (const auto found = std::find(rpa_keys.begin(), rpa_keys.end(), key.text); found != rpa_keys.end())
+            {
+                if (!is_rpa_nozzle)
+                {
+                    fail(key.line, "RPA refinement entries are only valid for rpaNozzle.");
+                }
+                auto &entry{rpa_values.at(static_cast<std::size_t>(found - rpa_keys.begin()))};
+                if (entry.has_value())
+                {
+                    fail(key.line, "Duplicate mesh entry '" + std::string{key.text} + "'.");
+                }
+                entry = take_number("a finite RPA refinement parameter");
             }
             else if (key.text == "stepRefinementFactor")
             {
@@ -1204,6 +1301,39 @@ class CaseParser
             step_options.step_refinement_layers = positive_index(*step_refinement_layers, "stepRefinementLayers");
         }
 
+        RpaNozzleMeshingOptions rpa_options;
+        std::array<double *, 5> factors{&rpa_options.convergent_refinement_factor,
+                                        &rpa_options.throat_refinement_factor, &rpa_options.divergent_refinement_factor,
+                                        &rpa_options.exit_refinement_factor, &rpa_options.plume_refinement_factor};
+        for (std::size_t index = 0; index < rpa_values.size(); ++index)
+        {
+            if (!rpa_values.at(index))
+            {
+                continue;
+            }
+            const double value{rpa_values.at(index)->number};
+            if (!(value > 0.0) || (index < factors.size() && value > 1.0))
+            {
+                fail_current("RPA refinement factors must be in (0,1] and extents positive.");
+            }
+            if (index < factors.size())
+            {
+                *factors.at(index) = value;
+            }
+        }
+        if (rpa_values.at(5))
+        {
+            rpa_options.throat_refinement_length = rpa_values.at(5)->number;
+        }
+        if (rpa_values.at(6))
+        {
+            rpa_options.exit_refinement_length = rpa_values.at(6)->number;
+        }
+        if (rpa_values.at(7))
+        {
+            rpa_options.near_plume_length = rpa_values.at(7)->number;
+        }
+
         return {
             .generation =
                 {
@@ -1212,6 +1342,7 @@ class CaseParser
                 },
             .automatic = automatic_options,
             .backward_facing_step = step_options,
+            .rpa_nozzle = rpa_options,
         };
     }
 
@@ -1329,7 +1460,14 @@ ControlInput read_control_dict(const std::filesystem::path &file_path)
 MeshInput read_mesh_dict(const std::filesystem::path &file_path)
 {
     CaseParser parser{file_path};
-    return parser.parse_mesh_dict();
+    MeshInput input{parser.parse_mesh_dict()};
+    if (auto *nozzle = std::get_if<RpaNozzleGeometry>(&input.geometry); nozzle && nozzle->file.is_relative())
+    {
+        const auto directory{file_path.parent_path()};
+        const auto case_directory{directory.filename() == "system" ? directory.parent_path() : directory};
+        nozzle->file = std::filesystem::absolute(case_directory / nozzle->file).lexically_normal();
+    }
+    return input;
 }
 
 ScalarFieldInput read_scalar_field(const std::filesystem::path &file_path)

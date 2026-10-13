@@ -1,0 +1,2 @@
+# CAD import only; meshing remains in the Gmsh C++ pipeline.
+ezdxf==1.4.3

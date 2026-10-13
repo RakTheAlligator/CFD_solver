@@ -6,6 +6,8 @@
 #include "cfd/meshing/RawMeshData.hpp"
 #include "cfd/meshing/RectangleGeometry.hpp"
 
+#include <optional>
+
 namespace cfd
 {
 
@@ -58,6 +60,30 @@ struct MeshGenerationOptions
     CellType cell_type{CellType::Triangle};
 };
 
+/// RPA-specific size policy. Extents are metres; absent extents use detected
+/// throat/exit scales. maximumGrowthRate controls smooth size-field ramps,
+/// not an exact cell-to-cell ratio on an unstructured mesh.
+struct RpaNozzleMeshingOptions
+{
+    double convergent_refinement_factor{0.75};
+    double throat_refinement_factor{0.25};
+    double divergent_refinement_factor{0.75};
+    double exit_refinement_factor{0.25};
+    double plume_refinement_factor{0.5};
+    std::optional<double> throat_refinement_length{};
+    std::optional<double> exit_refinement_length{};
+    std::optional<double> near_plume_length{};
+};
+
+/// Generates only fluid cells in the Cartesian RPA meridian/plume domain.
+/// CAD import is automatic; this does not implement axisymmetric physics.
+/// @throws std::invalid_argument If domain or meshing options are inconsistent.
+/// @throws std::runtime_error If CAD import or exclusive requested topology fails.
+[[nodiscard]]
+RawMeshData generate_mesh(const RpaNozzleGeometry &geometry, const MeshGenerationOptions &options,
+                          const AutomaticMeshingOptions &automatic_options = {},
+                          const RpaNozzleMeshingOptions &rpa_options = {});
+
 /// Generates a rectangular two-dimensional mesh using Gmsh.
 ///
 /// Gmsh node and physical-group tags are converted to the solver's internal
@@ -97,10 +123,11 @@ RawMeshData generate_mesh(const BackwardFacingStepGeometry &geometry, const Mesh
 [[nodiscard]]
 RawMeshData generate_mesh(const GeometryInput &geometry, const MeshGenerationOptions &options);
 
-/// Dispatches mesh generation with an explicit backward-facing-step policy.
+/// Dispatches mesh generation with explicit geometry-specific policies.
 [[nodiscard]]
 RawMeshData generate_mesh(const GeometryInput &geometry, const MeshGenerationOptions &options,
                           const AutomaticMeshingOptions &automatic_options,
-                          const BackwardFacingStepMeshingOptions &step_options);
+                          const BackwardFacingStepMeshingOptions &step_options,
+                          const RpaNozzleMeshingOptions &rpa_options = {});
 
 } // namespace cfd

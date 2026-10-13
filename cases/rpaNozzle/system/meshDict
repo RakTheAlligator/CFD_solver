@@ -1,0 +1,19 @@
+FoamFile
+{
+    format ascii;
+    class dictionary;
+    object meshDict;
+}
+
+geometry
+{
+    type rpaNozzle;
+    file "constant/geometry/engine.dxf";
+}
+
+mesh
+{
+    cellType quadrilateral;
+    size 0.01;
+    automaticMeshing true;
+}

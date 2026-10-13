@@ -52,12 +52,16 @@ class GmshSession
     GmshSession &operator=(GmshSession &&) = delete;
 };
 
+struct PhysicalBoundaryTags
+{
+    BoundaryGroup group;
+    int physical_tag{};
+};
+
 struct ModelTags
 {
     std::vector<int> surface_tags;
-    int inlet_group_tag{};
-    int wall_group_tag{};
-    int outlet_group_tag{};
+    std::vector<PhysicalBoundaryTags> boundaries;
     bool transfinite_quadrilateral_mesh{};
 };
 
@@ -189,7 +193,11 @@ ModelTags add_physical_groups(const std::vector<int> &surface_tags, const std::v
     const int fluid_group_tag{gmsh::model::addPhysicalGroup(2, surface_tags)};
     gmsh::model::setPhysicalName(2, fluid_group_tag, "fluid");
 
-    return {surface_tags, inlet_group_tag, wall_group_tag, outlet_group_tag, false};
+    return {surface_tags,
+            {{{inlet_boundary_id, "inlet"}, inlet_group_tag},
+             {{wall_boundary_id, "wall"}, wall_group_tag},
+             {{outlet_boundary_id, "outlet"}, outlet_group_tag}},
+            false};
 }
 
 ModelTags create_rectangle(const RectangleGeometry &geometry, const double mesh_size)
@@ -925,21 +933,202 @@ RawMeshData generate_and_extract_mesh(const ModelTags &tags, const MeshGeneratio
 
     // Expose stable solver boundary IDs rather than the physical-group tags
     // assigned internally by Gmsh.
-    raw_mesh.boundary_groups = {
-        {inlet_boundary_id, "inlet"},
-        {wall_boundary_id, "wall"},
-        {outlet_boundary_id, "outlet"},
-    };
+    for (const PhysicalBoundaryTags &boundary : tags.boundaries)
+    {
+        raw_mesh.boundary_groups.push_back(boundary.group);
+    }
 
     const auto node_id_by_gmsh_tag{extract_nodes(raw_mesh)};
 
     extract_cells(raw_mesh, node_id_by_gmsh_tag, tags.surface_tags, options.cell_type);
 
-    extract_boundary_edges(raw_mesh, node_id_by_gmsh_tag, tags.inlet_group_tag, inlet_boundary_id);
-    extract_boundary_edges(raw_mesh, node_id_by_gmsh_tag, tags.wall_group_tag, wall_boundary_id);
-    extract_boundary_edges(raw_mesh, node_id_by_gmsh_tag, tags.outlet_group_tag, outlet_boundary_id);
+    for (const PhysicalBoundaryTags &boundary : tags.boundaries)
+    {
+        extract_boundary_edges(raw_mesh, node_id_by_gmsh_tag, boundary.physical_tag, boundary.group.id);
+    }
 
     return raw_mesh;
+}
+
+ModelTags create_rpa_nozzle(const RpaNozzleDomain &domain, const MeshGenerationOptions &options,
+                            const AutomaticMeshingOptions &automatic, const RpaNozzleMeshingOptions &rpa)
+{
+    const auto add_point = [&](const Point2 &point) {
+        return gmsh::model::geo::addPoint(point.x, point.y, 0.0, options.mesh_size);
+    };
+
+    struct WallTags
+    {
+        int first_point{};
+        int last_point{};
+        std::vector<int> curves;
+    };
+
+    const auto add_wall = [&](const std::vector<Point2> &points) {
+        std::vector<int> tags;
+        tags.reserve(points.size());
+        for (const Point2 &point : points)
+        {
+            tags.push_back(add_point(point));
+        }
+        WallTags wall{tags.front(), tags.back(), {}};
+        std::vector<int> segment{tags.front()};
+        for (Index index = 1; index < points.size(); ++index)
+        {
+            segment.push_back(tags[index]);
+            if (index == points.size() - 1 ||
+                std::binary_search(domain.curve_junctions.begin(), domain.curve_junctions.end(), points[index].x))
+            {
+                wall.curves.push_back(gmsh::model::geo::addPolyline(segment));
+                segment.clear();
+                segment.push_back(tags[index]);
+            }
+        }
+        return wall;
+    };
+    const auto inner_points{add_wall(domain.inner_wall)};
+    const auto outer_points{add_wall(domain.outer_wall)};
+    const int axis_start{add_point({domain.inner_wall.front().x, 0.0})};
+    const int axis_end{add_point({domain.downstream_x, 0.0})};
+    const int far_end{add_point({domain.downstream_x, domain.farfield_radius})};
+    const int far_start{add_point({domain.outer_wall.front().x, domain.farfield_radius})};
+    const int axis{gmsh::model::geo::addLine(axis_start, axis_end)};
+    const int downstream{gmsh::model::geo::addLine(axis_end, far_end)};
+    const int radial{gmsh::model::geo::addLine(far_end, far_start)};
+    const int upstream{gmsh::model::geo::addLine(far_start, outer_points.first_point)};
+    const int lip{gmsh::model::geo::addLine(outer_points.last_point, inner_points.last_point)};
+    const int inlet{gmsh::model::geo::addLine(inner_points.first_point, axis_start)};
+    std::vector<int> loop_curves{axis, downstream, radial, upstream};
+    loop_curves.insert(loop_curves.end(), outer_points.curves.begin(), outer_points.curves.end());
+    loop_curves.push_back(lip);
+    for (auto curve = inner_points.curves.rbegin(); curve != inner_points.curves.rend(); ++curve)
+    {
+        loop_curves.push_back(-*curve);
+    }
+    loop_curves.push_back(inlet);
+    const int loop{gmsh::model::geo::addCurveLoop(loop_curves)};
+    const int surface{gmsh::model::geo::addPlaneSurface({loop})};
+    gmsh::model::geo::synchronize();
+    ModelTags result;
+    result.surface_tags = {surface};
+    const std::vector<std::pair<std::string, std::vector<int>>> boundaries{{"inlet", {inlet}},
+                                                                           {"axis", {axis}},
+                                                                           {"inner_wall", inner_points.curves},
+                                                                           {"outer_wall", outer_points.curves},
+                                                                           {"nozzle_lip", {lip}},
+                                                                           {"farfield_upstream", {upstream}},
+                                                                           {"farfield_radial", {radial}},
+                                                                           {"farfield_downstream", {downstream}}};
+    for (const auto &[name, curves] : boundaries)
+    {
+        const int tag{gmsh::model::addPhysicalGroup(1, curves)};
+        gmsh::model::setPhysicalName(1, tag, name);
+        result.boundaries.push_back({{result.boundaries.size(), name}, tag});
+    }
+    const int fluid{gmsh::model::addPhysicalGroup(2, {surface})};
+    gmsh::model::setPhysicalName(2, fluid, "fluid");
+
+    const Point2 exit{domain.inner_wall.back()};
+    const double diameter{2.0 * exit.y};
+    const double nozzle_length{exit.x - domain.inner_wall.front().x};
+    const double downstream_length{domain.downstream_x - exit.x};
+    const auto extent = [](const std::optional<double> &requested, const double fallback, const double available) {
+        const double value{requested.value_or(std::min(fallback, available))};
+        if (!std::isfinite(value) || !(value > 0.0) || value > available)
+        {
+            throw std::invalid_argument("RPA refinement extent must be positive and fit inside the domain.");
+        }
+        return value;
+    };
+    const double throat_width{
+        extent(rpa.throat_refinement_length, std::max(4.0 * options.mesh_size, 2.0 * domain.throat.y), nozzle_length)};
+    const double exit_width{
+        extent(rpa.exit_refinement_length, std::max(4.0 * options.mesh_size, diameter), nozzle_length)};
+    const double plume_length{extent(rpa.near_plume_length, 2.0 * diameter, downstream_length)};
+    for (const double factor :
+         {rpa.convergent_refinement_factor, rpa.throat_refinement_factor, rpa.divergent_refinement_factor,
+          rpa.exit_refinement_factor, rpa.plume_refinement_factor})
+    {
+        if (!std::isfinite(factor) || !(factor > 0.0) || factor > 1.0)
+        {
+            throw std::invalid_argument("RPA refinement factors must be finite and in (0,1].");
+        }
+    }
+    if (automatic.enabled)
+    {
+        std::vector<double> fields;
+        const auto box = [&](const double x_min, const double x_max, const double r_max, const double factor) {
+            const int tag{gmsh::model::mesh::field::add("Box")};
+            gmsh::model::mesh::field::setNumber(tag, "VIn", options.mesh_size * factor);
+            gmsh::model::mesh::field::setNumber(tag, "VOut", options.mesh_size);
+            gmsh::model::mesh::field::setNumber(tag, "XMin", x_min);
+            gmsh::model::mesh::field::setNumber(tag, "XMax", x_max);
+            gmsh::model::mesh::field::setNumber(tag, "YMin", 0.0);
+            gmsh::model::mesh::field::setNumber(tag, "YMax", r_max);
+            gmsh::model::mesh::field::setNumber(
+                tag, "Thickness", options.mesh_size * (1.0 - factor) / (automatic.maximum_growth_rate - 1.0));
+            fields.push_back(tag);
+        };
+        box(domain.inner_wall.front().x, domain.throat.x, diameter, rpa.convergent_refinement_factor);
+        box(domain.throat.x, exit.x, diameter, rpa.divergent_refinement_factor);
+        box(domain.throat.x - 0.5 * throat_width, domain.throat.x + 0.5 * throat_width, 2.0 * domain.throat.y,
+            rpa.throat_refinement_factor);
+        box(exit.x - 0.5 * exit_width, exit.x + 0.5 * exit_width, diameter, rpa.exit_refinement_factor);
+        box(exit.x, exit.x + plume_length, diameter, rpa.plume_refinement_factor);
+
+        const int distance{gmsh::model::mesh::field::add("Distance")};
+        std::vector<double> wall_curves;
+        wall_curves.reserve(inner_points.curves.size() + outer_points.curves.size());
+        for (const int curve : inner_points.curves)
+        {
+            wall_curves.push_back(curve);
+        }
+        for (const int curve : outer_points.curves)
+        {
+            wall_curves.push_back(curve);
+        }
+        gmsh::model::mesh::field::setNumbers(distance, "CurvesList", wall_curves);
+        gmsh::model::mesh::field::setNumber(distance, "Sampling", 1000);
+        const int wall{gmsh::model::mesh::field::add("Threshold")};
+        gmsh::model::mesh::field::setNumber(wall, "InField", distance);
+        gmsh::model::mesh::field::setNumber(wall, "SizeMin", options.mesh_size * automatic.wall_refinement_factor);
+        gmsh::model::mesh::field::setNumber(wall, "SizeMax", options.mesh_size);
+        gmsh::model::mesh::field::setNumber(wall, "DistMin", 0.0);
+        gmsh::model::mesh::field::setNumber(wall, "DistMax",
+                                            std::max(options.mesh_size * automatic.wall_refinement_factor *
+                                                         static_cast<double>(automatic.wall_refinement_layers),
+                                                     options.mesh_size * (1.0 - automatic.wall_refinement_factor) /
+                                                         (automatic.maximum_growth_rate - 1.0)));
+        fields.push_back(wall);
+        // A finite lip and a short upstream exterior edge impose geometric
+        // sizes even when the nominal regional targets are much coarser.
+        // Extend these mandatory small sizes smoothly into the background.
+        const int corner_distance{gmsh::model::mesh::field::add("Distance")};
+        gmsh::model::mesh::field::setNumbers(corner_distance, "PointsList",
+                                             {static_cast<double>(outer_points.first_point),
+                                              static_cast<double>(outer_points.last_point),
+                                              static_cast<double>(inner_points.last_point)});
+        const double corner_size{std::min(options.mesh_size, 0.5 * (domain.outer_wall.back().y - exit.y))};
+        const int corner{gmsh::model::mesh::field::add("Threshold")};
+        gmsh::model::mesh::field::setNumber(corner, "InField", corner_distance);
+        gmsh::model::mesh::field::setNumber(corner, "SizeMin", corner_size);
+        gmsh::model::mesh::field::setNumber(corner, "SizeMax", options.mesh_size);
+        gmsh::model::mesh::field::setNumber(corner, "DistMin", 0.0);
+        gmsh::model::mesh::field::setNumber(corner, "DistMax",
+                                            (options.mesh_size - corner_size) / (automatic.maximum_growth_rate - 1.0));
+        fields.push_back(corner);
+        const int minimum{gmsh::model::mesh::field::add("Min")};
+        gmsh::model::mesh::field::setNumbers(minimum, "FieldsList", fields);
+        gmsh::model::mesh::field::setAsBackgroundMesh(minimum);
+        gmsh::option::setNumber("Mesh.MeshSizeExtendFromBoundary", 0);
+    }
+    // Gmsh subdivision completes recombination into exclusively first-order
+    // quadrilaterals; extraction still rejects any unexpected element type.
+    if (options.cell_type == CellType::Quadrilateral)
+    {
+        gmsh::option::setNumber("Mesh.SubdivisionAlgorithm", 1);
+    }
+    return result;
 }
 
 void require_growth_rate(const std::vector<double> &spacings, const double maximum_growth_rate,
@@ -1106,16 +1295,40 @@ RawMeshData generate_mesh(const GeometryInput &geometry, const MeshGenerationOpt
     return generate_mesh(geometry, options, AutomaticMeshingOptions{}, BackwardFacingStepMeshingOptions{});
 }
 
+RawMeshData generate_mesh(const RpaNozzleGeometry &geometry, const MeshGenerationOptions &options,
+                          const AutomaticMeshingOptions &automatic_options, const RpaNozzleMeshingOptions &rpa_options)
+{
+    validate_mesh_generation_options(options);
+    validate_automatic_meshing_options(automatic_options);
+    const RpaNozzleDomain domain{read_rpa_nozzle_domain(geometry)};
+    GmshSession session;
+    gmsh::option::setNumber("General.Terminal", 0);
+    gmsh::model::add("rpa_nozzle");
+    try
+    {
+        return generate_and_extract_mesh(create_rpa_nozzle(domain, options, automatic_options, rpa_options), options);
+    }
+    catch (const std::string &error)
+    {
+        throw std::runtime_error("RPA Gmsh meshing failed: " + error);
+    }
+}
+
 RawMeshData generate_mesh(const GeometryInput &geometry, const MeshGenerationOptions &options,
                           const AutomaticMeshingOptions &automatic_options,
-                          const BackwardFacingStepMeshingOptions &step_options)
+                          const BackwardFacingStepMeshingOptions &step_options,
+                          const RpaNozzleMeshingOptions &rpa_options)
 {
     return std::visit(
-        [&options, &automatic_options, &step_options](const auto &selected_geometry) {
+        [&options, &automatic_options, &step_options, &rpa_options](const auto &selected_geometry) {
             using Geometry = std::remove_cvref_t<decltype(selected_geometry)>;
             if constexpr (std::is_same_v<Geometry, BackwardFacingStepGeometry>)
             {
                 return generate_mesh(selected_geometry, options, automatic_options, step_options);
+            }
+            else if constexpr (std::is_same_v<Geometry, RpaNozzleGeometry>)
+            {
+                return generate_mesh(selected_geometry, options, automatic_options, rpa_options);
             }
             else
             {
