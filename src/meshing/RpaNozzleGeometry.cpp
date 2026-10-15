@@ -117,31 +117,16 @@ std::string import_cad(const RpaNozzleGeometry &geometry)
     return output;
 }
 
-double positive_option(const std::optional<double> &option, const double default_value, const char *name)
+double positive_factor(double value, const char *name)
 {
-    const double value{option.value_or(default_value)};
     if (!std::isfinite(value) || !(value > 0.0))
-    {
         throw std::invalid_argument(std::string{"RPA "} + name + " must be finite and positive.");
-    }
     return value;
-}
-
-Point2 point_at_x(const std::vector<Point2> &points, const double x)
-{
-    const auto upper{std::upper_bound(points.begin(), points.end(), x,
-                                      [](double value, const Point2 &point) { return value < point.x; })};
-    if (upper == points.begin() || upper == points.end())
-    {
-        return upper == points.begin() ? points.front() : points.back();
-    }
-    const Point2 &left{*(upper - 1)};
-    return {x, left.y + (upper->y - left.y) * ((x - left.x) / (upper->x - left.x))};
 }
 
 void trim_upstream(std::vector<Point2> &points, const double x)
 {
-    const Point2 first{point_at_x(points, x)};
+    const Point2 first{interpolate_rpa_profile(points, x)};
     const auto after{std::upper_bound(points.begin(), points.end(), x,
                                       [](double value, const Point2 &point) { return value < point.x; })};
     points.erase(points.begin(), after);
@@ -149,6 +134,18 @@ void trim_upstream(std::vector<Point2> &points, const double x)
 }
 
 } // namespace
+
+Point2 interpolate_rpa_profile(const std::span<const Point2> points, double x)
+{
+    if (points.empty())
+        throw std::invalid_argument("RPA profile must not be empty.");
+    const auto upper{std::upper_bound(points.begin(), points.end(), x,
+                                      [](double value, const Point2 &point) { return value < point.x; })};
+    if (upper == points.begin() || upper == points.end())
+        return upper == points.begin() ? points.front() : points.back();
+    const auto &left{*(upper - 1)};
+    return {x, std::lerp(left.y, upper->y, (x - left.x) / (upper->x - left.x))};
+}
 
 RpaNozzleDomain read_rpa_nozzle_domain(const RpaNozzleGeometry &geometry)
 {
@@ -169,6 +166,7 @@ RpaNozzleDomain read_rpa_nozzle_domain(const RpaNozzleGeometry &geometry)
         throw std::runtime_error("Invalid RPA CAD adapter profile header.");
     }
     RpaNozzleDomain domain;
+    domain.geometric_tolerance = geometry.geometric_tolerance;
     domain.inner_wall.resize(count);
     double previous_x{-std::numeric_limits<double>::infinity()};
     for (Point2 &point : domain.inner_wall)
@@ -209,40 +207,28 @@ RpaNozzleDomain read_rpa_nozzle_domain(const RpaNozzleGeometry &geometry)
     }
     domain.throat = *throat;
     const Point2 exit{domain.inner_wall.back()};
-    const double diameter{2.0 * exit.y};
-    const double inlet_x{geometry.inlet_position.value_or(domain.inner_wall.front().x)};
-    if (!std::isfinite(inlet_x) || inlet_x < domain.inner_wall.front().x || !(inlet_x < domain.throat.x))
-    {
-        throw std::invalid_argument("RPA inletPosition must lie on the profile upstream of the throat.");
-    }
-    trim_upstream(domain.inner_wall, inlet_x);
-    const double exterior_length{positive_option(
-        geometry.outer_upstream_length, std::min(std::max(exit.x - domain.throat.x, 1.5 * diameter), exit.x - inlet_x),
-        "outerUpstreamLength")};
-    if (exterior_length > exit.x - inlet_x)
-    {
-        throw std::invalid_argument("RPA outerUpstreamLength exceeds the available upstream contour.");
-    }
-    const double thickness{positive_option(geometry.wall_thickness, 0.01 * diameter, "wallThickness")};
+    const double available{exit.x - domain.inner_wall.front().x};
+    const double exterior_length{geometry.upstream_factor
+                                     ? positive_factor(*geometry.upstream_factor, "box.upstreamFactor") * exit.y
+                                     : available};
+    if (!std::isfinite(exterior_length) || exterior_length > available || !(exterior_length > 0.0))
+        throw std::invalid_argument("RPA box.upstreamFactor exceeds the available engine profile.");
+    const double thickness{positive_factor(geometry.wall_thickness_factor, "engine.wallThicknessFactor") * exit.y};
     domain.outer_wall = domain.inner_wall;
     trim_upstream(domain.outer_wall, exit.x - exterior_length);
-    for (Point2 &point : domain.outer_wall)
+    for (auto &point : domain.outer_wall)
     {
         point.y += thickness;
+        if (!std::isfinite(point.y) || !(point.y > interpolate_rpa_profile(domain.inner_wall, point.x).y))
+            throw std::invalid_argument("RPA fictitious shell thickness is not representable.");
     }
-    domain.farfield_radius = positive_option(geometry.farfield_radius, 5.0 * diameter, "farfieldRadius");
-    for (const Point2 &point : domain.outer_wall)
-    {
-        if (!std::isfinite(point.y) || !(point.y < domain.farfield_radius))
-        {
-            throw std::invalid_argument("RPA farfieldRadius must exceed the entire exterior wall radius.");
-        }
-    }
-    domain.downstream_x = exit.x + positive_option(geometry.downstream_length, 10.0 * diameter, "downstreamLength");
+    domain.farfield_radius = positive_factor(geometry.outer_radius_factor, "box.outerRadiusFactor") * exit.y;
+    for (const auto &point : domain.outer_wall)
+        if (!std::isfinite(domain.farfield_radius) || !(point.y < domain.farfield_radius))
+            throw std::invalid_argument("RPA box.outerRadiusFactor must enclose the entire exterior wall.");
+    domain.downstream_x = exit.x + positive_factor(geometry.downstream_factor, "box.downstreamFactor") * exit.y;
     if (!std::isfinite(domain.downstream_x) || !(domain.downstream_x > exit.x))
-    {
         throw std::invalid_argument("RPA downstream extent is not representable.");
-    }
     return domain;
 }
 

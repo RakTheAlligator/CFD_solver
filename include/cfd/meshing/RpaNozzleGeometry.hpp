@@ -4,6 +4,7 @@
 
 #include <filesystem>
 #include <optional>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -18,12 +19,19 @@ struct RpaNozzleGeometry
     double geometric_tolerance{1.0e-6};
     /// Overrides absent DXF units: auto, mm, cm, m or in. Conflicts are rejected.
     std::string dxf_units{"auto"};
-    std::optional<double> inlet_position{};
-    std::optional<double> outer_upstream_length{};
     /// Radial offset of the fictitious wall, not a mechanical wall design.
-    std::optional<double> wall_thickness{};
-    std::optional<double> downstream_length{};
-    std::optional<double> farfield_radius{};
+    double wall_thickness_factor{0.02};
+    /// Absent means the complete available engine length.
+    std::optional<double> upstream_factor{};
+    double downstream_factor{80.0};
+    double outer_radius_factor{65.0};
+};
+
+/// Geometry of fluid-region interfaces, independent of cell counts.
+struct RpaRegionLayoutOptions
+{
+    double band_thickness_factor{0.5};
+    double plume_outlet_radius_factor{16.0};
 };
 
 /// Validated, flattened meridian and fictitious exterior wall in Cartesian (x,r).
@@ -38,7 +46,11 @@ struct RpaNozzleDomain
     Point2 throat;
     double downstream_x{};
     double farfield_radius{};
+    double geometric_tolerance{1.0e-6};
 };
+
+/// Linear interpolation of the validated, increasing-x flattened CAD profile.
+[[nodiscard]] Point2 interpolate_rpa_profile(std::span<const Point2> profile, double x);
 
 /// Imports CAD using the configured Python/ezdxf adapter, validates r(x), and
 /// applies the optional domain extents. No meshing is performed here.

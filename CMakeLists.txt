@@ -85,6 +85,10 @@ add_library(
     src/mesh/MeshStatistics.cpp
 
     src/meshing/GmshMesher.cpp
+    src/meshing/MeshSizeField.cpp
+    src/meshing/RpaMeshDiagnostics.cpp
+    src/meshing/RpaRegionLayout.cpp
+    src/meshing/RpaMeshDiscretization.cpp
     src/meshing/RpaNozzleGeometry.cpp
     src/meshing/RawMeshValidation.cpp
 
@@ -514,6 +518,15 @@ if(BUILD_TESTING)
             --write-fixtures "${PROJECT_BINARY_DIR}/rpa-test-fixtures"
             COMMAND_ERROR_IS_FATAL ANY)
         cfd_add_test(cfd_rpa_nozzle_tests rpa_nozzle tests/RpaNozzleTests.cpp)
+        set_tests_properties(rpa_nozzle PROPERTIES LABELS "rpa;fast")
+        add_test(NAME rpa_nozzle_integration COMMAND cfd_rpa_nozzle_tests --integration)
+        set_tests_properties(rpa_nozzle_integration PROPERTIES LABELS "rpa;integration")
+        option(BUILD_RPA_PARAMETRIC_TESTS "Enable the extended RPA Gmsh parameter matrix in CTest" OFF)
+        if(BUILD_RPA_PARAMETRIC_TESTS)
+            add_test(NAME rpa_nozzle_parametric COMMAND cfd_rpa_nozzle_tests --parametric)
+            set_tests_properties(rpa_nozzle_parametric PROPERTIES LABELS "rpa;parametric")
+        endif()
+        target_include_directories(cfd_rpa_nozzle_tests PRIVATE src/meshing)
         target_compile_definitions(cfd_rpa_nozzle_tests PRIVATE
             CFD_RPA_REFERENCE_DXF="${PROJECT_SOURCE_DIR}/cases/rpaNozzle/constant/geometry/engine.dxf"
             CFD_RPA_TEST_FIXTURES="${PROJECT_BINARY_DIR}/rpa-test-fixtures")

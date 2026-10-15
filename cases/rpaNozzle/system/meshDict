@@ -8,12 +8,28 @@ FoamFile
 geometry
 {
     type rpaNozzle;
-    file "constant/geometry/engine.dxf";
+    engine
+    {
+        file "constant/geometry/engine.dxf";
+        wallThicknessFactor 0.02;
+    }
+    box
+    {
+        upstreamFactor auto;
+        downstreamFactor 20.0;
+        outerRadiusFactor 10.0;
+    }
+}
+
+regions
+{
+    bandThicknessFactor 0.5;
+    plumeOutletRadiusFactor 6.0;
 }
 
 mesh
 {
-    cellType quadrilateral;
-    size 0.01;
-    automaticMeshing true;
+    cellType hybrid;
+    baseCellSize 0.01;
+    minCellQuality 0.05;
 }

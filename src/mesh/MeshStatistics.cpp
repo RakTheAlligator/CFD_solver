@@ -60,6 +60,8 @@ MeshStatistics compute_mesh_statistics(const Mesh &mesh)
     ScalarAccumulator cell_quality_accumulator;
     ScalarAccumulator non_orthogonality_accumulator;
     ScalarAccumulator neighbor_cell_size_ratio_accumulator;
+    ScalarAccumulator aspect_accumulator;
+    ScalarAccumulator skewness_accumulator;
 
     double maximum_non_orthogonality{-std::numeric_limits<double>::infinity()};
     double maximum_neighbor_cell_size_ratio{-std::numeric_limits<double>::infinity()};
@@ -70,6 +72,14 @@ MeshStatistics compute_mesh_statistics(const Mesh &mesh)
         if (adjacency.is_boundary())
         {
             ++statistics.boundary_face_count;
+            const auto &owner{mesh.cell_centers()[adjacency.owner]};
+            const auto &face{mesh.face_centers()[face_id]};
+            const auto &s{mesh.face_area_vectors()[face_id]};
+            const double length{mesh.face_lengths()[face_id]};
+            const double normal_distance{((face.x - owner.x) * s.x + (face.y - owner.y) * s.y) / length};
+            add_value(skewness_accumulator, std::hypot(face.x - owner.x - normal_distance * s.x / length,
+                                                       face.y - owner.y - normal_distance * s.y / length) /
+                                                length);
             continue;
         }
 
@@ -80,6 +90,13 @@ MeshStatistics compute_mesh_statistics(const Mesh &mesh)
         const double displacement_x{neighbor_center.x - owner_center.x};
         const double displacement_y{neighbor_center.y - owner_center.y};
         const Vector2 &area_vector{mesh.face_area_vectors()[face_id]};
+        const auto &face{mesh.face_centers()[face_id]};
+        const double intersection_fraction{
+            ((face.x - owner_center.x) * area_vector.x + (face.y - owner_center.y) * area_vector.y) /
+            (displacement_x * area_vector.x + displacement_y * area_vector.y)};
+        add_value(skewness_accumulator, std::hypot(face.x - owner_center.x - intersection_fraction * displacement_x,
+                                                   face.y - owner_center.y - intersection_fraction * displacement_y) /
+                                            mesh.face_lengths()[face_id]);
         const double cosine{std::clamp((displacement_x * area_vector.x + displacement_y * area_vector.y) /
                                            (std::hypot(displacement_x, displacement_y) * mesh.face_lengths()[face_id]),
                                        -1.0, 1.0)};
@@ -125,6 +142,20 @@ MeshStatistics compute_mesh_statistics(const Mesh &mesh)
     for (Index cell_id = 0; cell_id < mesh.cell_count(); ++cell_id)
     {
         const double quality{mesh.cell_qualities()[cell_id]};
+        ++statistics.quality_histogram.at(std::min(static_cast<Index>(quality * 10.0), Index{9}));
+        if (mesh.cell_types()[cell_id] == CellType::Triangle)
+            ++statistics.triangle_cell_count;
+        else
+            ++statistics.quadrilateral_cell_count;
+        double maximum_edge{};
+        for (Index offset = mesh.cell_node_offsets()[cell_id]; offset < mesh.cell_node_offsets()[cell_id + 1]; ++offset)
+        {
+            const double length{mesh.face_lengths()[mesh.cell_faces()[offset]]};
+            maximum_edge = std::max(maximum_edge, length);
+        }
+        const double normalized_edge{maximum_edge / std::sqrt(mesh.cell_areas()[cell_id])};
+        add_value(aspect_accumulator,
+                  normalized_edge * normalized_edge / (mesh.cell_types()[cell_id] == CellType::Triangle ? 2.0 : 1.0));
 
         add_value(cell_quality_accumulator, quality);
 
@@ -141,6 +172,8 @@ MeshStatistics compute_mesh_statistics(const Mesh &mesh)
     statistics.cell_quality = finalize_statistics(cell_quality_accumulator);
     statistics.internal_face_non_orthogonality_degrees = finalize_statistics(non_orthogonality_accumulator);
     statistics.internal_face_neighbor_cell_size_ratios = finalize_statistics(neighbor_cell_size_ratio_accumulator);
+    statistics.cell_aspect_ratios = finalize_statistics(aspect_accumulator);
+    statistics.finite_volume_face_skewness = finalize_statistics(skewness_accumulator);
 
     return statistics;
 }

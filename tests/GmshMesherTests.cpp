@@ -1017,11 +1017,31 @@ void test_disabled_automatic_meshing_uses_legacy_recombination()
     require(build_result.mesh.cell_count() > 0, "Legacy backward-facing-step mesh could not be built.");
 }
 
+void test_rejects_inconsistent_or_unsupported_hybrid_modes()
+{
+    const cfd::RectangleGeometry rectangle{1.0, 1.0};
+    const cfd::BackwardFacingStepGeometry step{1.0, 3.0, 1.0, .5};
+    const cfd::MeshGenerationOptions inconsistent{
+        .mesh_size = .2, .cell_type = cfd::CellType::Triangle, .hybrid = true};
+    require_throws_with_message<std::invalid_argument>(
+        [&] { static_cast<void>(cfd::generate_mesh(rectangle, inconsistent)); }, "HYBRID requires",
+        "Contradictory hybrid/cell_type options accepted.");
+    const cfd::MeshGenerationOptions hybrid{.mesh_size = .2, .cell_type = cfd::CellType::Quadrilateral, .hybrid = true};
+    require_throws_with_message<std::invalid_argument>(
+        [&] { static_cast<void>(cfd::generate_mesh(rectangle, hybrid)); }, "not rectangle",
+        "Unsupported rectangle HYBRID mode accepted.");
+    require_throws_with_message<std::invalid_argument>([&] { static_cast<void>(cfd::generate_mesh(step, hybrid)); },
+                                                       "not backward-facing step",
+                                                       "Unsupported BFS HYBRID mode accepted.");
+}
+
 } // namespace
 
 int main()
 {
     int failure_count{};
+    failure_count += cfd::test::run_test("reject inconsistent/unsupported HYBRID modes",
+                                         test_rejects_inconsistent_or_unsupported_hybrid_modes);
 
     failure_count +=
         cfd::test::run_test("reject non-finite rectangle length", test_rejects_non_finite_rectangle_length);

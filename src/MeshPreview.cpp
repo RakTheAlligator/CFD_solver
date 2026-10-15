@@ -6,12 +6,16 @@
 #include "cfd/mesh/MeshStatistics.hpp"
 #include "cfd/meshing/GmshMesher.hpp"
 #include "cfd/meshing/RawMeshData.hpp"
+#include "cfd/meshing/RpaMeshDiagnostics.hpp"
 
+#include <array>
 #include <exception>
 #include <filesystem>
 #include <iostream>
+#include <optional>
 #include <span>
 #include <utility>
+#include <vector>
 
 int main(const int argc, char *argv[])
 {
@@ -41,7 +45,16 @@ int main(const int argc, char *argv[])
         const std::filesystem::path output_directory{case_directory / "results"};
         const std::filesystem::path output_file{output_directory / "mesh.vtu"};
         std::filesystem::create_directories(output_directory);
-        cfd::write_vtu(mesh, output_file);
+        std::vector<double> regions;
+        if (const auto *geometry = std::get_if<cfd::RpaNozzleGeometry>(&input.geometry))
+        {
+            regions.resize(mesh.cell_count());
+            cfd::write_rpa_mesh_diagnostics(std::cout, mesh, cfd::read_rpa_nozzle_domain(*geometry),
+                                            input.generation_options, input.rpa_nozzle_meshing, regions);
+        }
+        const std::array<cfd::VtkCellScalarData, 1> scalars{cfd::VtkCellScalarData{"rpa_region", regions}};
+        cfd::write_vtu(mesh, output_file,
+                       cfd::VtkCellData{.scalars = std::span{scalars}.first(regions.empty() ? 0 : 1)});
 
         std::cout << "\n[Output]\n"
                   << "  Mesh              : " << output_file.string() << '\n';

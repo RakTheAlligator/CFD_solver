@@ -1,135 +1,231 @@
-# RPA nozzle mesh input
+# RPA meridian mesh
 
-This is a **meshing-only** Cartesian meridian `(x,r)` workflow. It does not
-implement axisymmetric metrics, compressible flow or Euler. Do not run the
-current incompressible SIMPLE application as a nozzle-flow model.
+The DXF is the source of truth for the engine profile. The Python 3 adapter
+uses the existing `ezdxf==1.4.3` dependency (`tools/requirements-cad.txt`).
+Configure its interpreter with `-DPython3_EXECUTABLE=/path/to/python`.
+The C++ importer keeps the flattened curve, tolerance and CAD junctions;
+it validates continuity, increasing x, positive radii and an interior throat.
+Paths are case-relative; the adapter is invoked without a shell.
 
-## Dependency and invocation
+This is a Cartesian (x,r) fluid mesh, not an axisymmetric CFD formulation.
+The fictitious shell is excluded from the fluid domain.
 
-The CAD adapter uses Python 3 and `ezdxf` 1.4.3 for DXF entities and block
-transformations. Gmsh C++ remains the only mesh generator; the existing
-RawMeshData, MeshBuilder, statistics and VTU writer are reused.
+## Configuration
 
-```sh
-python3 -m venv /tmp/cfd-cad
-/tmp/cfd-cad/bin/python -m pip install -r tools/requirements-cad.txt
-cmake -S . -B build -DPython3_EXECUTABLE=/tmp/cfd-cad/bin/python
-cmake --build build --target cfd_mesh_preview
-./build/cfd_mesh_preview cases/rpaNozzle
-```
-
-There is no manual Python conversion step. C++ invokes the configured
-interpreter/script with an argument vector, without a shell, and propagates
-failed imports. This implementation uses the project's existing POSIX/Linux
-process conventions. The build must retain access to the source-tree adapter
-and configured interpreter. RPA tests are enabled when that interpreter has
-ezdxf; CMake warns explicitly when they are unavailable. Existing geometry
-tests remain enabled regardless.
-
-Output is `cases/rpaNozzle/results/mesh.vtu`. No CFD field files are supplied.
-
-## meshDict
-
-```text
+```foam
+FoamFile { format ascii; class dictionary; object meshDict; }
 geometry
 {
     type rpaNozzle;
-    file "constant/geometry/engine.dxf";
+    engine
+    {
+        file "constant/geometry/engine.dxf";
+        wallThicknessFactor 0.02;
+        // Optional: dxfUnits auto; geometricTolerance 1e-6;
+    }
+    box
+    {
+        upstreamFactor auto;
+        downstreamFactor 20;
+        outerRadiusFactor 10;
+    }
+}
+regions
+{
+    bandThicknessFactor 0.5;
+    plumeOutletRadiusFactor 6;
 }
 mesh
 {
-    cellType quadrilateral; // or triangle
-    size 0.01;
-    automaticMeshing true;
+    cellType quadrilateral;
+    baseCellSize 0.005;
+    minCellQuality 0.10;
 }
 ```
 
-The standard FoamFile dictionary header is also required. The DXF path is
-relative to the case directory, never the launch directory. Coordinates are
-converted from `$INSUNITS` into metres. Missing/ambiguous units are errors;
-`dxfUnits mm;` (also `cm`, `m`, `in`) can supply absent units but cannot conflict
-with declared units. Drawing dimensions/text are not geometric inputs.
+All factors multiply the **inner exit radius**, not the diameter.
+Internal box defaults are `upstreamFactor auto`, `downstreamFactor 80`,
+`outerRadiusFactor 65`. The demo deliberately uses the smaller 20/10 box.
+Auto upstream uses the complete available retained engine length. Explicit
+upstream extents cannot exceed that profile. Shell thickness defaults to
+0.02 exit radii. No input factor is silently clipped.
 
-LINE, ARC, arbitrary-degree SPLINE, POLYLINE/LWPOLYLINE (including bulges) and
-nested INSERT transforms are supported. Elliptical arcs resulting from
-non-uniform block scaling are also flattened. An explicit centreline (CENTER
-linetype or axis/centerline layer) defines the local axis; otherwise drawing
-x/y are taken as x/r. The positive meridian must be a unique continuous open
-chain with strictly increasing x and positive radius, an interior minimum
-radius and a downstream exit. Optional mirrored negative meridians are ignored.
-If only the negative side is present (e.g. an axis-normal reversal in a reflected
-block), its normal is flipped into the positive radial convention.
-Unsupported geometric entities are rejected rather than silently discarded;
-annotations are ignored before block expansion. Non-planar, branched,
-disconnected, backtracking or closed/self-intersecting profiles are rejected.
+`regions` is optional; defaults are band thickness 0.5 exit radii and plume
+outlet radius **16.0** exit radii. The demo explicitly retains its factor **6.0**
+and requests QUAD, 0.005 m and angular threshold 0.10. The inlet plume radius is exit radius + shell
+thickness + band thickness. Its upper boundary is the straight line to the
+outlet. Require inlet plume radius < outlet plume radius < box radius, and
+no BAND/FARFIELD intersection.
 
-`geometricTolerance` defaults to `1e-6` metres for CAD curve flattening.
-Source-entity junctions remain mandatory Gmsh vertices. Interior curve samples
-describe polylines, not an assumed quadratic fit. This CAD approximation is
-distinct from the additional chord error of a first-order FV boundary mesh.
-Conical and non-parabolic cubic contours are tested. **No real RPA TIC export
-has been validated**; support is limited to the stated entity/profile contract.
+Old flat RPA geometry entries and regional refinement settings are errors.
+Use `geometry.engine`, `geometry.box` and `regions` instead. In particular
+`mesh.size` becomes `baseCellSize`; throat/convergent/divergent/exit factors,
+near-plume/corridor lengths, opening slopes, resolution policies/levels and
+directional overrides are removed. Rectangle/BFS syntax is unchanged.
 
-## Domain conventions
+## Responsibilities
 
-Absent geometry values select:
+- `RpaNozzleGeometry` / `RpaNozzleDomain`: imported physical profile, shell,
+  box, tolerance and mandatory CAD junctions; no cell counts.
+- `RpaRegionLayout`: the five geometric regions and their interfaces;
+  no resolution choices.
+- `RpaMeshDiscretization`: radial distributions, column search and generation-only
+  grids; no Gmsh calls. `GmshMesher` installs these grids with shared boundary
+  nodes and uses Gmsh only for the remaining transition. No connectivity walk
+  or post-generation overwrite is needed to recover prescribed grid positions.
 
-| Entry | Automatic value |
-|---|---|
-| `inletPosition` | first usable contour x |
-| `outerUpstreamLength` | `min(max(Le, 1.5*De), exit_x-inlet_x)` |
-| `wallThickness` | `0.01*De`, a **radial** offset |
-| `downstreamLength` | `10*De` |
-| `farfieldRadius` | `5*De`, measured from the axis |
+| rpa_region | Region | hybrid | quadrilateral | triangle |
+|---|---|---|---|---|
+| 1 | ENGINE | QUAD | QUAD | split structured TRI |
+| 2 | BAND | QUAD | QUAD | split structured TRI |
+| 3 | PLUME | QUAD | QUAD | split structured TRI |
+| 4 | TRANSITION | TRI | recombined QUAD | TRI |
+| 5 | FARFIELD | QUAD | QUAD | split structured TRI |
 
-`De=2*r_exit`, `Le=exit_x-throat_x`. All overrides are metres.
-The inlet must remain upstream of the throat. Exterior length must fit the
-retained contour; thickness/lengths/radius must be finite and positive, and
-farfield radius must exceed the whole exterior wall. Unrepresentable extents
-are rejected. The offset wall is a fictitious CFD obstruction, **not a mechanical
-nozzle design**. It contains no solid cells. Interior and exterior fluid connect
-around the finite exit lip; the nozzle exit plane is not a CFD boundary.
+There is one logical plume, not multiple corridors. CAD curve subdivisions
+preserve source junctions and do not reset distributions. The TRI mode uses the
+same geometric/discretization pipeline and splits structured cells; it does not
+retain a second RPA generator.
 
-Physical boundaries: `inlet`, `axis`, `inner_wall`, `outer_wall`, `nozzle_lip`,
-`farfield_upstream`, `farfield_radial`, `farfield_downstream`; surface: `fluid`.
-Gmsh subdivision completes recombination into an all-QUAD mesh when requested.
-Unexpected final element types are still errors; no mixed mesh is accepted.
+## Discretization
 
-## Automatic size policy
+ENGINE has max(8, ceil(exit_radius/baseCellSize)) radial cells; BAND has
+max(4, ceil(band_thickness/baseCellSize)). Physical layers may increase these
+global counts, never change them longitudinally. Automatic distributions have
+a smooth 4:1 ratio between largest and smallest radial intervals, finer at walls.
+No physical y+ is inferred.
 
-Common options are reused: `maximumGrowthRate`, `wallRefinementFactor`,
-`wallRefinementLayers`. Region factors relative to `size` are:
+Optional existing wall syntax remains: `innerWallLayers true`,
+`innerWallFirstCellHeight`, `innerWallLayerCount`, `innerWallGrowthRate`,
+`innerWallThickness`, and the corresponding `outer...` entries.
+Growth is in [1,1.2]; height/count/growth/thickness must be consistent.
+Prescribed normal offsets use the validated miter construction. Only those
+near-wall nodes may move in x; core columns remain vertical. Incompatible
+prescriptions fail rather than removing layers or enlarging BAND.
 
-| Mesh entry | Default |
-|---|---:|
-| `convergentRefinementFactor` | 0.75 |
-| `throatRefinementFactor` | 0.25 |
-| `divergentRefinementFactor` | 0.75 |
-| `exitRefinementFactor` | 0.25 |
-| `plumeRefinementFactor` | 0.5 |
+PLUME inherits ENGINE exit + physical lip + BAND exit, sharing node identities.
+The lip uses one cell, including pure QUAD: it is not a transition boundary and
+requires no extra parity split. Outlet rows form one growing geometric law.
+Every row is interpolated index-to-index:
+`r_j(x)=(1-t)*r_left,j+t*r_right,j`.
+It need not be monotone in j-spacing on the inherited left boundary.
 
-All factors must be in `(0,1]`. Optional positive `throatRefinementLength`,
-`exitRefinementLength`, `nearPlumeLength` specify full axial zone extents;
-defaults use detected throat/exit dimensions and base size, clipped to the
-available domain. In particular near plume defaults to `2*De`.
+ENGINE/BAND columns advance using the arithmetic mean of **all** radial cell
+heights, including physical wall layers:
+`dx_target = (r_max - r_min) / radial_cell_count`.
+At each mandatory CAD junction, throat or endpoint, widths are redistributed
+over the interval rather than leaving a tiny final cell. Pure QUAD's even
+CAD-curve counts are distributed over the same interval. No curvature cap,
+chord-driven subdivision, shape-driven merging or quality-driven spacing
+repair remains. Invalid columns are rejected without changing their widths.
 
-Distance/threshold and smoothly blended box fields are combined by minimum.
-The short exterior-start edge and lip have geometry-driven, smoothly extended
-sizes. Far plume returns to the base size. `automaticMeshing false` disables
-all regional fields, not mandatory CAD junctions or all-QUAD completion.
+This is an experimental spacing rule, not a geometric-accuracy guarantee.
+The DXF import tolerance is unchanged, but linear wall faces can exceed it.
+The preview reports the maximum vertical wall-chord error separately for
+ENGINE/BAND and explicitly flags exceedances. A topologically valid diagnostic
+mesh is not thereby certified against the wall-approximation tolerance.
+Thin prescribed layers can fit the region heights yet be incompatible with
+coarse linear wall chords: cell centres can then lie in the CAD shell. The
+post-build preview/domain diagnostics reject that case; RawMeshData's angular
+screen alone is not a CAD-domain certificate. No distribution is repaired to
+hide it. The extended tests retain this combination as an expected rejection.
 
-`maximumGrowthRate` controls requested size-field ramp slopes. It is **not**
-a guaranteed cell-to-cell ratio after unstructured triangulation/recombination.
-The test checks actual wall/throat/exit sizes and reports actual neighboring-cell
-ratios; the preview reports mesh quality and worst ratios. Thin lips and sharp
-CAD junctions may require finer cells than the nominal target.
+PLUME has one progressive x distribution. FARFIELD has independent uniform x
+and growing radial spacing; its nominal cells are coarser. TRANSITION absorbs
+different boundary counts. Generic interface-size extension provides smooth
+unstructured sizes without special throat/exit/plume refinement envelopes.
+FARFIELD's uniform x spacing targets `sqrt(dr_min * dr_max)` using its existing
+radial heights; it is not globally capped by the last PLUME interval. For pure
+QUAD, a bounded, aspect-sensitive relocation near rejected TRANSITION cells
+can improve the outlet recombination. All structured and physical-boundary
+nodes remain pinned, and the actual angular threshold is checked afterwards.
+The unequal prescribed edge lengths at the acute outlet still limit its shape
+quality: coarser FARFIELD spacing does not preserve every old interface metric.
 
-Adapter protocol `CFD_RPA_PROFILE_V1` is an ordered point count/list of metre
-coordinates followed by `CURVE_JUNCTIONS`, count and ordered point indices.
-The C++ reader validates cardinalities, finiteness, positive radii and strictly
-ordered junctions before building the domain. Nonzero adapter status carries
-its diagnostic rather than falling back to a different geometry.
+Optional `externalSizeField` uses a plain whitespace-separated Cartesian grid,
+with **no magic/version token**:
 
-References: [ezdxf units](https://ezdxf.readthedocs.io/en/stable/concepts/units.html),
-[ezdxf decomposition](https://ezdxf.readthedocs.io/en/stable/disassemble.html),
-[Gmsh quadrilateral meshing](https://gmsh.info/doc/texinfo/gmsh.html).
+```text
+nx nr xmin xmax rmin rmax
+h_0_0 h_1_0 ... h_(nx-1)_0
+h_0_1 h_1_1 ... h_(nx-1)_1
+...
+```
+
+`nx` and `nr` are integers at least 2; coordinates and sizes are in metres.
+Extents must be finite and increasing. Exactly `nx*nr` finite, strictly positive
+sizes follow, with x varying fastest. Extra tokens are rejected. Sampling is
+bilinear inside the grid and constantly extended from its edges outside.
+For example, `2 2 0 1 0 1` followed by `0.01 0.02 0.03 0.04` is valid;
+`CFD_SIZE_GRID_V1` is not a supported header. Paths are case-relative.
+The file and callable `MeshSizeField` API constrain TRANSITION,
+not ENGINE/BAND's exclusive mean-height rule; fixed radial counts cannot promise arbitrary local
+isotropic refinement. `targetCellBudget` is an optional hard ceiling: it never
+relaxes geometry, layers or quality and reports an incompatible budget.
+
+## Quality and output
+
+Geometric validity and quality are separate: every corner must have positive
+orientation, areas must be positive, and interfaces must be conforming.
+`minCellQuality` defaults to **0.05**, in (0,1]. It controls the **minimum signed
+corner sine for both TRI and QUAD** (scaled corner Jacobian). A positively
+oriented 1/89/90-degree triangle has quality about 0.01745, not 1.
+Orthogonal QUAD anisotropy leaves its angles unchanged, whereas a thin TRI has
+small angles and can fail the threshold. The aspect-sensitive `cell_quality`
+exported by Mesh is a separate shape measure. Neither indicator alone guarantees
+CFD accuracy; non-orthogonality, skewness and aspect ratios are reported separately.
+The demo requests 0.10. The actual generated cells are checked;
+a failed threshold is an error, never an automatic threshold reduction.
+With plume factor 3 and downstream factor 20, the outlet wedge angle is about
+4.23 degrees (sine 0.0738): threshold 0.10 is incompatible, including TRI/HYBRID
+under the minimum-angle contract. Tests use explicitly smaller thresholds for
+such configurations or expect a quality rejection. The demo's plume factor 6
+opens this wedge and its QUAD mesh satisfies 0.10. Before generation, every
+topology requires an outlet factor at least
+`Fmin = Rin/Re + (L/Re)*q/sqrt(1-q*q)`, where `Re` is the inner exit radius,
+`Rin` the plume inlet radius, `L` its downstream length and `q = minCellQuality`.
+At `q=1`, no finite outlet factor is admissible. The minimum radius must also
+remain strictly below the outer box radius. Incompatible inputs report the
+requested/minimum factors, downstream factor and quality threshold; they are
+never silently adjusted. For the default 80/65 box and `q=0.05`, `Fmin` is
+about 5.5250, so factor 6 clears this necessary bound; factor 3
+is rejected. At downstream factor 20, factor 3 remains admissible for `q=0.05`,
+but not `q=0.10`. Clearing this tip bound does not guarantee quality throughout
+TRANSITION: the actual generated-cell checks remain mandatory.
+The default factor 16 was selected from 6/7/8/10/12/16 using the reference CAD,
+the 80/65 box and `q=0.05`, without changing any mesh distribution. It is the
+only tested factor passing both QUAD and HYBRID at 0.020 m and 0.005 m.
+Minimum corner sines were respectively 0.17811/0.06120 and 0.08847/0.07026
+(QUAD/HYBRID). This measured margin selects a default, not a new user rejection
+threshold or a guarantee for other resolutions/profiles. Smaller boxes may
+require an explicit outlet factor strictly below their outer radius.
+TRI/HYBRID may also be rejected by the actual generated angles;
+topological validity alone does not imply acceptable angular quality.
+
+The eight physical groups remain `inlet`, `axis`, `inner_wall`, `outer_wall`,
+`nozzle_lip`, `farfield_upstream`, `farfield_radial`, `farfield_downstream`.
+Exit interfaces between fluids are internal, while the lip remains physical.
+The usual preview exports a VTU with `rpa_region` and existing quality arrays:
+
+```sh
+./build-release/cfd_mesh_preview cases/rpaNozzle
+```
+
+The layout/diagnostics reject cell centers in the fictitious shell.
+RawMeshData, Mesh topology, finite-volume geometry and CFD solvers are unchanged.
+
+## Targeted tests
+
+With CAD dependencies available, `rpa_nozzle` runs reader, parameter, layout,
+structured-grid and metric tests without Gmsh generation. `rpa_nozzle_integration`
+runs a restricted full-generation subset (CTest label `integration`). The extended
+one-factor parameter matrix is opt-in, not a Cartesian product:
+
+```sh
+./build-release/cfd_rpa_nozzle_tests --parametric
+# Or configure -DBUILD_RPA_PARAMETRIC_TESTS=ON, then:
+ctest --test-dir build-release -L parametric --output-on-failure
+```
+
+Each configuration uses an isolated temporary case and the normal meshDict
+reader/generator. The reference dictionary and DXF are never modified.

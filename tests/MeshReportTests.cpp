@@ -7,6 +7,7 @@
 #include "support/TestUtils.hpp"
 
 #include <chrono>
+#include <cmath>
 #include <iomanip>
 #include <sstream>
 #include <string>
@@ -95,6 +96,20 @@ void test_reports_maximum_neighbor_size_ratio_location()
                      "Mesh report does not locate the maximum neighboring-size-ratio face center.");
 }
 
+void test_thin_triangle_aspect_and_quality_distribution()
+{
+    auto raw{make_single_triangle_raw_mesh()};
+    raw.nodes[2] = {0.5, 0.001};
+    const auto built{cfd::build_mesh(std::move(raw))};
+    const auto statistics{cfd::compute_mesh_statistics(built.mesh)};
+    cfd::test::require_near(statistics.cell_aspect_ratios.maximum, 1000.0, 1e-9,
+                            "Aspect diagnostic missed a thin triangle.");
+    require(statistics.triangle_cell_count == 1 && statistics.quadrilateral_cell_count == 0,
+            "Incorrect diagnostic topology counts.");
+    require(statistics.quality_histogram.at(0) == 1, "Thin triangle is missing from the low-quality bin.");
+    require(std::isfinite(statistics.finite_volume_face_skewness.maximum), "Skewness diagnostic is not finite.");
+}
+
 } // namespace
 
 int main()
@@ -104,6 +119,8 @@ int main()
     failure_count += cfd::test::run_test("single triangle mesh report", test_single_triangle_mesh_report);
     failure_count +=
         cfd::test::run_test("maximum neighbor size-ratio location", test_reports_maximum_neighbor_size_ratio_location);
+    failure_count +=
+        cfd::test::run_test("thin triangle aspect/distribution", test_thin_triangle_aspect_and_quality_distribution);
 
     return cfd::test::finish_tests(failure_count, "mesh report");
 }

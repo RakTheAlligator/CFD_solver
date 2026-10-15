@@ -3,6 +3,7 @@
 #include "cfd/mesh/Cell.hpp"
 #include "cfd/meshing/BackwardFacingStepGeometry.hpp"
 #include "cfd/meshing/GeometryInput.hpp"
+#include "cfd/meshing/MeshSizeField.hpp"
 #include "cfd/meshing/RawMeshData.hpp"
 #include "cfd/meshing/RectangleGeometry.hpp"
 
@@ -58,21 +59,45 @@ struct MeshGenerationOptions
 
     /// Requested topology of the generated two-dimensional cells.
     CellType cell_type{CellType::Triangle};
+
+    /// Mixed TRI/QUAD extraction; actual cells retain their existing CellType.
+    /// RPA only: requires cell_type == Quadrilateral, with QUAD blocks and
+    /// triangular transition patches. Rectangle/BFS do not support this mode.
+    bool hybrid{};
 };
 
-/// RPA-specific size policy. Extents are metres; absent extents use detected
-/// throat/exit scales. maximumGrowthRate controls smooth size-field ramps,
-/// not an exact cell-to-cell ratio on an unstructured mesh.
+/// Explicit wall-normal layer prescription, independent of any y+ model.
+/// Physical prescriptions are absent by default. Enabled layers require first_cell_height or thickness.
+/// If both are supplied they must describe the same geometric series.
+struct WallLayerOptions
+{
+    /// Absent/false: no physical prescription; true: explicit physical layers
+    /// with a height/thickness prescription. Automatic core grading is separate.
+    std::optional<bool> enabled{};
+    std::optional<double> first_cell_height{};
+    Index layer_count{4};
+    double growth_rate{1.2};
+    std::optional<double> thickness{};
+
+    [[nodiscard]] bool active() const noexcept
+    {
+        return enabled.value_or(false);
+    }
+};
+
+/// RPA discretization input. Region geometry is separate from the numerical
+/// settings; no legacy regional refinement factors are used.
 struct RpaNozzleMeshingOptions
 {
-    double convergent_refinement_factor{0.75};
-    double throat_refinement_factor{0.25};
-    double divergent_refinement_factor{0.75};
-    double exit_refinement_factor{0.25};
-    double plume_refinement_factor{0.5};
-    std::optional<double> throat_refinement_length{};
-    std::optional<double> exit_refinement_length{};
-    std::optional<double> near_plume_length{};
+    RpaRegionLayoutOptions regions{};
+    /// Minimum signed corner sine for TRI/QUAD (scaled corner Jacobian).
+    /// Orthogonal QUAD anisotropy does not change its corner angles; thin TRI
+    /// cells do have small angles and can fail this threshold.
+    double min_cell_quality{0.05};
+    WallLayerOptions inner_wall_layers{};
+    WallLayerOptions outer_wall_layers{};
+    std::optional<Index> target_cell_budget{};
+    std::optional<std::filesystem::path> external_size_field_file{};
 };
 
 /// Generates only fluid cells in the Cartesian RPA meridian/plume domain.
@@ -81,8 +106,7 @@ struct RpaNozzleMeshingOptions
 /// @throws std::runtime_error If CAD import or exclusive requested topology fails.
 [[nodiscard]]
 RawMeshData generate_mesh(const RpaNozzleGeometry &geometry, const MeshGenerationOptions &options,
-                          const AutomaticMeshingOptions &automatic_options = {},
-                          const RpaNozzleMeshingOptions &rpa_options = {});
+                          const RpaNozzleMeshingOptions &rpa_options = {}, const MeshSizeField &size_field = {});
 
 /// Generates a rectangular two-dimensional mesh using Gmsh.
 ///
@@ -124,10 +148,12 @@ RawMeshData generate_mesh(const BackwardFacingStepGeometry &geometry, const Mesh
 RawMeshData generate_mesh(const GeometryInput &geometry, const MeshGenerationOptions &options);
 
 /// Dispatches mesh generation with explicit geometry-specific policies.
+/// RPA requires default automatic_options; its dedicated options replace the
+/// former generic automatic-meshing policy.
 [[nodiscard]]
 RawMeshData generate_mesh(const GeometryInput &geometry, const MeshGenerationOptions &options,
                           const AutomaticMeshingOptions &automatic_options,
                           const BackwardFacingStepMeshingOptions &step_options,
-                          const RpaNozzleMeshingOptions &rpa_options = {});
+                          const RpaNozzleMeshingOptions &rpa_options = {}, const MeshSizeField &size_field = {});
 
 } // namespace cfd
