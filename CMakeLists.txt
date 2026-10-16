@@ -70,6 +70,8 @@ add_library(
     cfd_core
     STATIC
 
+    src/geometry/AxisymmetricGeometry.cpp
+
     src/input/OpenFOAMCaseReader.cpp
 
     src/io/MeshReport.cpp
@@ -341,6 +343,12 @@ if(BUILD_TESTING)
     target_include_directories(
         cfd_boundary_based_initialization_tests
         PRIVATE ${PROJECT_SOURCE_DIR}/src
+    )
+
+    cfd_add_test(
+        cfd_axisymmetric_geometry_tests
+        axisymmetric_geometry
+        tests/AxisymmetricGeometryTests.cpp
     )
 
     cfd_add_test(
