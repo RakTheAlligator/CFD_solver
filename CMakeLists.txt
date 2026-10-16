@@ -144,6 +144,20 @@ target_compile_definitions(cfd_core PRIVATE
 )
 
 # -----------------------------------------------------------------------------
+# Compressible building blocks
+# -----------------------------------------------------------------------------
+
+add_library(
+    cfd_compressible
+    STATIC
+    src/compressible/ConservativeField.cpp
+    src/compressible/CaloricallyPerfectGas.cpp
+    src/compressible/EulerFlux.cpp
+)
+target_link_libraries(cfd_compressible PUBLIC cfd_core)
+cfd_enable_warnings(cfd_compressible)
+
+# -----------------------------------------------------------------------------
 # Main executable
 # -----------------------------------------------------------------------------
 
@@ -344,6 +358,27 @@ if(BUILD_TESTING)
         cfd_boundary_based_initialization_tests
         PRIVATE ${PROJECT_SOURCE_DIR}/src
     )
+
+    cfd_add_test(
+        cfd_conservative_field_tests
+        conservative_field
+        tests/ConservativeFieldTests.cpp
+    )
+    target_link_libraries(cfd_conservative_field_tests PRIVATE cfd_compressible)
+
+    cfd_add_test(
+        cfd_compressible_thermodynamics_tests
+        compressible_thermodynamics
+        tests/CompressibleThermodynamicsTests.cpp
+    )
+    target_link_libraries(cfd_compressible_thermodynamics_tests PRIVATE cfd_compressible)
+
+    cfd_add_test(
+        cfd_euler_flux_tests
+        euler_flux
+        tests/EulerFluxTests.cpp
+    )
+    target_link_libraries(cfd_euler_flux_tests PRIVATE cfd_compressible)
 
     cfd_add_test(
         cfd_axisymmetric_geometry_tests
