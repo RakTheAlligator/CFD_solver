@@ -21,6 +21,8 @@ Chaque groupe doit recevoir une BC explicite : `Axis` uniquement sur r=0
 (masse/énergie exactement imperméables), ou `Transmissive` par extrapolation intérieure.
 Cette dernière n'est **pas** une condition caractéristique générale pour une
 tuyère ; ici, les ondes de Sod n'atteignent pas les extrémités avant l'arrêt.
+Le lot E ajoute des entrées/sorties caractéristiques normales locales, sans
+changer ces trois conditions : voir [leur contrat et leurs limites](CompressibleBoundaryConditions.md).
 
 `compute_euler_slip_wall_flux()` résout le problème symétrique intérieur/miroir
 avec une vitesse normale de paroi nulle, sans construire un état fantôme.
@@ -77,6 +79,6 @@ méridienne, pas un maillage volumique 3D. Les champs dérivés ne sont calculé
 qu'aux sorties, dans des buffers réutilisés.
 
 Limites : ordre 1 diffusif, coût du pas explicite, précision énergétique
-limitée aux très grands Mach (contrat du gaz parfait), pas de BC
-caractéristiques ni de fonctionnement complet RPA. Les expansions radiales
-et études axisymétriques avancées restent hors de ce lot.
+limitée aux très grands Mach (contrat du gaz parfait), pas de fonctionnement
+complet RPA. Les [expansions radiales du lot D](AxisymmetricEulerRadialExpansion.md)
+et les BC du lot E ont leurs vérifications séparées.

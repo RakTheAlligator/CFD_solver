@@ -1,5 +1,6 @@
 #include "cfd/compressible/AxisymmetricEulerSolver.hpp"
 
+#include "cfd/compressible/EulerCharacteristicBoundaryFlux.hpp"
 #include "cfd/compressible/EulerFlux.hpp"
 #include "cfd/compressible/EulerSlipWallFlux.hpp"
 #include "cfd/mesh/Mesh.hpp"
@@ -47,9 +48,10 @@ void validate_boundary_geometry(const Mesh &mesh, const EulerBoundaryConditions 
 }
 
 RusanovFluxResult boundary_flux(const ConservativeState &inside, const Vector2 normal,
-                                const EulerBoundaryConditionType condition, const CaloricallyPerfectGas &gas)
+                                const EulerBoundaryCondition &condition, const CaloricallyPerfectGas &gas,
+                                const double group_area)
 {
-    switch (condition)
+    switch (condition.type())
     {
     case EulerBoundaryConditionType::SlipWall: {
         const auto wall{compute_euler_slip_wall_flux(inside, normal, gas)};
@@ -59,6 +61,14 @@ RusanovFluxResult boundary_flux(const ConservativeState &inside, const Vector2 n
         return compute_rusanov_flux(inside, inside, normal, gas);
     case EulerBoundaryConditionType::Axis:
         break; // Axis faces must have been skipped before requesting any flux.
+    case EulerBoundaryConditionType::TotalConditionsInlet:
+    case EulerBoundaryConditionType::MassFlowInlet:
+    case EulerBoundaryConditionType::SupersonicInlet:
+    case EulerBoundaryConditionType::PressureOutlet:
+    case EulerBoundaryConditionType::SupersonicOutlet: {
+        const auto open{compute_euler_characteristic_boundary_flux(inside, normal, condition, gas, group_area)};
+        return {open.flux, open.maximum_wave_speed};
+    }
     }
     throw std::runtime_error("Unexpected zero-area Axis flux evaluation.");
 }
@@ -107,7 +117,8 @@ AxisymmetricEulerSolver::AxisymmetricEulerSolver(const Mesh &mesh, const Conserv
                                                  AxisymmetricEulerOptions options)
     : mesh_(&mesh), geometry_(mesh), gas_(gas), boundary_conditions_(std::move(boundary_conditions)), options_(options),
       states_{ConservativeField{initial_state}, ConservativeField{mesh.cell_count()}}, residual_(mesh.cell_count()),
-      wave_sums_(mesh.cell_count()), face_areas_(mesh.face_count())
+      wave_sums_(mesh.cell_count()), face_areas_(mesh.face_count()),
+      boundary_group_areas_(mesh.boundary_groups().size())
 {
     validate_options(options_);
     validate_boundary_geometry(mesh, boundary_conditions_);
@@ -119,7 +130,18 @@ AxisymmetricEulerSolver::AxisymmetricEulerSolver(const Mesh &mesh, const Conserv
         face_areas_[face] = std::hypot(area.x, area.y);
         if (!std::isfinite(face_areas_[face]))
             throw std::runtime_error("Euler revolved face area is not finite.");
+        if (mesh.face_adjacencies()[face].is_boundary())
+        {
+            const auto group{mesh.face_boundary_ids()[face]};
+            if (boundary_conditions_[group] == EulerBoundaryConditionType::MassFlowInlet)
+                boundary_group_areas_[group] =
+                    finite_value(static_cast<long double>(boundary_group_areas_[group]) + face_areas_[face]);
+        }
     }
+    for (Index group = 0; group < boundary_conditions_.size(); ++group)
+        if (boundary_conditions_[group] == EulerBoundaryConditionType::MassFlowInlet &&
+            !(boundary_group_areas_[group] > 0.0))
+            throw std::invalid_argument("Euler mass inlet group must have a positive revolution area.");
     result_ = summarize(state());
     result_.cfl = options_.cfl;
 }
@@ -172,10 +194,11 @@ double AxisymmetricEulerSolver::assemble()
         const double length{mesh_->face_lengths()[face]};
         const Vector2 normal{area_2d.x / length, area_2d.y / length};
         const auto left{state().state(adjacency.owner)};
-        const auto numerical{
-            adjacency.is_boundary()
-                ? boundary_flux(left, normal, boundary_conditions_[mesh_->face_boundary_ids()[face]], gas_)
-                : compute_rusanov_flux(left, state().state(adjacency.neighbor), normal, gas_)};
+        const auto numerical{adjacency.is_boundary()
+                                 ? boundary_flux(left, normal,
+                                                 boundary_conditions_.condition(mesh_->face_boundary_ids()[face]), gas_,
+                                                 boundary_group_areas_[mesh_->face_boundary_ids()[face]])
+                                 : compute_rusanov_flux(left, state().state(adjacency.neighbor), normal, gas_)};
         const double wave{finite_value(static_cast<long double>(area) * numerical.maximum_wave_speed)};
         wave_sums_[adjacency.owner] = finite_value(static_cast<long double>(wave_sums_[adjacency.owner]) + wave);
         add_flux(residual_, adjacency.owner, numerical.flux, -area);

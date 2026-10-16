@@ -53,7 +53,8 @@ struct AxisymmetricEulerResult
 /// alternate buffers without field copies or allocations on the valid path.
 /// Mesh must outlive this object and must not be moved from or replaced.
 /// Views from state() remain valid only until the next accepted step or move.
-/// No I/O, implicit solve, clipping, viscosity or characteristic outlet model.
+/// No I/O, implicit solve, clipping or viscosity. Open BCs use the local normal
+/// characteristic closures documented in CompressibleBoundaryConditions.md.
 class AxisymmetricEulerSolver
 {
   public:
@@ -106,6 +107,7 @@ class AxisymmetricEulerSolver
     ConservativeField residual_;
     std::vector<double> wave_sums_;
     std::vector<double> face_areas_;
+    std::vector<double> boundary_group_areas_; ///< Physical areas for group mass-flow inlets, built once.
     Index current_{};
     AxisymmetricEulerResult result_;
     EulerIntegralQuantities boundary_outflow_;
