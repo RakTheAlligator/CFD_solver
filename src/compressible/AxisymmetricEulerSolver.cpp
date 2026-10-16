@@ -6,6 +6,7 @@
 #include "cfd/mesh/Mesh.hpp"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <limits>
 #include <sstream>
@@ -16,6 +17,7 @@ namespace cfd
 {
 namespace
 {
+using Clock = std::chrono::steady_clock;
 
 double finite_value(const long double value)
 {
@@ -71,6 +73,17 @@ RusanovFluxResult boundary_flux(const ConservativeState &inside, const Vector2 n
     }
     }
     throw std::runtime_error("Unexpected zero-area Axis flux evaluation.");
+}
+
+RusanovFluxResult timed_boundary_flux(const ConservativeState &inside, const Vector2 normal,
+                                      const EulerBoundaryCondition &condition, const CaloricallyPerfectGas &gas,
+                                      const double group_area, AxisymmetricEulerTimings *timings)
+{
+    const auto start{timings != nullptr ? Clock::now() : Clock::time_point{}};
+    const auto flux{boundary_flux(inside, normal, condition, gas, group_area)};
+    if (timings != nullptr)
+        timings->boundary_flux_seconds += std::chrono::duration<double>(Clock::now() - start).count();
+    return flux;
 }
 
 void add_flux(ConservativeField &residual, const Index cell, const EulerFlux &flux, const double signed_area)
@@ -183,7 +196,7 @@ double AxisymmetricEulerSolver::assemble()
         source += radial;
     }
     radial_source_ = finite_value(source);
-    long double mass{}, mx{}, mr{}, energy{};
+    long double mass{}, mx{}, mr{}, energy{}, mass_in{}, mass_out{};
     for (Index face = 0; face < mesh_->face_count(); ++face)
     {
         const double area{face_areas_[face]};
@@ -195,9 +208,10 @@ double AxisymmetricEulerSolver::assemble()
         const Vector2 normal{area_2d.x / length, area_2d.y / length};
         const auto left{state().state(adjacency.owner)};
         const auto numerical{adjacency.is_boundary()
-                                 ? boundary_flux(left, normal,
-                                                 boundary_conditions_.condition(mesh_->face_boundary_ids()[face]), gas_,
-                                                 boundary_group_areas_[mesh_->face_boundary_ids()[face]])
+                                 ? timed_boundary_flux(left, normal,
+                                                       boundary_conditions_.condition(mesh_->face_boundary_ids()[face]),
+                                                       gas_, boundary_group_areas_[mesh_->face_boundary_ids()[face]],
+                                                       options_.collect_timings ? &timings_ : nullptr)
                                  : compute_rusanov_flux(left, state().state(adjacency.neighbor), normal, gas_)};
         const double wave{finite_value(static_cast<long double>(area) * numerical.maximum_wave_speed)};
         wave_sums_[adjacency.owner] = finite_value(static_cast<long double>(wave_sums_[adjacency.owner]) + wave);
@@ -210,13 +224,18 @@ double AxisymmetricEulerSolver::assemble()
         }
         else
         {
-            mass += static_cast<long double>(area) * numerical.flux.mass;
+            const long double boundary_mass{static_cast<long double>(area) * numerical.flux.mass};
+            mass += boundary_mass;
+            mass_in += std::max(-boundary_mass, 0.0L);
+            mass_out += std::max(boundary_mass, 0.0L);
             mx += static_cast<long double>(area) * numerical.flux.momentum_x;
             mr += static_cast<long double>(area) * numerical.flux.momentum_r;
             energy += static_cast<long double>(area) * numerical.flux.energy;
         }
     }
     boundary_outflow_ = {finite_value(mass), finite_value(mx), finite_value(mr), finite_value(energy)};
+    mass_flow_in_ = finite_value(mass_in);
+    mass_flow_out_ = finite_value(mass_out);
     long double dt{std::numeric_limits<long double>::infinity()};
     for (Index cell = 0; cell < mesh_->cell_count(); ++cell)
     {
@@ -225,6 +244,36 @@ double AxisymmetricEulerSolver::assemble()
         dt = std::min(dt, static_cast<long double>(options_.cfl) * geometry_.cell_volumes()[cell] / wave_sums_[cell]);
     }
     return finite_value(dt);
+}
+
+double AxisymmetricEulerSolver::prepare_assembly()
+{
+    if (!assembled_time_step_)
+    {
+        const auto start{options_.collect_timings ? Clock::now() : Clock::time_point{}};
+        assembled_time_step_ = assemble();
+        if (options_.collect_timings)
+            timings_.assembly_seconds += std::chrono::duration<double>(Clock::now() - start).count();
+    }
+    return *assembled_time_step_;
+}
+
+EulerResidualEvaluation AxisymmetricEulerSolver::evaluate_steady_residual()
+{
+    (void)prepare_assembly();
+    std::array<long double, 4> absolute{};
+    for (Index cell = 0; cell < state().size(); ++cell)
+    {
+        const auto value{residual_.state(cell)};
+        absolute[0] += std::abs(static_cast<long double>(value.density));
+        absolute[1] += std::abs(static_cast<long double>(value.momentum_x));
+        absolute[2] += std::abs(static_cast<long double>(value.momentum_r));
+        absolute[3] += std::abs(static_cast<long double>(value.total_energy_density));
+    }
+    return {
+        {finite_value(absolute[0]), finite_value(absolute[1]), finite_value(absolute[2]), finite_value(absolute[3])},
+        mass_flow_in_,
+        mass_flow_out_};
 }
 
 const AxisymmetricEulerResult &AxisymmetricEulerSolver::step(const double final_time)
@@ -236,7 +285,8 @@ const AxisymmetricEulerResult &AxisymmetricEulerSolver::step(const double final_
     if (result_.accepted_steps >= options_.maximum_steps)
         throw std::runtime_error("Euler maximum accepted-step count reached.");
     const double remaining{final_time - result_.time};
-    double dt{std::min(assemble(), remaining)};
+    double dt{std::min(prepare_assembly(), remaining)};
+    const auto update_start{options_.collect_timings ? Clock::now() : Clock::time_point{}};
     auto &candidate{states_.at(1 - current_)};
     std::string failure;
     for (Index attempt = 0; attempt < options_.maximum_step_attempts; ++attempt)
@@ -280,6 +330,9 @@ const AxisymmetricEulerResult &AxisymmetricEulerSolver::step(const double final_
                 balance_error(result_.integrals, next.integrals, boundary_outflow_, radial_source_, dt);
             current_ = 1 - current_;
             result_ = next;
+            assembled_time_step_.reset();
+            if (options_.collect_timings)
+                timings_.time_update_seconds += std::chrono::duration<double>(Clock::now() - update_start).count();
             return result_;
         }
         ++result_.rejected_steps;

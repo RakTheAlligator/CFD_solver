@@ -157,6 +157,8 @@ add_library(
     src/compressible/EulerSlipWallFlux.cpp
     src/compressible/EulerBoundaryConditions.cpp
     src/compressible/EulerCharacteristicBoundaryFlux.cpp
+    src/compressible/EulerSteadyMonitor.cpp
+    src/io/EulerSteadyCsvWriter.cpp
 )
 target_link_libraries(cfd_compressible PUBLIC cfd_core)
 cfd_enable_warnings(cfd_compressible)
@@ -234,6 +236,9 @@ if(BUILD_VERIFICATION)
 
     cfd_add_verification(cfd_axisymmetric_euler_boundary_demo verification/AxisymmetricEulerBoundaryDemo.cpp)
     target_link_libraries(cfd_axisymmetric_euler_boundary_demo PRIVATE cfd_compressible)
+
+    cfd_add_verification(cfd_axisymmetric_euler_nozzle verification/AxisymmetricEulerNozzle.cpp)
+    target_link_libraries(cfd_axisymmetric_euler_nozzle PRIVATE cfd_compressible)
 
     cfd_add_verification(
         cfd_least_squares_gradient_convergence
@@ -411,6 +416,14 @@ if(BUILD_TESTING)
     cfd_add_test(cfd_euler_characteristic_boundary_tests euler_characteristic_boundary tests/EulerCharacteristicBoundaryTests.cpp)
     target_link_libraries(cfd_euler_characteristic_boundary_tests PRIVATE cfd_compressible)
     target_include_directories(cfd_euler_characteristic_boundary_tests PRIVATE ${PROJECT_SOURCE_DIR}/verification)
+
+    cfd_add_test(cfd_euler_steady_monitor_tests euler_steady_monitor tests/EulerSteadyMonitorTests.cpp)
+    target_link_libraries(cfd_euler_steady_monitor_tests PRIVATE cfd_compressible)
+    target_include_directories(cfd_euler_steady_monitor_tests PRIVATE ${PROJECT_SOURCE_DIR}/verification)
+
+    cfd_add_test(cfd_euler_nozzle_tests euler_nozzle tests/EulerNozzleTests.cpp)
+    target_link_libraries(cfd_euler_nozzle_tests PRIVATE cfd_compressible)
+    target_include_directories(cfd_euler_nozzle_tests PRIVATE ${PROJECT_SOURCE_DIR}/verification)
 
     cfd_add_test(
         cfd_axisymmetric_geometry_tests

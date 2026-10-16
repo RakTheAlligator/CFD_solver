@@ -5,6 +5,7 @@
 #include "cfd/geometry/AxisymmetricGeometry.hpp"
 
 #include <array>
+#include <optional>
 #include <vector>
 
 namespace cfd
@@ -15,6 +16,14 @@ struct AxisymmetricEulerOptions
     double cfl{0.2};                 ///< Finite, 0 < CFL <= 1; positivity may require a smaller step.
     Index maximum_step_attempts{20}; ///< Includes the first candidate; subsequent attempts halve dt globally.
     Index maximum_steps{1000000};    ///< Total accepted-step limit over the solver lifetime.
+    bool collect_timings{false};     ///< Optional wall-clock instrumentation, including per-boundary-face clocks.
+};
+
+struct AxisymmetricEulerTimings
+{
+    double assembly_seconds{};      ///< Source, face fluxes, BCs and CFL; includes explicit residual preparation.
+    double boundary_flux_seconds{}; ///< Subset of assembly_seconds; instrumentation overhead is not subtracted.
+    double time_update_seconds{};   ///< Candidates, admissibility, accepted-state summary and commit.
 };
 
 /// Full-revolution integrals: mass [kg], momenta [kg*m/s], energy [J].
@@ -44,6 +53,15 @@ struct AxisymmetricEulerResult
     double radial_pressure_source_rate{};
     /// I_new - I_old + dt*boundary_outflow - dt*source (radial momentum only).
     EulerIntegralQuantities balance_error;
+};
+
+/// Current-state integrated residual L1 sums: [kg/s, N, N, W]. No dt factor.
+/// Boundary rates use exactly the same numerical flux as the update.
+struct EulerResidualEvaluation
+{
+    std::array<double, 4> absolute_residual{};
+    double mass_flow_in{};  ///< Positive inward mass flow over all boundary faces [kg/s].
+    double mass_flow_out{}; ///< Positive outward mass flow over all boundary faces [kg/s].
 };
 
 /// First-order, no-swirl axisymmetric Euler / Rusanov / global forward Euler.
@@ -79,6 +97,23 @@ class AxisymmetricEulerSolver
         return result_;
     }
 
+    [[nodiscard]] const AxisymmetricGeometry &geometry() const noexcept
+    {
+        return geometry_;
+    }
+
+    [[nodiscard]] const AxisymmetricEulerTimings &timings() const noexcept
+    {
+        return timings_;
+    }
+
+    /// Evaluates sum(abs(R_C)) on the current accepted state using the existing
+    /// assembler, never a stale pre-update residual. Does not change state,
+    /// time or accepted-step diagnostics. Prepared scratch can serve the next
+    /// step; accepting a step invalidates it. No allocation on the valid path.
+    /// Same flux/BC/arithmetic failures as step(), propagated without retry.
+    [[nodiscard]] EulerResidualEvaluation evaluate_steady_residual();
+
     /// Accepts one step, clipped to final_time, or does nothing if already there.
     /// dt = CFL*min(V/sum(A*lambda)); zero-area axis faces contribute nothing.
     /// The radial source is explicit; this face CFL alone is not a positivity
@@ -95,6 +130,7 @@ class AxisymmetricEulerSolver
     const AxisymmetricEulerResult &advance_to(double final_time);
 
   private:
+    double prepare_assembly();
     double assemble();
     AxisymmetricEulerResult summarize(const ConservativeField &field) const;
 
@@ -112,6 +148,10 @@ class AxisymmetricEulerSolver
     AxisymmetricEulerResult result_;
     EulerIntegralQuantities boundary_outflow_;
     double radial_source_{};
+    double mass_flow_in_{};
+    double mass_flow_out_{};
+    std::optional<double> assembled_time_step_; ///< Valid only for the current accepted state and steady BCs.
+    AxisymmetricEulerTimings timings_;
 };
 
 } // namespace cfd
