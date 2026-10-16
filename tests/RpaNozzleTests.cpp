@@ -683,9 +683,11 @@ struct ParametricCase
 std::vector<ParametricCase> parametric_cases()
 {
     // One-factor changes isolate failures; two combined cases cover interactions.
-    // TRI/HYBRID use an explicit 0.01 minimum corner sine, not the old maximum.
+    // Synthetic TRI/HYBRID variations use an explicit 0.01 minimum corner sine.
     return {
-        {.name = "reference", .size = .005, .integration = true},
+        // Expected values from the tracked demo meshDict, not the synthetic QUAD defaults.
+        {.name = "reference", .size = .010, .type = "hybrid", .quality = .05, .integration = true},
+        {.name = "quad_005", .size = .005, .integration = true},
         {.name = "resolution_010", .size = .010, .integration = true},
         {.name = "resolution_020"},
         {.name = "wall_001", .wall = .01},
@@ -704,7 +706,7 @@ std::vector<ParametricCase> parametric_cases()
         {.name = "regions_combined", .band = .75, .plume = 4, .quality = .05, .integration = true},
         {.name = "triangle", .type = "triangle", .quality = .01, .integration = true},
         {.name = "hybrid", .type = "hybrid", .quality = .01, .integration = true},
-        // At the reference resolution these first layers exceed the wall-
+        // At 0.005 m these first layers exceed the wall-
         // chord errors while fitting the curved-wall offset geometry.
         // The incompatible coarse/thin combination has its own negative test.
         {.name = "inner_layers", .size = .005, .layers = 1},
@@ -756,6 +758,11 @@ void validate_parametric_plan(const cfd::input::MeshInput &input, const cfd::Rpa
     const auto plan{cfd::detail::discretize_rpa(d, layout, input.generation_options, options)};
     const double radius{d.inner_wall.back().y}, exit_x{d.inner_wall.back().x};
     require_near(input.generation_options.mesh_size, test.size, 1e-14, "Resolution was not read from meshDict.");
+    const auto expected_type{std::string_view{test.type} == "triangle" ? cfd::CellType::Triangle
+                                                                       : cfd::CellType::Quadrilateral};
+    require(input.generation_options.cell_type == expected_type, "Cell type was not read from meshDict.");
+    require(input.generation_options.hybrid == (std::string_view{test.type} == "hybrid"),
+            "Hybrid mode was not read from meshDict.");
     require_near(options.min_cell_quality, test.quality, 1e-14, "User quality threshold changed.");
     require_near(d.downstream_x - exit_x, test.downstream * radius, 1e-12, "Downstream box factor mismatch.");
     require_near(d.farfield_radius, test.outer * radius, 1e-12, "Radial box factor mismatch.");

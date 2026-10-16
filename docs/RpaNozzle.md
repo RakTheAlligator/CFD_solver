@@ -12,6 +12,8 @@ The fictitious shell is excluded from the fluid domain.
 
 ## Configuration
 
+The demo configuration below matches `cases/rpaNozzle/system/meshDict`.
+
 ```foam
 FoamFile { format ascii; class dictionary; object meshDict; }
 geometry
@@ -26,20 +28,20 @@ geometry
     box
     {
         upstreamFactor auto;
-        downstreamFactor 20;
-        outerRadiusFactor 10;
+        downstreamFactor 20.0;
+        outerRadiusFactor 10.0;
     }
 }
 regions
 {
     bandThicknessFactor 0.5;
-    plumeOutletRadiusFactor 6;
+    plumeOutletRadiusFactor 6.0;
 }
 mesh
 {
-    cellType quadrilateral;
-    baseCellSize 0.005;
-    minCellQuality 0.10;
+    cellType hybrid;
+    baseCellSize 0.01;
+    minCellQuality 0.05;
 }
 ```
 
@@ -52,10 +54,10 @@ upstream extents cannot exceed that profile. Shell thickness defaults to
 
 `regions` is optional; defaults are band thickness 0.5 exit radii and plume
 outlet radius **16.0** exit radii. The demo explicitly retains its factor **6.0**
-and requests QUAD, 0.005 m and angular threshold 0.10. The inlet plume radius is exit radius + shell
-thickness + band thickness. Its upper boundary is the straight line to the
-outlet. Require inlet plume radius < outlet plume radius < box radius, and
-no BAND/FARFIELD intersection.
+and requests HYBRID, 0.01 m and angular threshold 0.05. The inlet plume radius
+is exit radius + shell thickness + band thickness. Its upper boundary is the
+straight line to the outlet. Require inlet plume radius < outlet plume radius
+< box radius, and no BAND/FARFIELD intersection.
 
 Old flat RPA geometry entries and regional refinement settings are errors.
 Use `geometry.engine`, `geometry.box` and `regions` instead. In particular
@@ -174,14 +176,15 @@ Orthogonal QUAD anisotropy leaves its angles unchanged, whereas a thin TRI has
 small angles and can fail the threshold. The aspect-sensitive `cell_quality`
 exported by Mesh is a separate shape measure. Neither indicator alone guarantees
 CFD accuracy; non-orthogonality, skewness and aspect ratios are reported separately.
-The demo requests 0.10. The actual generated cells are checked;
+The demo requests 0.05. The actual generated cells are checked;
 a failed threshold is an error, never an automatic threshold reduction.
 With plume factor 3 and downstream factor 20, the outlet wedge angle is about
 4.23 degrees (sine 0.0738): threshold 0.10 is incompatible, including TRI/HYBRID
 under the minimum-angle contract. Tests use explicitly smaller thresholds for
 such configurations or expect a quality rejection. The demo's plume factor 6
-opens this wedge and its QUAD mesh satisfies 0.10. Before generation, every
-topology requires an outlet factor at least
+opens this wedge; the demo uses HYBRID at 0.01 m with threshold 0.05.
+A separate synthetic QUAD regression at 0.005 m retains threshold 0.10.
+Before generation, every topology requires an outlet factor at least
 `Fmin = Rin/Re + (L/Re)*q/sqrt(1-q*q)`, where `Re` is the inner exit radius,
 `Rin` the plume inlet radius, `L` its downstream length and `q = minCellQuality`.
 At `q=1`, no finite outlet factor is admissible. The minimum radius must also
@@ -229,3 +232,6 @@ ctest --test-dir build-release -L parametric --output-on-failure
 
 Each configuration uses an isolated temporary case and the normal meshDict
 reader/generator. The reference dictionary and DXF are never modified.
+The `reference` case reads the tracked demo dictionary and checks its size,
+cell type, Hybrid mode and quality threshold against explicit expectations.
+Synthetic QUAD cases, including `quad_005`, are independent of that dictionary.

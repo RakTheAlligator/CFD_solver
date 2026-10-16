@@ -35,7 +35,14 @@ jobs:
             cmake \
             g++ \
             libeigen3-dev \
-            libgmsh-dev
+            libgmsh-dev \
+            python3-venv
+
+      - name: Install CAD dependencies in an isolated Python environment
+        run: |
+          python3 -m venv "${RUNNER_TEMP}/cad-venv"
+          "${RUNNER_TEMP}/cad-venv/bin/python" -m pip install -r tools/requirements-cad.txt
+          echo "CAD_PYTHON=${RUNNER_TEMP}/cad-venv/bin/python" >> "$GITHUB_ENV"
 
       - name: Configure
         run: |
@@ -43,7 +50,29 @@ jobs:
             -S . \
             -B build \
             -DCMAKE_BUILD_TYPE=${{ matrix.build_type }} \
-            -DBUILD_TESTING=ON
+            -DBUILD_TESTING=ON \
+            -DPython3_EXECUTABLE="$CAD_PYTHON"
+
+      - name: Require RPA test registration
+        run: |
+          "$CAD_PYTHON" - <<'PY'
+          import json
+          import subprocess
+          import sys
+
+          listing = subprocess.check_output(
+              ["ctest", "--test-dir", "build", "--show-only=json-v1"], text=True)
+          required = {"rpa_nozzle", "rpa_nozzle_integration", "rpa_dxf_import"}
+          enabled = {
+              test["name"] for test in json.loads(listing)["tests"]
+              if not any(p["name"] == "DISABLED" and p["value"]
+                         for p in test.get("properties", []))
+          }
+          missing = required - enabled
+          if missing:
+              sys.exit("Required RPA tests missing or disabled: " + ", ".join(sorted(missing)))
+          print("Required RPA tests registered and enabled: " + ", ".join(sorted(required)))
+          PY
 
       - name: Build
         run: |
@@ -53,6 +82,7 @@ jobs:
         run: |
           ctest \
             --test-dir build \
+            --no-tests=error \
             --output-on-failure
 
   sanitizers:
@@ -70,7 +100,14 @@ jobs:
             cmake \
             g++ \
             libeigen3-dev \
-            libgmsh-dev
+            libgmsh-dev \
+            python3-venv
+
+      - name: Install CAD dependencies in an isolated Python environment
+        run: |
+          python3 -m venv "${RUNNER_TEMP}/cad-venv"
+          "${RUNNER_TEMP}/cad-venv/bin/python" -m pip install -r tools/requirements-cad.txt
+          echo "CAD_PYTHON=${RUNNER_TEMP}/cad-venv/bin/python" >> "$GITHUB_ENV"
 
       - name: Configure
         run: |
@@ -79,8 +116,30 @@ jobs:
             -B build-sanitizers \
             -DCMAKE_BUILD_TYPE=Debug \
             -DBUILD_TESTING=ON \
+            -DPython3_EXECUTABLE="$CAD_PYTHON" \
             -DCMAKE_CXX_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer" \
             -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=address,undefined"
+
+      - name: Require RPA test registration
+        run: |
+          "$CAD_PYTHON" - <<'PY'
+          import json
+          import subprocess
+          import sys
+
+          listing = subprocess.check_output(
+              ["ctest", "--test-dir", "build-sanitizers", "--show-only=json-v1"], text=True)
+          required = {"rpa_nozzle", "rpa_nozzle_integration", "rpa_dxf_import"}
+          enabled = {
+              test["name"] for test in json.loads(listing)["tests"]
+              if not any(p["name"] == "DISABLED" and p["value"]
+                         for p in test.get("properties", []))
+          }
+          missing = required - enabled
+          if missing:
+              sys.exit("Required RPA tests missing or disabled: " + ", ".join(sorted(missing)))
+          print("Required RPA tests registered and enabled: " + ", ".join(sorted(required)))
+          PY
 
       - name: Build
         run: |
@@ -93,6 +152,7 @@ jobs:
         run: |
           ctest \
             --test-dir build-sanitizers \
+            --no-tests=error \
             --output-on-failure
 
   code-quality:
@@ -112,7 +172,14 @@ jobs:
             cmake \
             g++ \
             libeigen3-dev \
-            libgmsh-dev
+            libgmsh-dev \
+            python3-venv
+
+      - name: Install CAD dependencies in an isolated Python environment
+        run: |
+          python3 -m venv "${RUNNER_TEMP}/cad-venv"
+          "${RUNNER_TEMP}/cad-venv/bin/python" -m pip install -r tools/requirements-cad.txt
+          echo "CAD_PYTHON=${RUNNER_TEMP}/cad-venv/bin/python" >> "$GITHUB_ENV"
 
       - name: Check formatting
         run: |
@@ -129,7 +196,29 @@ jobs:
             -B build \
             -DCMAKE_BUILD_TYPE=Debug \
             -DBUILD_TESTING=ON \
-            -DBUILD_VERIFICATION=ON
+            -DBUILD_VERIFICATION=ON \
+            -DPython3_EXECUTABLE="$CAD_PYTHON"
+
+      - name: Require RPA test registration
+        run: |
+          "$CAD_PYTHON" - <<'PY'
+          import json
+          import subprocess
+          import sys
+
+          listing = subprocess.check_output(
+              ["ctest", "--test-dir", "build", "--show-only=json-v1"], text=True)
+          required = {"rpa_nozzle", "rpa_nozzle_integration", "rpa_dxf_import"}
+          enabled = {
+              test["name"] for test in json.loads(listing)["tests"]
+              if not any(p["name"] == "DISABLED" and p["value"]
+                         for p in test.get("properties", []))
+          }
+          missing = required - enabled
+          if missing:
+              sys.exit("Required RPA tests missing or disabled: " + ", ".join(sorted(missing)))
+          print("Required RPA tests registered and enabled: " + ", ".join(sorted(required)))
+          PY
 
       - name: Run clang-tidy
         run: |
