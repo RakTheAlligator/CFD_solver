@@ -227,6 +227,9 @@ if(BUILD_VERIFICATION)
     cfd_add_verification(cfd_axisymmetric_euler_sod verification/AxisymmetricEulerSod.cpp)
     target_link_libraries(cfd_axisymmetric_euler_sod PRIVATE cfd_compressible)
 
+    cfd_add_verification(cfd_axisymmetric_euler_radial_expansion verification/AxisymmetricEulerRadialExpansion.cpp)
+    target_link_libraries(cfd_axisymmetric_euler_radial_expansion PRIVATE cfd_compressible)
+
     cfd_add_verification(
         cfd_least_squares_gradient_convergence
         verification/LeastSquaresGradientConvergence.cpp
@@ -395,6 +398,10 @@ if(BUILD_TESTING)
     cfd_add_test(cfd_axisymmetric_euler_sod_tests axisymmetric_euler_sod tests/AxisymmetricEulerSodTests.cpp)
     target_link_libraries(cfd_axisymmetric_euler_sod_tests PRIVATE cfd_compressible)
     target_include_directories(cfd_axisymmetric_euler_sod_tests PRIVATE ${PROJECT_SOURCE_DIR}/verification)
+
+    cfd_add_test(cfd_radial_expansion_tests radial_expansion tests/RadialExpansionTests.cpp)
+    target_link_libraries(cfd_radial_expansion_tests PRIVATE cfd_compressible)
+    target_include_directories(cfd_radial_expansion_tests PRIVATE ${PROJECT_SOURCE_DIR}/verification)
 
     cfd_add_test(
         cfd_axisymmetric_geometry_tests
