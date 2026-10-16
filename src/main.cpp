@@ -80,6 +80,11 @@ struct GeometrySummaryWriter
                 << " m, downstream=" << geometry.downstream_length << " m, channel height=" << geometry.channel_height
                 << " m, step height=" << geometry.step_height << " m\n";
     }
+
+    void operator()(const cfd::RpaNozzleGeometry &geometry) const
+    {
+        *output << "  Domain            : RPA Cartesian meridian, CAD=" << geometry.file.string() << '\n';
+    }
 };
 
 void require_field_metadata(const cfd::input::ScalarFieldInput &field_input,
@@ -138,7 +143,8 @@ int main(const int argc, char *argv[])
         const auto mesh_generation_start{std::chrono::steady_clock::now()};
 
         cfd::RawMeshData raw_mesh{cfd::generate_mesh(geometry, options, mesh_input.automatic_meshing,
-                                                     mesh_input.backward_facing_step_meshing)};
+                                                     mesh_input.backward_facing_step_meshing,
+                                                     mesh_input.rpa_nozzle_meshing)};
 
         const auto mesh_generation_end{std::chrono::steady_clock::now()};
 
@@ -179,12 +185,12 @@ int main(const int argc, char *argv[])
 
         const cfd::IncompressibleSimpleOptions simple_options{
             .maximum_iterations = 2000,
-            .momentum_relaxation_factor = 1.0,
-            .pressure_relaxation_factor = 0.1,
-            .rhie_chow_flux_relaxation_factor = 0.3,
-            .velocity_relative_tolerance = 1.0e-10,
-            .rhie_chow_flux_relative_tolerance = 1.0e-10,
-            .continuity_relative_tolerance = 1.0e-10,
+            .momentum_relaxation_factor = 0.7,
+            .pressure_relaxation_factor = 0.3,
+            .rhie_chow_flux_relaxation_factor = 1.0,
+            .velocity_relative_tolerance = 1.0e-5,
+            .rhie_chow_flux_relative_tolerance = 1.0e-5,
+            .continuity_relative_tolerance = 1.0e-5,
             .momentum_linear_solver = {.relative_tolerance = 1.0e-6, .maximum_iterations = 5000},
             .pressure_correction_linear_solver = {.relative_tolerance = 1.0e-3, .maximum_iterations = 5000},
         };
@@ -194,7 +200,7 @@ int main(const int argc, char *argv[])
         std::filesystem::remove(output_directory / "convergence.csv");
         const cfd::app::GridSequencingResult initialization{cfd::app::initialize_with_grid_sequencing(
             mesh, mesh_input, control_input.initialization, u_input, v_input, pressure_input, density,
-            dynamic_viscosity, cfd::ScalarConvectionScheme::Linear, simple_options, velocity, pressure,
+            dynamic_viscosity, cfd::ScalarConvectionScheme::LinearUpwind, simple_options, velocity, pressure,
             [&output_directory](cfd::Index level, const cfd::Mesh &level_mesh,
                                 const cfd::CellVelocityField &level_velocity,
                                 const cfd::CellScalarField &level_pressure, const cfd::FaceFluxField &level_flux) {

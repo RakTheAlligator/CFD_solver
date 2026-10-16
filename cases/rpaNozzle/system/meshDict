@@ -1,0 +1,35 @@
+FoamFile
+{
+    format ascii;
+    class dictionary;
+    object meshDict;
+}
+
+geometry
+{
+    type rpaNozzle;
+    engine
+    {
+        file "constant/geometry/engine.dxf";
+        wallThicknessFactor 0.02;
+    }
+    box
+    {
+        upstreamFactor auto;
+        downstreamFactor 20.0;
+        outerRadiusFactor 10.0;
+    }
+}
+
+regions
+{
+    bandThicknessFactor 0.5;
+    plumeOutletRadiusFactor 6.0;
+}
+
+mesh
+{
+    cellType hybrid;
+    baseCellSize 0.01;
+    minCellQuality 0.05;
+}

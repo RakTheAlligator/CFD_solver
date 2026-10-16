@@ -53,6 +53,7 @@ struct MeshInput
     MeshGenerationOptions generation_options;
     AutomaticMeshingOptions automatic_meshing;
     BackwardFacingStepMeshingOptions backward_facing_step_meshing;
+    RpaNozzleMeshingOptions rpa_nozzle_meshing{};
 };
 
 /// Scalar boundary condition associated with a user-facing boundary name.

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "cfd/mesh/Types.hpp"
+#include <array>
 
 namespace cfd
 {
@@ -47,6 +48,17 @@ struct MeshStatistics
     ///
     /// `invalid_index` indicates that the mesh has no internal face.
     Index maximum_neighbor_cell_size_ratio_face_id{invalid_index};
+    Index triangle_cell_count{};
+    Index quadrilateral_cell_count{};
+    /// Lmax^2/(2*area) for TRI, Lmax^2/area for QUAD, where Lmax is
+    /// the longest edge. Captures thin triangles as well as stretched quads;
+    /// informational, not a validity test for anisotropic wall cells.
+    ScalarStatistics cell_aspect_ratios;
+    /// Tangential face-centre offset from the centre-line intersection,
+    /// normalized by face length (boundary: owner-normal projection).
+    ScalarStatistics finite_volume_face_skewness;
+    /// Quality bins [0,.1), ... [.9,1]; no cell-sized diagnostic buffer.
+    std::array<Index, 10> quality_histogram{};
 };
 
 /// Computes descriptive statistics from mesh topology and geometry.

@@ -268,8 +268,9 @@ GridSequencingResult initialize_with_grid_sequencing(
             {
                 MeshGenerationOptions options{mesh_input.generation_options};
                 options.mesh_size = plan.at(level).mesh_size;
-                built.emplace(build_mesh(generate_mesh(mesh_input.geometry, options, mesh_input.automatic_meshing,
-                                                       mesh_input.backward_facing_step_meshing)));
+                built.emplace(
+                    build_mesh(generate_mesh(mesh_input.geometry, options, mesh_input.automatic_meshing,
+                                             mesh_input.backward_facing_step_meshing, mesh_input.rpa_nozzle_meshing)));
             }
             catch (const std::runtime_error &error)
             {

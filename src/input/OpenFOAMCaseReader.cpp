@@ -11,6 +11,7 @@
 #include <cstdint>
 #include <fstream>
 #include <limits>
+#include <map>
 #include <optional>
 #include <sstream>
 #include <stdexcept>
@@ -52,6 +53,7 @@ struct ParsedMeshOptions
     MeshGenerationOptions generation;
     AutomaticMeshingOptions automatic;
     BackwardFacingStepMeshingOptions backward_facing_step;
+    RpaNozzleMeshingOptions rpa_nozzle;
 };
 
 [[nodiscard]]
@@ -134,8 +136,11 @@ class CaseParser
         static_cast<void>(parse_foam_header("dictionary", "meshDict"));
 
         GeometryInput geometry{parse_geometry()};
-        const ParsedMeshOptions mesh_options{
-            parse_mesh_options(std::holds_alternative<BackwardFacingStepGeometry>(geometry))};
+        const bool rpa{std::holds_alternative<RpaNozzleGeometry>(geometry)};
+        const auto regions{rpa ? parse_rpa_regions() : RpaRegionLayoutOptions{}};
+        ParsedMeshOptions mesh_options{parse_mesh_options(std::holds_alternative<BackwardFacingStepGeometry>(geometry),
+                                                          std::holds_alternative<RpaNozzleGeometry>(geometry))};
+        mesh_options.rpa_nozzle.regions = regions;
 
         expect(TokenKind::End, "end of file");
 
@@ -144,6 +149,7 @@ class CaseParser
             .generation_options = mesh_options.generation,
             .automatic_meshing = mesh_options.automatic,
             .backward_facing_step_meshing = mesh_options.backward_facing_step,
+            .rpa_nozzle_meshing = mesh_options.rpa_nozzle,
         };
     }
 
@@ -863,7 +869,163 @@ class CaseParser
         return std::string{object_name->text};
     }
 
-    [[nodiscard]]
+    void parse_rpa_geometry_block(RpaNozzleGeometry &geometry, bool engine)
+    {
+        expect(TokenKind::LeftBrace, "'{'");
+        std::map<std::string, Token> values;
+        while (current_.kind != TokenKind::RightBrace)
+        {
+            const auto key{take_key(engine ? "engine" : "box")};
+            if (values.contains(std::string{key.text}))
+                fail(key.line, "Duplicate RPA geometry key '" + std::string{key.text} + "'.");
+            const bool word{key.text == "file" || key.text == "dxfUnits" ||
+                            (key.text == "upstreamFactor" && current_.text == "auto")};
+            const auto value{word ? take_word("a CAD path/unit or auto") : take_number("a finite RPA geometry factor")};
+            expect(TokenKind::Semicolon, "';'");
+            values.emplace(std::string{key.text}, value);
+            if (engine && key.text == "file")
+                geometry.file = std::string{value.text};
+            else if (engine && key.text == "dxfUnits")
+                geometry.dxf_units = std::string{value.text};
+            else if (engine && key.text == "wallThicknessFactor")
+                geometry.wall_thickness_factor = value.number;
+            else if (engine && key.text == "geometricTolerance")
+                geometry.geometric_tolerance = value.number;
+            else if (!engine && key.text == "upstreamFactor")
+                geometry.upstream_factor = word ? std::nullopt : std::optional<double>{value.number};
+            else if (!engine && key.text == "downstreamFactor")
+                geometry.downstream_factor = value.number;
+            else if (!engine && key.text == "outerRadiusFactor")
+                geometry.outer_radius_factor = value.number;
+            else
+                fail(key.line, "Unsupported RPA geometry key '" + std::string{key.text} + "'.");
+            if (!word && !(value.number > 0.0))
+                fail(value.line, "RPA geometry factors/tolerance must be positive.");
+        }
+        expect(TokenKind::RightBrace, "'}'");
+        if (engine && geometry.file.empty())
+            fail_current("RPA engine requires a nonempty file.");
+        if (geometry.dxf_units != "auto" && geometry.dxf_units != "m" && geometry.dxf_units != "mm" &&
+            geometry.dxf_units != "cm" && geometry.dxf_units != "in")
+            fail_current("Unsupported dxfUnits; use auto, m, mm, cm or in.");
+    }
+
+    RpaRegionLayoutOptions parse_rpa_regions()
+    {
+        RpaRegionLayoutOptions result;
+        if (current_.text != "regions")
+            return result;
+        expect_keyword("regions");
+        expect(TokenKind::LeftBrace, "'{'");
+        std::map<std::string, Token> seen;
+        while (current_.kind != TokenKind::RightBrace)
+        {
+            const auto key{take_key("regions")};
+            if (seen.contains(std::string{key.text}))
+                fail(key.line, "Duplicate regions key.");
+            const auto value{take_number("a finite region factor")};
+            expect(TokenKind::Semicolon, "';'");
+            seen.emplace(std::string{key.text}, value);
+            if (!(value.number > 0.0))
+                fail(value.line, "Region factors must be positive.");
+            if (key.text == "bandThicknessFactor")
+                result.band_thickness_factor = value.number;
+            else if (key.text == "plumeOutletRadiusFactor")
+                result.plume_outlet_radius_factor = value.number;
+            else
+                fail(key.line, "Unsupported regions key '" + std::string{key.text} + "'.");
+        }
+        expect(TokenKind::RightBrace, "'}'");
+        return result;
+    }
+
+    ParsedMeshOptions parse_rpa_mesh_options()
+    {
+        expect_keyword("mesh");
+        expect(TokenKind::LeftBrace, "'{'");
+        std::map<std::string, Token> values;
+        constexpr std::array<std::string_view, 15> allowed{"cellType",
+                                                           "baseCellSize",
+                                                           "minCellQuality",
+                                                           "targetCellBudget",
+                                                           "externalSizeField",
+                                                           "innerWallLayers",
+                                                           "innerWallFirstCellHeight",
+                                                           "innerWallLayerCount",
+                                                           "innerWallGrowthRate",
+                                                           "innerWallThickness",
+                                                           "outerWallLayers",
+                                                           "outerWallFirstCellHeight",
+                                                           "outerWallLayerCount",
+                                                           "outerWallGrowthRate",
+                                                           "outerWallThickness"};
+        while (current_.kind != TokenKind::RightBrace)
+        {
+            const auto key{take_key("mesh")};
+            if (std::find(allowed.begin(), allowed.end(), key.text) == allowed.end())
+                fail(key.line,
+                     "RPA mesh option '" + std::string{key.text} +
+                         "' is unsupported/removed; use baseCellSize, minCellQuality and optional wall layers.");
+            if (values.contains(std::string{key.text}))
+                fail(key.line, "Duplicate RPA mesh key.");
+            const auto value{key.text == "cellType" || key.text == "externalSizeField"
+                                 ? take_word("a cell type or path")
+                             : key.text.ends_with("Layers") ? take_boolean(key.text)
+                                                            : take_number("a finite RPA mesh value")};
+            expect(TokenKind::Semicolon, "';'");
+            values.emplace(std::string{key.text}, value);
+        }
+        expect(TokenKind::RightBrace, "'}'");
+        if (!values.contains("cellType") || !values.contains("baseCellSize"))
+            fail_current("RPA mesh requires cellType and baseCellSize.");
+        ParsedMeshOptions result;
+        const auto &type{values.at("cellType")};
+        result.generation.mesh_size = values.at("baseCellSize").number;
+        if (!(result.generation.mesh_size > 0.0))
+            fail_current("baseCellSize must be positive.");
+        if (type.text == "triangle")
+            result.generation.cell_type = CellType::Triangle;
+        else if (type.text == "quadrilateral" || type.text == "hybrid")
+        {
+            result.generation.cell_type = CellType::Quadrilateral;
+            result.generation.hybrid = type.text == "hybrid";
+        }
+        else
+            fail(type.line, "Unsupported mesh cellType.");
+        for (const auto &[key, value] : values)
+        {
+            if (key == "minCellQuality")
+            {
+                if (!(value.number > 0.0) || value.number > 1.0)
+                    fail(value.line, "minCellQuality must be in (0,1].");
+                result.rpa_nozzle.min_cell_quality = value.number;
+            }
+            else if (key == "targetCellBudget")
+                result.rpa_nozzle.target_cell_budget = positive_index(value, key);
+            else if (key == "externalSizeField")
+                result.rpa_nozzle.external_size_field_file = std::string{value.text};
+            else if (key.starts_with("inner") || key.starts_with("outer"))
+            {
+                auto &layers{key.starts_with("inner") ? result.rpa_nozzle.inner_wall_layers
+                                                      : result.rpa_nozzle.outer_wall_layers};
+                if (key.ends_with("Layers"))
+                    layers.enabled = value.text == "true";
+                else if (key.ends_with("FirstCellHeight"))
+                    layers.first_cell_height = value.number;
+                else if (key.ends_with("LayerCount"))
+                    layers.layer_count = positive_index(value, key);
+                else if (key.ends_with("GrowthRate"))
+                    layers.growth_rate = value.number;
+                else if (key.ends_with("Thickness"))
+                    layers.thickness = value.number;
+            }
+        }
+        for (const auto *layers : {&result.rpa_nozzle.inner_wall_layers, &result.rpa_nozzle.outer_wall_layers})
+            if ((layers->first_cell_height || layers->thickness) && !layers->active())
+                fail_current("Physical wall height/thickness requires the corresponding WallLayers true.");
+        return result;
+    }
+
     GeometryInput parse_geometry()
     {
         expect_keyword("geometry");
@@ -876,6 +1038,8 @@ class CaseParser
         std::optional<Token> downstream_length;
         std::optional<Token> channel_height;
         std::optional<Token> step_height;
+        RpaNozzleGeometry rpa_geometry;
+        bool engine_seen{}, box_seen{};
 
         while (current_.kind != TokenKind::RightBrace)
         {
@@ -890,6 +1054,19 @@ class CaseParser
 
                 type = take_word("the geometry type");
             }
+            else if (key.text == "engine" || key.text == "box")
+            {
+                auto &seen{key.text == "engine" ? engine_seen : box_seen};
+                if (seen)
+                    fail(key.line, "Duplicate RPA geometry dictionary.");
+                seen = true;
+                parse_rpa_geometry_block(rpa_geometry, key.text == "engine");
+                continue;
+            }
+            else if (key.text == "file" || key.text == "dxfUnits" || key.text == "geometricTolerance" ||
+                     key.text == "inletPosition" || key.text == "outerUpstreamLength" || key.text == "wallThickness" ||
+                     key.text == "farfieldRadius")
+                fail(key.line, "Legacy RPA geometry keys were removed; use geometry.engine and geometry.box factors.");
             else if (key.text == "length")
             {
                 if (length.has_value())
@@ -958,6 +1135,17 @@ class CaseParser
         {
             fail_current("geometry requires a type entry.");
         }
+
+        if (type->text == "rpaNozzle")
+        {
+            if (!engine_seen)
+                fail_current("RPA geometry requires an engine dictionary (legacy flat entries were removed).");
+            if (length || height || upstream_length || downstream_length || channel_height || step_height)
+                fail_current("RPA geometry uses engine/box factors, not rectangle/BFS or legacy length entries.");
+            return rpa_geometry;
+        }
+        if (engine_seen || box_seen)
+            fail_current("engine/box dictionaries require rpaNozzle geometry.");
 
         if (type->text == "rectangle")
         {
@@ -1032,8 +1220,10 @@ class CaseParser
     }
 
     [[nodiscard]]
-    ParsedMeshOptions parse_mesh_options(const bool is_backward_facing_step)
+    ParsedMeshOptions parse_mesh_options(const bool is_backward_facing_step, const bool is_rpa_nozzle)
     {
+        if (is_rpa_nozzle)
+            return parse_rpa_mesh_options();
         expect_keyword("mesh");
         expect(TokenKind::LeftBrace, "'{'");
 
@@ -1104,6 +1294,7 @@ class CaseParser
 
                 wall_refinement_layers = take_number("a wall refinement layer count");
             }
+
             else if (key.text == "stepRefinementFactor")
             {
                 if (!is_backward_facing_step)
@@ -1146,6 +1337,7 @@ class CaseParser
         }
 
         CellType cell_type{};
+        bool hybrid{};
         if (cell_type_name->text == "triangle")
         {
             cell_type = CellType::Triangle;
@@ -1153,6 +1345,11 @@ class CaseParser
         else if (cell_type_name->text == "quadrilateral")
         {
             cell_type = CellType::Quadrilateral;
+        }
+        else if (cell_type_name->text == "hybrid")
+        {
+            cell_type = CellType::Quadrilateral;
+            hybrid = true;
         }
         else
         {
@@ -1209,9 +1406,11 @@ class CaseParser
                 {
                     .mesh_size = mesh_size->number,
                     .cell_type = cell_type,
+                    .hybrid = hybrid,
                 },
             .automatic = automatic_options,
             .backward_facing_step = step_options,
+            .rpa_nozzle = {},
         };
     }
 
@@ -1329,7 +1528,21 @@ ControlInput read_control_dict(const std::filesystem::path &file_path)
 MeshInput read_mesh_dict(const std::filesystem::path &file_path)
 {
     CaseParser parser{file_path};
-    return parser.parse_mesh_dict();
+    MeshInput input{parser.parse_mesh_dict()};
+    if (auto *nozzle = std::get_if<RpaNozzleGeometry>(&input.geometry); nozzle && nozzle->file.is_relative())
+    {
+        const auto directory{file_path.parent_path()};
+        const auto case_directory{directory.filename() == "system" ? directory.parent_path() : directory};
+        nozzle->file = std::filesystem::absolute(case_directory / nozzle->file).lexically_normal();
+    }
+    if (auto &field = input.rpa_nozzle_meshing.external_size_field_file; field && field->is_relative())
+    {
+        const auto directory{file_path.parent_path()};
+        *field =
+            std::filesystem::absolute((directory.filename() == "system" ? directory.parent_path() : directory) / *field)
+                .lexically_normal();
+    }
+    return input;
 }
 
 ScalarFieldInput read_scalar_field(const std::filesystem::path &file_path)

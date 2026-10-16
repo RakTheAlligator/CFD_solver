@@ -34,6 +34,8 @@ void write_mesh_report(std::ostream &output, const Mesh &mesh, const MeshStatist
     std::ostringstream report;
 
     report << "\n[Mesh topology]\n"
+           << "  TRI / QUAD        : " << statistics.triangle_cell_count << " / " << statistics.quadrilateral_cell_count
+           << '\n'
            << "  Faces             : " << mesh.face_count() << '\n'
            << "    Internal         : " << statistics.internal_face_count << '\n'
            << "    Boundary         : " << statistics.boundary_face_count << '\n'
@@ -53,6 +55,12 @@ void write_mesh_report(std::ostream &output, const Mesh &mesh, const MeshStatist
     write_statistics_row(report, "Face length", "m", statistics.face_lengths);
     write_statistics_row(report, "Internal non-orth.", "deg", statistics.internal_face_non_orthogonality_degrees);
     write_statistics_row(report, "Neighbor size ratio", "-", statistics.internal_face_neighbor_cell_size_ratios);
+    write_statistics_row(report, "Face skewness", "-", statistics.finite_volume_face_skewness);
+    write_statistics_row(report, "Cell aspect L/h", "-", statistics.cell_aspect_ratios);
+    report << "  Quality bins .1   :";
+    for (const auto count : statistics.quality_histogram)
+        report << ' ' << count;
+    report << "\n  High aspect alone is not an invalidity criterion for anisotropic wall cells.\n";
 
     if (statistics.worst_quality_cell_id != invalid_index)
     {

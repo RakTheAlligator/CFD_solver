@@ -1,16 +1,22 @@
 #include "cfd/meshing/GmshMesher.hpp"
+#include "RpaMeshDiscretization.hpp"
 
 #include <algorithm>
+#include <array>
+#include <atomic>
 #include <cmath>
 #include <cstddef>
 #include <gmsh.h>
 #include <iterator>
 #include <limits>
+#include <map>
+#include <numeric>
 #include <span>
 #include <stdexcept>
 #include <string>
 #include <type_traits>
 #include <unordered_map>
+#include <utility>
 #include <variant>
 #include <vector>
 
@@ -52,12 +58,16 @@ class GmshSession
     GmshSession &operator=(GmshSession &&) = delete;
 };
 
+struct PhysicalBoundaryTags
+{
+    BoundaryGroup group;
+    int physical_tag{};
+};
+
 struct ModelTags
 {
     std::vector<int> surface_tags;
-    int inlet_group_tag{};
-    int wall_group_tag{};
-    int outlet_group_tag{};
+    std::vector<PhysicalBoundaryTags> boundaries;
     bool transfinite_quadrilateral_mesh{};
 };
 
@@ -100,6 +110,8 @@ void validate_mesh_generation_options(const MeshGenerationOptions &options)
 
     // Validate the enum value through the same mapping used during extraction.
     static_cast<void>(cell_extraction_spec(options.cell_type));
+    if (options.hybrid && options.cell_type != CellType::Quadrilateral)
+        throw std::invalid_argument("HYBRID requires cell_type == Quadrilateral.");
 }
 
 void validate_automatic_meshing_options(const AutomaticMeshingOptions &options)
@@ -189,7 +201,11 @@ ModelTags add_physical_groups(const std::vector<int> &surface_tags, const std::v
     const int fluid_group_tag{gmsh::model::addPhysicalGroup(2, surface_tags)};
     gmsh::model::setPhysicalName(2, fluid_group_tag, "fluid");
 
-    return {surface_tags, inlet_group_tag, wall_group_tag, outlet_group_tag, false};
+    return {surface_tags,
+            {{{inlet_boundary_id, "inlet"}, inlet_group_tag},
+             {{wall_boundary_id, "wall"}, wall_group_tag},
+             {{outlet_boundary_id, "outlet"}, outlet_group_tag}},
+            false};
 }
 
 ModelTags create_rectangle(const RectangleGeometry &geometry, const double mesh_size)
@@ -793,7 +809,7 @@ std::unordered_map<std::size_t, Index> extract_nodes(RawMeshData &raw_mesh)
 }
 
 void extract_cells(RawMeshData &raw_mesh, const std::unordered_map<std::size_t, Index> &node_id_by_gmsh_tag,
-                   const std::vector<int> &surface_tags, const CellType requested_cell_type)
+                   const std::vector<int> &surface_tags, const CellType requested_cell_type, const bool hybrid)
 {
     const CellExtractionSpec extraction_spec{cell_extraction_spec(requested_cell_type)};
     if (extraction_spec.node_count == 0)
@@ -805,7 +821,7 @@ void extract_cells(RawMeshData &raw_mesh, const std::unordered_map<std::size_t, 
     // requirements before filling the flattened connectivity arrays.
     Index total_cell_count{};
     Index total_cell_node_count{};
-    std::vector<std::vector<std::size_t>> cell_connectivity_blocks;
+    std::vector<std::pair<CellExtractionSpec, std::vector<std::size_t>>> cell_connectivity_blocks;
 
     for (const int surface_tag : surface_tags)
     {
@@ -819,22 +835,26 @@ void extract_cells(RawMeshData &raw_mesh, const std::unordered_map<std::size_t, 
         gmsh::model::mesh::getElements(gmsh_element_types, gmsh_element_tags, gmsh_element_node_tags, 2, surface_tag);
         for (std::size_t element_type_index = 0; element_type_index < gmsh_element_types.size(); ++element_type_index)
         {
-            if (gmsh_element_types[element_type_index] != extraction_spec.gmsh_element_type)
+            const int type{gmsh_element_types[element_type_index]};
+            if ((!hybrid && type != extraction_spec.gmsh_element_type) ||
+                (hybrid && type != gmsh_triangle_3_element_type && type != gmsh_quadrilateral_4_element_type))
             {
                 throw std::runtime_error("Gmsh generated a 2D element type that does not "
                                          "match the requested cell type.");
             }
 
             std::vector<std::size_t> &gmsh_node_tags{gmsh_element_node_tags[element_type_index]};
+            const auto spec{cell_extraction_spec(type == gmsh_triangle_3_element_type ? CellType::Triangle
+                                                                                      : CellType::Quadrilateral)};
 
-            if (gmsh_node_tags.size() % extraction_spec.node_count != 0)
+            if (gmsh_node_tags.size() % spec.node_count != 0)
             {
                 throw std::runtime_error("Invalid cell connectivity returned by Gmsh.");
             }
 
-            total_cell_count += gmsh_node_tags.size() / extraction_spec.node_count;
+            total_cell_count += gmsh_node_tags.size() / spec.node_count;
             total_cell_node_count += gmsh_node_tags.size();
-            cell_connectivity_blocks.push_back(std::move(gmsh_node_tags));
+            cell_connectivity_blocks.emplace_back(spec, std::move(gmsh_node_tags));
         }
     }
 
@@ -844,14 +864,14 @@ void extract_cells(RawMeshData &raw_mesh, const std::unordered_map<std::size_t, 
 
     raw_mesh.cell_node_offsets.push_back(0);
 
-    for (const std::vector<std::size_t> &gmsh_node_tags : cell_connectivity_blocks)
+    for (const auto &[spec, gmsh_node_tags] : cell_connectivity_blocks)
     {
         for (std::size_t first_node_position = 0; first_node_position < gmsh_node_tags.size();
-             first_node_position += extraction_spec.node_count)
+             first_node_position += spec.node_count)
         {
-            raw_mesh.cell_types.push_back(extraction_spec.cell_type);
+            raw_mesh.cell_types.push_back(spec.cell_type);
 
-            for (Index local_node_index = 0; local_node_index < extraction_spec.node_count; ++local_node_index)
+            for (Index local_node_index = 0; local_node_index < spec.node_count; ++local_node_index)
             {
                 raw_mesh.cell_nodes.push_back(
                     node_id_from_gmsh_tag(node_id_by_gmsh_tag, gmsh_node_tags[first_node_position + local_node_index]));
@@ -912,7 +932,7 @@ void extract_boundary_edges(RawMeshData &raw_mesh, const std::unordered_map<std:
 [[nodiscard]]
 RawMeshData generate_and_extract_mesh(const ModelTags &tags, const MeshGenerationOptions &options)
 {
-    if (!tags.transfinite_quadrilateral_mesh)
+    if (!tags.transfinite_quadrilateral_mesh && !options.hybrid)
     {
         configure_surface_mesh(options.cell_type, tags.surface_tags);
     }
@@ -925,21 +945,469 @@ RawMeshData generate_and_extract_mesh(const ModelTags &tags, const MeshGeneratio
 
     // Expose stable solver boundary IDs rather than the physical-group tags
     // assigned internally by Gmsh.
-    raw_mesh.boundary_groups = {
-        {inlet_boundary_id, "inlet"},
-        {wall_boundary_id, "wall"},
-        {outlet_boundary_id, "outlet"},
-    };
+    for (const PhysicalBoundaryTags &boundary : tags.boundaries)
+    {
+        raw_mesh.boundary_groups.push_back(boundary.group);
+    }
 
     const auto node_id_by_gmsh_tag{extract_nodes(raw_mesh)};
 
-    extract_cells(raw_mesh, node_id_by_gmsh_tag, tags.surface_tags, options.cell_type);
+    extract_cells(raw_mesh, node_id_by_gmsh_tag, tags.surface_tags, options.cell_type, options.hybrid);
 
-    extract_boundary_edges(raw_mesh, node_id_by_gmsh_tag, tags.inlet_group_tag, inlet_boundary_id);
-    extract_boundary_edges(raw_mesh, node_id_by_gmsh_tag, tags.wall_group_tag, wall_boundary_id);
-    extract_boundary_edges(raw_mesh, node_id_by_gmsh_tag, tags.outlet_group_tag, outlet_boundary_id);
+    for (const PhysicalBoundaryTags &boundary : tags.boundaries)
+    {
+        extract_boundary_edges(raw_mesh, node_id_by_gmsh_tag, boundary.physical_tag, boundary.group.id);
+    }
 
     return raw_mesh;
+}
+
+// RPA backend: all geometry/discretization decisions have already been made.
+// Explicit grids share the same Gmsh boundary nodes; only TRANSITION is meshed
+// by Gmsh. MeshOnlyEmpty prevents remeshing those supplied structured cells.
+struct RpaCadPoint
+{
+    int tag;
+    std::size_t node;
+    Point2 position;
+};
+
+struct RpaCadCurve
+{
+    int tag;
+    std::vector<std::size_t> nodes;
+};
+
+struct RpaNodeGroup
+{
+    int dimension, entity;
+    std::vector<std::size_t> tags;
+    std::vector<double> xyz;
+};
+
+struct RpaElementGroup
+{
+    int entity, type;
+    std::vector<std::size_t> nodes;
+};
+
+class RpaGmshBuilder
+{
+  public:
+    RpaCadPoint point(Point2 p)
+    {
+        const int tag{gmsh::model::geo::addPoint(p.x, p.y, 0.0)};
+        const auto node{next_node_++};
+        nodes_.push_back({0, tag, {node}, {p.x, p.y, 0.0}});
+        return {tag, node, p};
+    }
+
+    RpaCadCurve curve(const RpaCadPoint &a, const RpaCadPoint &b, const std::span<const Point2> mesh,
+                      const std::span<const Point2> cad = {})
+    {
+        std::vector<int> points{a.tag};
+        for (const auto &p : cad)
+            if (p.x > a.position.x && p.x < b.position.x)
+                points.push_back(point(p).tag);
+        points.push_back(b.tag);
+        const int tag{points.size() == 2 ? gmsh::model::geo::addLine(a.tag, b.tag)
+                                         : gmsh::model::geo::addPolyline(points)};
+        RpaCadCurve result{tag, {a.node}};
+        RpaNodeGroup group{1, tag, {}, {}};
+        for (Index i = 1; i + 1 < mesh.size(); ++i)
+        {
+            result.nodes.push_back(next_node_++);
+            group.tags.push_back(result.nodes.back());
+            group.xyz.insert(group.xyz.end(), {mesh[i].x, mesh[i].y, 0.0});
+        }
+        result.nodes.push_back(b.node);
+        nodes_.push_back(std::move(group));
+        RpaElementGroup edges{tag, gmsh_line_2_element_type, {}};
+        for (Index i = 1; i < result.nodes.size(); ++i)
+            edges.nodes.insert(edges.nodes.end(), {result.nodes[i - 1], result.nodes[i]});
+        elements_.push_back(std::move(edges));
+        return result;
+    }
+
+    // Preserve source-entity junctions as separate CAD curves and mesh vertices.
+    std::vector<RpaCadCurve> wall(const detail::RpaStructuredGrid &grid, Index row, const std::vector<Point2> &profile,
+                                  const RpaNozzleDomain &domain, RpaCadPoint first, const RpaCadPoint &last,
+                                  bool physical)
+    {
+        std::vector<RpaCadCurve> result;
+        Index begin{};
+        for (Index end = 1; end < grid.x.size(); ++end)
+            if (end + 1 == grid.x.size() ||
+                std::binary_search(domain.curve_junctions.begin(), domain.curve_junctions.end(), grid.x[end]))
+            {
+                const auto next{end + 1 == grid.x.size() ? last : point(grid.at(end, row))};
+                std::vector<Point2> coordinates;
+                for (Index i = begin; i <= end; ++i)
+                    coordinates.push_back(grid.at(i, row));
+                std::vector<Point2> cad;
+                for (const auto &p : profile)
+                    if (p.x > grid.x[begin] && p.x < grid.x[end])
+                        cad.push_back({p.x, physical ? p.y
+                                                     : p.y + (grid.at(begin, row).y -
+                                                              interpolate_rpa_profile(profile, grid.x[begin]).y)});
+                result.push_back(curve(first, next, coordinates, cad));
+                begin = end;
+                first = next;
+            }
+        return result;
+    }
+
+    RpaCadCurve edge(const detail::RpaStructuredGrid &grid, bool axial, Index at, const RpaCadPoint &a,
+                     const RpaCadPoint &b)
+    {
+        std::vector<Point2> coordinates;
+        const Index count{axial ? grid.x.size() : grid.radial_cells + 1};
+        coordinates.reserve(count);
+        for (Index i = 0; i < count; ++i)
+            coordinates.push_back(axial ? grid.at(i, at) : grid.at(at, i));
+        return curve(a, b, coordinates);
+    }
+
+    int surface(const std::vector<int> &loop)
+    {
+        const int tag{gmsh::model::geo::addPlaneSurface({gmsh::model::geo::addCurveLoop(loop)})};
+        surfaces.push_back(tag);
+        return tag;
+    }
+
+    void grid(const detail::RpaStructuredGrid &grid, const std::vector<RpaCadCurve> &bottom,
+              const std::vector<RpaCadCurve> &left, const std::vector<RpaCadCurve> &right,
+              const std::vector<RpaCadCurve> &top, const std::vector<int> &corners, bool triangles)
+    {
+        std::vector<int> loop;
+        loop.reserve(bottom.size() + right.size() + top.size() + left.size());
+        for (const auto &c : bottom)
+            loop.push_back(c.tag);
+        for (const auto &c : right)
+            loop.push_back(c.tag);
+        for (auto it = top.rbegin(); it != top.rend(); ++it)
+            loop.push_back(-it->tag);
+        for (auto it = left.rbegin(); it != left.rend(); ++it)
+            loop.push_back(-it->tag);
+        const int tag{surface(loop)};
+        gmsh::model::geo::mesh::setTransfiniteSurface(tag, "Left", corners);
+        const auto chain = [](const std::vector<RpaCadCurve> &curves) {
+            std::vector<std::size_t> result;
+            for (const auto &c : curves)
+                result.insert(result.end(), c.nodes.begin() + (result.empty() ? 0 : 1), c.nodes.end());
+            return result;
+        };
+        const auto down{chain(bottom)}, up{chain(top)}, start{chain(left)}, end{chain(right)};
+        if (down.size() != grid.x.size() || up.size() != grid.x.size() || start.size() != grid.radial_cells + 1 ||
+            start.size() != end.size())
+            throw std::logic_error("RPA shared structured boundary cardinality mismatch.");
+        std::vector<std::size_t> ids(grid.nodes.size());
+        const Index stride{grid.radial_cells + 1};
+        const auto assign = [&](Index i, std::size_t node) {
+            if (ids[i] != 0 && ids[i] != node)
+                throw std::logic_error("RPA corner is not a shared Gmsh node.");
+            ids[i] = node;
+        };
+        for (Index i = 0; i < grid.x.size(); ++i)
+        {
+            assign(i * stride, down[i]);
+            assign(i * stride + grid.radial_cells, up[i]);
+        }
+        for (Index j = 0; j < stride; ++j)
+        {
+            assign(j, start[j]);
+            assign((grid.x.size() - 1) * stride + j, end[j]);
+        }
+        RpaNodeGroup group{2, tag, {}, {}};
+        for (Index i = 0; i < grid.nodes.size(); ++i)
+            if (ids[i] == 0)
+            {
+                ids[i] = next_node_++;
+                group.tags.push_back(ids[i]);
+                group.xyz.insert(group.xyz.end(), {grid.nodes[i].x, grid.nodes[i].y, 0.0});
+            }
+        nodes_.push_back(std::move(group));
+        RpaElementGroup cells{tag, triangles ? gmsh_triangle_3_element_type : gmsh_quadrilateral_4_element_type, {}};
+        for (Index i = 1; i < grid.x.size(); ++i)
+            for (Index j = 0; j < grid.radial_cells; ++j)
+            {
+                const auto a{ids[(i - 1) * stride + j]}, b{ids[i * stride + j]}, c{ids[i * stride + j + 1]},
+                    d{ids[(i - 1) * stride + j + 1]};
+                if (triangles)
+                    cells.nodes.insert(cells.nodes.end(), {a, b, c, a, c, d});
+                else
+                    cells.nodes.insert(cells.nodes.end(), {a, b, c, d});
+            }
+        elements_.push_back(std::move(cells));
+    }
+
+    void install()
+    {
+        gmsh::model::geo::synchronize();
+        // Let Gmsh finish its native 1D stage so subsequent 2D generation does
+        // not invalidate the supplied grids. Only the counts come from Gmsh;
+        // the discretization owns every prescribed boundary coordinate.
+        for (const auto &group : elements_)
+            if (group.type == gmsh_line_2_element_type)
+                gmsh::model::mesh::setTransfiniteCurve(group.entity, static_cast<int>(group.nodes.size() / 2 + 1));
+        gmsh::model::mesh::generate(1);
+        std::vector<std::size_t> actual(next_node_);
+        std::size_t next{};
+        for (const auto &group : nodes_)
+            if (group.dimension < 2)
+            {
+                std::vector<std::size_t> tags;
+                std::vector<double> xyz, parameters;
+                gmsh::model::mesh::getNodes(tags, xyz, parameters, group.dimension, group.entity);
+                if (tags.size() != group.tags.size())
+                    throw std::runtime_error("RPA Gmsh boundary node count differs from the prescribed grid.");
+                std::vector<Index> order(tags.size());
+                std::iota(order.begin(), order.end(), 0);
+                if (group.dimension == 1)
+                    std::ranges::sort(order, [&](Index a, Index b) { return parameters[a] < parameters[b]; });
+                for (Index i = 0; i < order.size(); ++i)
+                {
+                    const auto tag{tags[order[i]]};
+                    actual[group.tags[i]] = tag;
+                    next = std::max(next, tag);
+                    const std::vector<double> coordinate{group.xyz[3 * i], group.xyz[3 * i + 1], group.xyz[3 * i + 2]};
+                    std::vector<double> parameter;
+                    if (group.dimension == 1)
+                        gmsh::model::getParametrization(1, group.entity, coordinate, parameter);
+                    gmsh::model::mesh::setNode(tag, coordinate, parameter);
+                }
+            }
+        for (const auto &group : nodes_)
+            if (group.dimension == 2 && !group.tags.empty())
+            {
+                std::vector<std::size_t> tags;
+                tags.reserve(group.tags.size());
+                for (const auto tag : group.tags)
+                {
+                    actual[tag] = ++next;
+                    tags.push_back(next);
+                }
+                gmsh::model::mesh::addNodes(2, group.entity, tags, group.xyz);
+            }
+        for (const auto &group : elements_)
+            if (group.type != gmsh_line_2_element_type)
+            {
+                std::vector<std::size_t> nodes;
+                nodes.reserve(group.nodes.size());
+                for (const auto tag : group.nodes)
+                    nodes.push_back(actual[tag]);
+                gmsh::model::mesh::addElementsByType(group.entity, group.type, {}, nodes);
+            }
+        gmsh::option::setNumber("Mesh.MeshOnlyEmpty", 1);
+    }
+
+    std::vector<int> surfaces;
+
+  private:
+    std::size_t next_node_{1};
+    std::vector<RpaNodeGroup> nodes_;
+    std::vector<RpaElementGroup> elements_;
+};
+
+// Coarsening FARFIELD can leave a poor full-QUAD recombination at the acute
+// TRANSITION outlet. Relocate only free nodes near rejected cells, with an
+// aspect-sensitive objective: angular smoothing alone can collapse edges.
+// All prescribed grids and physical boundary nodes remain fixed.
+void improve_rpa_transition_quality(RawMeshData &raw, Index first_transition, double minimum_quality)
+{
+    const auto cell_quality = [&](Index cell) {
+        std::array<Point2, 4> corners{};
+        for (Index j = 0; j < corners.size(); ++j)
+            corners.at(j) = raw.nodes[raw.cell_nodes[raw.cell_node_offsets[cell] + j]];
+        return detail::rpa_angular_quality(corners);
+    };
+    std::vector<bool> active(raw.nodes.size());
+    bool needed{};
+    for (Index cell = first_transition; cell < raw.cell_types.size(); ++cell)
+        if (cell_quality(cell) < minimum_quality)
+        {
+            needed = true;
+            for (Index j = raw.cell_node_offsets[cell]; j < raw.cell_node_offsets[cell + 1]; ++j)
+                active[raw.cell_nodes[j]] = true;
+        }
+    if (!needed)
+        return;
+
+    // Include a small neighborhood so adjacent free nodes can redistribute
+    // angles rather than moving only a subdivision's three-valent centre.
+    for (Index ring = 0; ring < 3; ++ring)
+    {
+        const auto previous{active};
+        for (Index cell = first_transition; cell < raw.cell_types.size(); ++cell)
+        {
+            bool touches{};
+            for (Index j = raw.cell_node_offsets[cell]; j < raw.cell_node_offsets[cell + 1]; ++j)
+                touches = touches || previous[raw.cell_nodes[j]];
+            if (touches)
+                for (Index j = raw.cell_node_offsets[cell]; j < raw.cell_node_offsets[cell + 1]; ++j)
+                    active[raw.cell_nodes[j]] = true;
+        }
+    }
+    std::vector<bool> pinned(raw.nodes.size());
+    std::vector<Index> offsets(raw.nodes.size() + 1);
+    for (Index cell = 0; cell < raw.cell_types.size(); ++cell)
+        for (Index j = raw.cell_node_offsets[cell]; j < raw.cell_node_offsets[cell + 1]; ++j)
+        {
+            const Index node{raw.cell_nodes[j]};
+            ++offsets[node + 1];
+            if (cell < first_transition)
+                pinned[node] = true;
+        }
+    for (const auto &edge : raw.boundary_edges)
+        for (const auto node : edge.node_ids)
+            pinned[node] = true;
+    std::partial_sum(offsets.begin(), offsets.end(), offsets.begin());
+    auto next{offsets};
+    std::vector<Index> incident(raw.cell_nodes.size());
+    for (Index cell = 0; cell < raw.cell_types.size(); ++cell)
+        for (Index j = raw.cell_node_offsets[cell]; j < raw.cell_node_offsets[cell + 1]; ++j)
+            incident[next[raw.cell_nodes[j]]++] = cell;
+    std::vector<Index> movable;
+    for (Index node = 0; node < raw.nodes.size(); ++node)
+        if (active[node] && !pinned[node])
+            movable.push_back(node);
+
+    const auto energy = [&](Index node) {
+        double result{};
+        for (Index k = offsets[node]; k < offsets[node + 1]; ++k)
+        {
+            const Index begin{raw.cell_node_offsets[incident[k]]};
+            for (Index j = 0; j < 4; ++j)
+            {
+                const auto &a{raw.nodes[raw.cell_nodes[begin + j]]}, &b{raw.nodes[raw.cell_nodes[begin + (j + 1) % 4]]},
+                    &c{raw.nodes[raw.cell_nodes[begin + (j + 3) % 4]]};
+                const double ax{b.x - a.x}, ay{b.y - a.y}, bx{c.x - a.x}, by{c.y - a.y};
+                const double first{std::hypot(ax, ay)}, second{std::hypot(bx, by)};
+                if (!(first > 0.0) || !(second > 0.0))
+                    return std::numeric_limits<double>::infinity();
+                const double ratio{std::min(first, second) / std::max(first, second)};
+                const double sine{(ax / first) * (by / second) - (ay / first) * (bx / second)};
+                const double shape{2.0 * ratio * sine / (1.0 + ratio * ratio)};
+                if (!std::isfinite(shape) || !(shape > 0.0))
+                    return std::numeric_limits<double>::infinity();
+                result += 1.0 / (shape * shape);
+            }
+        }
+        return result;
+    };
+    const double diagonal{std::sqrt(0.5)};
+    const std::array<Point2, 8> directions{{{1, 0},
+                                            {-1, 0},
+                                            {0, 1},
+                                            {0, -1},
+                                            {diagonal, diagonal},
+                                            {-diagonal, diagonal},
+                                            {diagonal, -diagonal},
+                                            {-diagonal, -diagonal}}};
+    // Bounded local coordinate search. The final hard quality check remains
+    // authoritative; neither geometry nor the requested threshold is relaxed.
+    for (Index pass = 0; pass < 300; ++pass)
+    {
+        const Index step_reductions{pass / 30};
+        const double fraction{0.2 * std::pow(0.5, static_cast<double>(step_reductions))};
+        for (const auto node : movable)
+        {
+            const auto start{raw.nodes[node]};
+            double step{std::numeric_limits<double>::infinity()};
+            for (Index k = offsets[node]; k < offsets[node + 1]; ++k)
+                for (Index j = raw.cell_node_offsets[incident[k]]; j < raw.cell_node_offsets[incident[k] + 1]; ++j)
+                    if (raw.cell_nodes[j] != node)
+                    {
+                        const auto &p{raw.nodes[raw.cell_nodes[j]]};
+                        step = std::min(step, std::hypot(p.x - start.x, p.y - start.y));
+                    }
+            step *= fraction;
+            auto best{start};
+            double best_energy{energy(node)};
+            for (const auto &direction : directions)
+            {
+                raw.nodes[node] = {start.x + step * direction.x, start.y + step * direction.y};
+                const double candidate{energy(node)};
+                if (candidate < best_energy)
+                {
+                    best = raw.nodes[node];
+                    best_energy = candidate;
+                }
+            }
+            raw.nodes[node] = best;
+        }
+    }
+}
+
+ModelTags create_rpa_nozzle(const RpaNozzleDomain &domain, const detail::RpaMeshDiscretization &mesh,
+                            const MeshGenerationOptions &options)
+{
+    RpaGmshBuilder b;
+    gmsh::option::setNumber("Mesh.MeshSizeFromPoints", 0);
+    gmsh::option::setNumber("Mesh.MeshSizeExtendFromBoundary", 0);
+    gmsh::option::setNumber("Mesh.MeshSizeMax", mesh.transition_size);
+    const auto &e{mesh.engine}, &band{mesh.band}, &p{mesh.plume}, &f{mesh.farfield};
+    const auto e00{b.point(e.at(0, 0))}, e10{b.point(e.at(e.x.size() - 1, 0))}, e01{b.point(e.at(0, e.radial_cells))},
+        e11{b.point(e.at(e.x.size() - 1, e.radial_cells))};
+    const auto eb{b.edge(e, true, 0, e00, e10)}, el{b.edge(e, false, 0, e00, e01)},
+        er{b.edge(e, false, e.x.size() - 1, e10, e11)};
+    const auto ew{b.wall(e, e.radial_cells, domain.inner_wall, domain, e01, e11, true)};
+    const auto b00{b.point(band.at(0, 0))}, b10{b.point(band.at(band.x.size() - 1, 0))},
+        b01{b.point(band.at(0, band.radial_cells))}, b11{b.point(band.at(band.x.size() - 1, band.radial_cells))};
+    const auto bw{b.wall(band, 0, domain.outer_wall, domain, b00, b10, true)},
+        bt{b.wall(band, band.radial_cells, domain.outer_wall, domain, b01, b11, false)};
+    const auto bl{b.edge(band, false, 0, b00, b01)}, br{b.edge(band, false, band.x.size() - 1, b10, b11)};
+    const std::array<Point2, 2> lip_points{e11.position, b10.position};
+    const auto lip{b.curve(e11, b10, lip_points)};
+    const auto p10{b.point(p.at(p.x.size() - 1, 0))}, p11{b.point(p.at(p.x.size() - 1, p.radial_cells))};
+    const auto pb{b.edge(p, true, 0, e10, p10)}, pt{b.edge(p, true, p.radial_cells, b11, p11)},
+        pr{b.edge(p, false, p.x.size() - 1, p10, p11)};
+    const auto f00{b.point(f.at(0, 0))}, f01{b.point(f.at(0, f.radial_cells))},
+        f11{b.point(f.at(f.x.size() - 1, f.radial_cells))};
+    const auto fb{b.edge(f, true, 0, f00, p11)}, ft{b.edge(f, true, f.radial_cells, f01, f11)},
+        fl{b.edge(f, false, 0, f00, f01)}, fr{b.edge(f, false, f.x.size() - 1, p11, f11)};
+    std::vector<Point2> connection;
+    for (Index j = 0; j <= mesh.transition_upstream_cells; ++j)
+        connection.push_back(
+            {b01.position.x, std::lerp(b01.position.y, f00.position.y,
+                                       static_cast<double>(j) / static_cast<double>(mesh.transition_upstream_cells))});
+    const auto upstream{b.curve(b01, f00, connection)};
+    const bool triangles{options.cell_type == CellType::Triangle && !options.hybrid};
+    b.grid(e, {eb}, {el}, {er}, ew, {e00.tag, e10.tag, e11.tag, e01.tag}, triangles);
+    b.grid(band, bw, {bl}, {br}, bt, {b00.tag, b10.tag, b11.tag, b01.tag}, triangles);
+    b.grid(p, {pb}, {er, lip, br}, {pr}, {pt}, {e10.tag, p10.tag, p11.tag, b11.tag}, triangles);
+    b.grid(f, {fb}, {fl}, {fr}, {ft}, {f00.tag, p11.tag, f11.tag, f01.tag}, triangles);
+    std::vector<int> loop{pt.tag, -fb.tag, -upstream.tag};
+    for (const auto &c : bt)
+        loop.push_back(c.tag);
+    const int transition{b.surface(loop)};
+    if (options.cell_type == CellType::Quadrilateral && !options.hybrid)
+    {
+        gmsh::model::geo::mesh::setRecombine(2, transition);
+        gmsh::option::setNumber("Mesh.Algorithm", 5);
+        gmsh::option::setNumber("Mesh.RecombinationAlgorithm", 3);
+    }
+    b.install();
+    std::array<std::vector<int>, 8> boundaries{
+        {{el.tag}, {eb.tag, pb.tag}, {}, {}, {lip.tag}, {bl.tag, upstream.tag, fl.tag}, {ft.tag}, {pr.tag, fr.tag}}};
+    for (const auto &c : ew)
+        boundaries.at(2).push_back(c.tag);
+    for (const auto &c : bw)
+        boundaries.at(3).push_back(c.tag);
+    constexpr std::array<const char *, 8> names{"inlet",           "axis",
+                                                "inner_wall",      "outer_wall",
+                                                "nozzle_lip",      "farfield_upstream",
+                                                "farfield_radial", "farfield_downstream"};
+    ModelTags result{b.surfaces, {}, true};
+    for (Index i = 0; i < boundaries.size(); ++i)
+    {
+        const int tag{gmsh::model::addPhysicalGroup(1, boundaries.at(i))};
+        gmsh::model::setPhysicalName(1, tag, names.at(i));
+        result.boundaries.push_back({{i, names.at(i)}, tag});
+    }
+    const int fluid{gmsh::model::addPhysicalGroup(2, result.surface_tags)};
+    gmsh::model::setPhysicalName(2, fluid, "fluid");
+    return result;
 }
 
 void require_growth_rate(const std::vector<double> &spacings, const double maximum_growth_rate,
@@ -1064,6 +1532,8 @@ RawMeshData generate_mesh(const RectangleGeometry &geometry, const MeshGeneratio
 {
     validate_geometry(geometry);
     validate_mesh_generation_options(options);
+    if (options.hybrid)
+        throw std::invalid_argument("HYBRID meshing is supported only for RPA, not rectangle.");
 
     GmshSession gmsh_session;
     gmsh::option::setNumber("General.Terminal", 0);
@@ -1085,6 +1555,8 @@ RawMeshData generate_mesh(const BackwardFacingStepGeometry &geometry, const Mesh
     validate_mesh_generation_options(options);
     validate_automatic_meshing_options(automatic_options);
     validate_backward_facing_step_meshing_options(step_options);
+    if (options.hybrid)
+        throw std::invalid_argument("HYBRID meshing is supported only for RPA, not backward-facing step.");
 
     GmshSession gmsh_session;
     gmsh::option::setNumber("General.Terminal", 0);
@@ -1106,19 +1578,137 @@ RawMeshData generate_mesh(const GeometryInput &geometry, const MeshGenerationOpt
     return generate_mesh(geometry, options, AutomaticMeshingOptions{}, BackwardFacingStepMeshingOptions{});
 }
 
+RawMeshData generate_mesh(const RpaNozzleGeometry &geometry, const MeshGenerationOptions &options,
+                          const RpaNozzleMeshingOptions &rpa_options, const MeshSizeField &size_field)
+{
+    validate_mesh_generation_options(options);
+    const auto domain{read_rpa_nozzle_domain(geometry)};
+    const RpaRegionLayout layout{domain, rpa_options.regions};
+    const MeshSizeField file_field{rpa_options.external_size_field_file
+                                       ? read_mesh_size_field(*rpa_options.external_size_field_file)
+                                       : MeshSizeField{}};
+    MeshSizeField combined;
+    if (file_field || size_field)
+        combined = [&](const Point2 &p) {
+            const double a{file_field ? file_field(p) : std::numeric_limits<double>::max()};
+            const double b{size_field ? size_field(p) : std::numeric_limits<double>::max()};
+            if (!std::isfinite(a) || !std::isfinite(b) || !(a > 0.0) || !(b > 0.0))
+                throw std::invalid_argument("External RPA size field must be finite and positive.");
+            return std::min(a, b);
+        };
+    const auto discretization{detail::discretize_rpa(domain, layout, options, rpa_options)};
+    GmshSession session;
+    gmsh::option::setNumber("General.Terminal", 0);
+    gmsh::model::add("rpa_nozzle");
+    try
+    {
+        const auto model{create_rpa_nozzle(domain, discretization, options)};
+        std::atomic<bool> invalid_field{};
+        gmsh::model::mesh::setSizeCallback([&](int, int, double x, double y, double, double size) {
+            try
+            {
+                double target{discretization.transition_size};
+                for (const auto *grid : {&discretization.band, &discretization.plume})
+                {
+                    const auto it{std::upper_bound(grid->x.begin(), grid->x.end(), x)};
+                    const Index i{std::clamp(static_cast<Index>(it - grid->x.begin()), Index{1}, grid->x.size() - 1)};
+                    const auto &a{grid->at(i - 1, grid->radial_cells)}, &b{grid->at(i, grid->radial_cells)};
+                    const double length{std::hypot(b.x - a.x, b.y - a.y)};
+                    const double ux{(b.x - a.x) / length}, uy{(b.y - a.y) / length};
+                    const double along{std::clamp((x - a.x) * ux + (y - a.y) * uy, 0.0, length)};
+                    const double distance{std::hypot(x - a.x - along * ux, y - a.y - along * uy)};
+                    target = std::min(target, length + 0.2 * distance);
+                }
+                return combined ? std::min(target, combined({x, y})) : target;
+            }
+            catch (...)
+            {
+                invalid_field.store(true);
+                return size;
+            }
+        });
+        RawMeshData raw;
+        try
+        {
+            raw = generate_and_extract_mesh(model, options);
+        }
+        catch (...)
+        {
+            gmsh::model::mesh::removeSizeCallback();
+            throw;
+        }
+        gmsh::model::mesh::removeSizeCallback();
+        if (invalid_field.load())
+            throw std::invalid_argument("External RPA size field failed during Gmsh generation.");
+        if (options.cell_type == CellType::Quadrilateral && !options.hybrid)
+        {
+            // Extraction preserves surface order. Verify each of the four
+            // supplied surfaces before treating the remaining cells as free
+            // TRANSITION: a changed backend order must fail, not move grids.
+            if (model.surface_tags.size() != 5)
+                throw std::logic_error("RPA expected four structured surfaces followed by TRANSITION.");
+            Index first_transition{};
+            Index surface{};
+            for (const auto *grid :
+                 {&discretization.engine, &discretization.band, &discretization.plume, &discretization.farfield})
+            {
+                const Index expected{(grid->x.size() - 1) * grid->radial_cells};
+                std::vector<std::size_t> elements, nodes;
+                gmsh::model::mesh::getElementsByType(gmsh_quadrilateral_4_element_type, elements, nodes,
+                                                     model.surface_tags.at(surface++));
+                if (elements.size() != expected || nodes.size() / 4 != expected || nodes.size() % 4 != 0 ||
+                    first_transition > raw.cell_types.size() || expected > raw.cell_types.size() - first_transition)
+                    throw std::logic_error("RPA structured surface counts do not match the extracted cell prefix.");
+                first_transition += expected;
+            }
+            if (first_transition >= raw.cell_types.size() ||
+                !std::all_of(raw.cell_types.begin(),
+                             raw.cell_types.begin() + static_cast<std::ptrdiff_t>(first_transition),
+                             [](CellType type) { return type == CellType::Quadrilateral; }))
+                throw std::logic_error("RPA expected a QUAD structured prefix followed by a nonempty TRANSITION.");
+            improve_rpa_transition_quality(raw, first_transition, rpa_options.min_cell_quality);
+        }
+        detail::require_rpa_mesh_quality(raw, rpa_options);
+        if (rpa_options.target_cell_budget && raw.cell_types.size() > *rpa_options.target_cell_budget)
+            throw std::runtime_error(
+                "RPA targetCellBudget exceeded; geometric and quality constraints were not relaxed.");
+        return raw;
+    }
+    catch (const std::string &error)
+    {
+        throw std::runtime_error("RPA Gmsh generation failed: " + error);
+    }
+}
+
 RawMeshData generate_mesh(const GeometryInput &geometry, const MeshGenerationOptions &options,
                           const AutomaticMeshingOptions &automatic_options,
-                          const BackwardFacingStepMeshingOptions &step_options)
+                          const BackwardFacingStepMeshingOptions &step_options,
+                          const RpaNozzleMeshingOptions &rpa_options, const MeshSizeField &size_field)
 {
     return std::visit(
-        [&options, &automatic_options, &step_options](const auto &selected_geometry) {
+        [&options, &automatic_options, &step_options, &rpa_options, &size_field](const auto &selected_geometry) {
             using Geometry = std::remove_cvref_t<decltype(selected_geometry)>;
             if constexpr (std::is_same_v<Geometry, BackwardFacingStepGeometry>)
             {
+                if (size_field)
+                    throw std::invalid_argument("External spatial size fields currently require rpaNozzle geometry.");
                 return generate_mesh(selected_geometry, options, automatic_options, step_options);
+            }
+            else if constexpr (std::is_same_v<Geometry, RpaNozzleGeometry>)
+            {
+                const AutomaticMeshingOptions defaults;
+                if (automatic_options.enabled != defaults.enabled ||
+                    automatic_options.maximum_growth_rate != defaults.maximum_growth_rate ||
+                    automatic_options.wall_refinement_factor != defaults.wall_refinement_factor ||
+                    automatic_options.wall_refinement_layers != defaults.wall_refinement_layers)
+                    throw std::invalid_argument(
+                        "RPA automaticMeshing is removed; use baseCellSize and optional wall layers.");
+                return generate_mesh(selected_geometry, options, rpa_options, size_field);
             }
             else
             {
+                if (size_field)
+                    throw std::invalid_argument("External spatial size fields currently require rpaNozzle geometry.");
                 return generate_mesh(selected_geometry, options);
             }
         },

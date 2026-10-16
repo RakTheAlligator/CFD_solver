@@ -18,6 +18,9 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 find_package(Eigen3 3.4 REQUIRED NO_MODULE)
 
+# Python is used only by the RPA CAD adapter, never for mesh generation.
+find_package(Python3 COMPONENTS Interpreter REQUIRED)
+
 # -----------------------------------------------------------------------------
 # Gmsh
 # -----------------------------------------------------------------------------
@@ -82,6 +85,11 @@ add_library(
     src/mesh/MeshStatistics.cpp
 
     src/meshing/GmshMesher.cpp
+    src/meshing/MeshSizeField.cpp
+    src/meshing/RpaMeshDiagnostics.cpp
+    src/meshing/RpaRegionLayout.cpp
+    src/meshing/RpaMeshDiscretization.cpp
+    src/meshing/RpaNozzleGeometry.cpp
     src/meshing/RawMeshValidation.cpp
 
     src/mesh_build/GeometryBuilder.cpp
@@ -127,6 +135,11 @@ target_link_libraries(
 )
 
 cfd_enable_warnings(cfd_core)
+
+target_compile_definitions(cfd_core PRIVATE
+    CFD_RPA_PYTHON_EXECUTABLE="${Python3_EXECUTABLE}"
+    CFD_RPA_DXF_ADAPTER="${PROJECT_SOURCE_DIR}/tools/import_rpa_dxf.py"
+)
 
 # -----------------------------------------------------------------------------
 # Main executable
@@ -497,6 +510,30 @@ if(BUILD_TESTING)
         gmsh_mesher
         tests/GmshMesherTests.cpp
     )
+
+    execute_process(COMMAND "${Python3_EXECUTABLE}" -c "import ezdxf"
+        RESULT_VARIABLE CFD_CAD_AVAILABLE OUTPUT_QUIET ERROR_QUIET)
+    if(CFD_CAD_AVAILABLE EQUAL 0)
+        execute_process(COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/RpaDxfImportTests.py"
+            --write-fixtures "${PROJECT_BINARY_DIR}/rpa-test-fixtures"
+            COMMAND_ERROR_IS_FATAL ANY)
+        cfd_add_test(cfd_rpa_nozzle_tests rpa_nozzle tests/RpaNozzleTests.cpp)
+        set_tests_properties(rpa_nozzle PROPERTIES LABELS "rpa;fast")
+        add_test(NAME rpa_nozzle_integration COMMAND cfd_rpa_nozzle_tests --integration)
+        set_tests_properties(rpa_nozzle_integration PROPERTIES LABELS "rpa;integration")
+        option(BUILD_RPA_PARAMETRIC_TESTS "Enable the extended RPA Gmsh parameter matrix in CTest" OFF)
+        if(BUILD_RPA_PARAMETRIC_TESTS)
+            add_test(NAME rpa_nozzle_parametric COMMAND cfd_rpa_nozzle_tests --parametric)
+            set_tests_properties(rpa_nozzle_parametric PROPERTIES LABELS "rpa;parametric")
+        endif()
+        target_include_directories(cfd_rpa_nozzle_tests PRIVATE src/meshing)
+        target_compile_definitions(cfd_rpa_nozzle_tests PRIVATE
+            CFD_RPA_REFERENCE_DXF="${PROJECT_SOURCE_DIR}/cases/rpaNozzle/constant/geometry/engine.dxf"
+            CFD_RPA_TEST_FIXTURES="${PROJECT_BINARY_DIR}/rpa-test-fixtures")
+        add_test(NAME rpa_dxf_import COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/RpaDxfImportTests.py")
+    else()
+        message(WARNING "ezdxf is unavailable in ${Python3_EXECUTABLE}: RPA CAD tests are not enabled. See tools/requirements-cad.txt.")
+    endif()
 
     cfd_add_test(
         cfd_mesh_topology_tests
