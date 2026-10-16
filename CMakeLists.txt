@@ -153,6 +153,8 @@ add_library(
     src/compressible/ConservativeField.cpp
     src/compressible/CaloricallyPerfectGas.cpp
     src/compressible/EulerFlux.cpp
+    src/compressible/AxisymmetricEulerSolver.cpp
+    src/compressible/EulerSlipWallFlux.cpp
 )
 target_link_libraries(cfd_compressible PUBLIC cfd_core)
 cfd_enable_warnings(cfd_compressible)
@@ -221,6 +223,9 @@ if(BUILD_VERIFICATION)
 
         cfd_enable_warnings(${target_name})
     endfunction()
+
+    cfd_add_verification(cfd_axisymmetric_euler_sod verification/AxisymmetricEulerSod.cpp)
+    target_link_libraries(cfd_axisymmetric_euler_sod PRIVATE cfd_compressible)
 
     cfd_add_verification(
         cfd_least_squares_gradient_convergence
@@ -379,6 +384,17 @@ if(BUILD_TESTING)
         tests/EulerFluxTests.cpp
     )
     target_link_libraries(cfd_euler_flux_tests PRIVATE cfd_compressible)
+
+    cfd_add_test(cfd_euler_slip_wall_flux_tests euler_slip_wall_flux tests/EulerSlipWallFluxTests.cpp)
+    target_link_libraries(cfd_euler_slip_wall_flux_tests PRIVATE cfd_compressible)
+
+    cfd_add_test(cfd_axisymmetric_euler_tests axisymmetric_euler tests/AxisymmetricEulerTests.cpp)
+    target_link_libraries(cfd_axisymmetric_euler_tests PRIVATE cfd_compressible)
+    target_include_directories(cfd_axisymmetric_euler_tests PRIVATE ${PROJECT_SOURCE_DIR}/verification)
+
+    cfd_add_test(cfd_axisymmetric_euler_sod_tests axisymmetric_euler_sod tests/AxisymmetricEulerSodTests.cpp)
+    target_link_libraries(cfd_axisymmetric_euler_sod_tests PRIVATE cfd_compressible)
+    target_include_directories(cfd_axisymmetric_euler_sod_tests PRIVATE ${PROJECT_SOURCE_DIR}/verification)
 
     cfd_add_test(
         cfd_axisymmetric_geometry_tests
