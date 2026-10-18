@@ -158,7 +158,9 @@ add_library(
     src/compressible/EulerBoundaryConditions.cpp
     src/compressible/EulerCharacteristicBoundaryFlux.cpp
     src/compressible/EulerSteadyMonitor.cpp
+    src/compressible/EulerFarfieldBoundaryFlux.cpp
     src/io/EulerSteadyCsvWriter.cpp
+    src/io/EulerCheckpoint.cpp
 )
 target_link_libraries(cfd_compressible PUBLIC cfd_core)
 cfd_enable_warnings(cfd_compressible)
@@ -239,6 +241,12 @@ if(BUILD_VERIFICATION)
 
     cfd_add_verification(cfd_axisymmetric_euler_nozzle verification/AxisymmetricEulerNozzle.cpp)
     target_link_libraries(cfd_axisymmetric_euler_nozzle PRIVATE cfd_compressible)
+
+    cfd_add_verification(cfd_axisymmetric_euler_farfield verification/AxisymmetricEulerFarfield.cpp)
+    target_link_libraries(cfd_axisymmetric_euler_farfield PRIVATE cfd_compressible)
+
+    cfd_add_verification(cfd_axisymmetric_euler_rpa_exploratory verification/AxisymmetricEulerRpaExploratory.cpp)
+    target_link_libraries(cfd_axisymmetric_euler_rpa_exploratory PRIVATE cfd_compressible)
 
     cfd_add_verification(
         cfd_least_squares_gradient_convergence
@@ -323,6 +331,7 @@ endif()
 include(CTest)
 
 if(BUILD_TESTING)
+    add_test(NAME euler_rpa_output COMMAND "${Python3_EXECUTABLE}" -B "${PROJECT_SOURCE_DIR}/tests/EulerRpaOutputTests.py")
     function(cfd_add_test target_name test_name source_file)
         add_executable(
             ${target_name}
@@ -348,6 +357,10 @@ if(BUILD_TESTING)
             COMMAND ${target_name}
         )
     endfunction()
+
+    cfd_add_test(cfd_euler_checkpoint_tests euler_checkpoint tests/EulerCheckpointTests.cpp)
+    target_link_libraries(cfd_euler_checkpoint_tests PRIVATE cfd_compressible)
+    target_include_directories(cfd_euler_checkpoint_tests PRIVATE ${PROJECT_SOURCE_DIR}/verification)
 
     cfd_add_test(
         cfd_incompressible_case_initialization_tests
@@ -424,6 +437,14 @@ if(BUILD_TESTING)
     cfd_add_test(cfd_euler_nozzle_tests euler_nozzle tests/EulerNozzleTests.cpp)
     target_link_libraries(cfd_euler_nozzle_tests PRIVATE cfd_compressible)
     target_include_directories(cfd_euler_nozzle_tests PRIVATE ${PROJECT_SOURCE_DIR}/verification)
+
+    cfd_add_test(cfd_euler_farfield_tests euler_farfield tests/EulerFarfieldTests.cpp)
+    target_link_libraries(cfd_euler_farfield_tests PRIVATE cfd_compressible)
+    target_include_directories(cfd_euler_farfield_tests PRIVATE ${PROJECT_SOURCE_DIR}/verification)
+
+    cfd_add_test(cfd_euler_rpa_exploratory_tests euler_rpa_exploratory tests/EulerRpaExploratoryTests.cpp)
+    target_link_libraries(cfd_euler_rpa_exploratory_tests PRIVATE cfd_compressible)
+    target_include_directories(cfd_euler_rpa_exploratory_tests PRIVATE ${PROJECT_SOURCE_DIR}/verification)
 
     cfd_add_test(
         cfd_axisymmetric_geometry_tests

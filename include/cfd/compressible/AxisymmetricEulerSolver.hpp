@@ -5,6 +5,7 @@
 #include "cfd/geometry/AxisymmetricGeometry.hpp"
 
 #include <array>
+#include <limits>
 #include <optional>
 #include <vector>
 
@@ -17,6 +18,7 @@ struct AxisymmetricEulerOptions
     Index maximum_step_attempts{20}; ///< Includes the first candidate; subsequent attempts halve dt globally.
     Index maximum_steps{1000000};    ///< Total accepted-step limit over the solver lifetime.
     bool collect_timings{false};     ///< Optional wall-clock instrumentation, including per-boundary-face clocks.
+    Index maximum_rejected_steps{std::numeric_limits<Index>::max()}; ///< Cumulative safety limit, never exceeded.
 };
 
 struct AxisymmetricEulerTimings
@@ -34,6 +36,7 @@ struct EulerIntegralQuantities
     double momentum_x{};
     double momentum_r{};
     double energy{};
+    bool operator==(const EulerIntegralQuantities &) const = default;
 };
 
 /// Diagnostics of the last accepted step; counters are cumulative.
@@ -53,6 +56,14 @@ struct AxisymmetricEulerResult
     double radial_pressure_source_rate{};
     /// I_new - I_old + dt*boundary_outflow - dt*source (radial momentum only).
     EulerIntegralQuantities balance_error;
+    bool operator==(const AxisymmetricEulerResult &) const = default;
+};
+
+/// Owned accepted state, not a visualization field. Constructed only on demand.
+struct AxisymmetricEulerRestartState
+{
+    ConservativeField conservative;
+    AxisymmetricEulerResult diagnostics;
 };
 
 /// Current-state integrated residual L1 sums: [kg/s, N, N, W]. No dt factor.
@@ -73,6 +84,7 @@ struct EulerResidualEvaluation
 /// Views from state() remain valid only until the next accepted step or move.
 /// No I/O, implicit solve, clipping or viscosity. Open BCs use the local normal
 /// characteristic closures documented in CompressibleBoundaryConditions.md.
+/// Farfield uses the normal Riemann boundary in AxisymmetricEulerFarfield.md.
 class AxisymmetricEulerSolver
 {
   public:
@@ -80,6 +92,15 @@ class AxisymmetricEulerSolver
     /// @throws std::runtime_error For invalid geometry or inadmissible initial gas states.
     AxisymmetricEulerSolver(const Mesh &mesh, const ConservativeField &initial_state, CaloricallyPerfectGas gas,
                             EulerBoundaryConditions boundary_conditions, AxisymmetricEulerOptions options = {});
+
+    /// Restores a validated accepted state; scratch is recomputed, timing counters restart at zero.
+    /// Mesh/EOS/BC compatibility across files belongs to the checkpoint reader.
+    /// @throws std::invalid_argument For inconsistent times, counters or diagnostics.
+    AxisymmetricEulerSolver(const Mesh &mesh, const AxisymmetricEulerRestartState &restart, CaloricallyPerfectGas gas,
+                            EulerBoundaryConditions boundary_conditions, AxisymmetricEulerOptions options = {});
+
+    /// Deep copy of conservative storage, only when explicitly requested (e.g. checkpoint).
+    [[nodiscard]] AxisymmetricEulerRestartState restart_state() const;
 
     AxisymmetricEulerSolver(const AxisymmetricEulerSolver &) = delete;
     AxisymmetricEulerSolver &operator=(const AxisymmetricEulerSolver &) = delete;

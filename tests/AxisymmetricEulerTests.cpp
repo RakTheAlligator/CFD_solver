@@ -180,7 +180,8 @@ void test_input_and_boundary_validation()
             "CFL", "Invalid CFL accepted.");
     }
     for (const auto options :
-         {cfd::AxisymmetricEulerOptions{.maximum_step_attempts = 0}, cfd::AxisymmetricEulerOptions{.maximum_steps = 0}})
+         {cfd::AxisymmetricEulerOptions{.maximum_step_attempts = 0}, cfd::AxisymmetricEulerOptions{.maximum_steps = 0},
+          cfd::AxisymmetricEulerOptions{.maximum_rejected_steps = 0}})
         require_throws_with_message<std::invalid_argument>(
             [&] {
                 const cfd::AxisymmetricEulerSolver invalid{built.mesh, field, gas,
@@ -219,6 +220,17 @@ void test_candidate_backtracking_is_global_and_transactional()
                 rejected.diagnostics().rejected_steps == 1,
             "Failed step changed time or counters incorrectly.");
     require_uniform(rejected.state(), initial);
+    cfd::AxisymmetricEulerSolver capped{built.mesh, field, gas, bc, {.cfl = 1.0, .maximum_rejected_steps = 1}};
+    for (int call = 0; call < 2; ++call)
+    {
+        require_throws_with_message<std::runtime_error>(
+            [&] { capped.step(1.0); }, "maximum rejected-step",
+            "The cumulative rejection budget must be enforced within step.");
+        require(capped.diagnostics().rejected_steps == 1 && capped.diagnostics().accepted_steps == 0 &&
+                    capped.diagnostics().time == 0,
+                "No candidate past the rejection budget may be tested.");
+        require_uniform(capped.state(), initial);
+    }
     cfd::AxisymmetricEulerSolver retried{built.mesh, field, gas, bc, {.cfl = 1.0}};
     const auto first{retried.step(1.0)};
     const double sound{std::sqrt(1.4 * 0.001)};

@@ -38,6 +38,7 @@ EulerBoundaryCondition::EulerBoundaryCondition(const EulerBoundaryConditionType 
     case EulerBoundaryConditionType::MassFlowInlet:
     case EulerBoundaryConditionType::SupersonicInlet:
     case EulerBoundaryConditionType::PressureOutlet:
+    case EulerBoundaryConditionType::Farfield:
         throw std::invalid_argument("Euler boundary condition type requires physical data from its factory.");
     }
     throw std::invalid_argument("Unsupported Euler boundary condition type.");
@@ -87,5 +88,14 @@ EulerBoundaryCondition EulerBoundaryCondition::pressure_outlet(const double pres
 {
     require_positive(pressure, "static pressure");
     return {EulerBoundaryConditionType::PressureOutlet, pressure, 0.0, 0.0, {}, {}};
+}
+
+EulerBoundaryCondition EulerBoundaryCondition::farfield(const PrimitiveState exterior)
+{
+    require_positive(exterior.density, "farfield density");
+    require_positive(exterior.pressure, "farfield static pressure");
+    if (!std::isfinite(exterior.velocity_x) || !std::isfinite(exterior.velocity_r))
+        throw std::invalid_argument("Euler BC velocities must be finite.");
+    return {EulerBoundaryConditionType::Farfield, 0.0, 0.0, 0.0, {}, exterior};
 }
 } // namespace cfd

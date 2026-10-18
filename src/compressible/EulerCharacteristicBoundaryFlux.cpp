@@ -155,6 +155,7 @@ EulerCharacteristicBoundaryFluxResult compute_euler_characteristic_boundary_flux
     case EulerBoundaryConditionType::Axis:
     case EulerBoundaryConditionType::SlipWall:
     case EulerBoundaryConditionType::Transmissive:
+    case EulerBoundaryConditionType::Farfield:
         throw std::invalid_argument("Euler characteristic flux requires an open characteristic BC type.");
     }
     const auto boundary{gas.evaluate(trace)};

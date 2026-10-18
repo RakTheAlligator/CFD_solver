@@ -21,7 +21,8 @@ enum class EulerBoundaryConditionType : std::uint8_t
     MassFlowInlet,        ///< Subsonic normal inflow: inward group mdot, T0, direction.
     SupersonicInlet,      ///< Full static primitive state, strictly supersonic normal inflow.
     PressureOutlet,       ///< Static absolute pressure at subsonic outflow; ignored at un >= a.
-    SupersonicOutlet      ///< Interior extrapolation, requiring un >= a.
+    SupersonicOutlet,     ///< Interior extrapolation, requiring un >= a.
+    Farfield              ///< Complete exterior static state; local normal Riemann flux, including backflow.
 };
 
 /// Immutable physical boundary data. Factories validate finite positive inputs
@@ -45,6 +46,10 @@ class EulerBoundaryCondition
     [[nodiscard]] static EulerBoundaryCondition supersonic_inlet(PrimitiveState state);
     /// Positive static absolute pressure [Pa], never a gauge pressure.
     [[nodiscard]] static EulerBoundaryCondition pressure_outlet(double pressure);
+    /// Immutable exterior rho, ux, ur, absolute p. Temperature follows from
+    /// the solver's single gas EOS; admissibility is checked at evaluation.
+    /// @throws std::invalid_argument For nonpositive/nonfinite rho or p, or nonfinite velocities.
+    [[nodiscard]] static EulerBoundaryCondition farfield(PrimitiveState exterior);
 
     [[nodiscard]] EulerBoundaryConditionType type() const noexcept
     {

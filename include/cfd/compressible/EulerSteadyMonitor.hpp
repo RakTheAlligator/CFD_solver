@@ -42,6 +42,15 @@ struct EulerSteadyObservation
     EulerSteadyStatus status{EulerSteadyStatus::Running};
 };
 
+/// Previous observed field and the actual observation history (never synthesized).
+struct EulerSteadyRestartState
+{
+    ConservativeField previous;
+    EulerSteadyObservation last;
+    Index stable_checks{};
+    bool observed{};
+};
+
 /// Non-owning observer of one Euler solver, which must outlive the monitor
 /// and must not be moved from while the monitor exists.
 /// Owns a once-allocated previous-check SoA snapshot, overwritten in place only
@@ -58,6 +67,10 @@ class EulerSteadyMonitor
   public:
     /// @throws std::invalid_argument For invalid scales, tolerances or limits.
     explicit EulerSteadyMonitor(AxisymmetricEulerSolver &solver, EulerSteadyOptions options = {});
+    /// Restores history; extending time/step budgets is allowed, not convergence tolerances.
+    EulerSteadyMonitor(AxisymmetricEulerSolver &solver, EulerSteadyOptions options,
+                       const EulerSteadyRestartState &restart);
+    [[nodiscard]] EulerSteadyRestartState restart_state() const;
     EulerSteadyMonitor(const EulerSteadyMonitor &) = delete;
     EulerSteadyMonitor &operator=(const EulerSteadyMonitor &) = delete;
     EulerSteadyMonitor(EulerSteadyMonitor &&) = delete;
@@ -74,6 +87,8 @@ class EulerSteadyMonitor
     [[nodiscard]] EulerSteadyObservation observe();
 
   private:
+    EulerSteadyMonitor(AxisymmetricEulerSolver &solver, EulerSteadyOptions options,
+                       const EulerSteadyRestartState *restart);
     AxisymmetricEulerSolver *solver_;
     EulerSteadyOptions options_;
     ConservativeField previous_;
@@ -84,6 +99,7 @@ class EulerSteadyMonitor
     double previous_in_{}, previous_out_{}, previous_time_{};
     Index previous_step_{}, stable_checks_{};
     bool observed_{};
+    EulerSteadyObservation last_;
 };
 
 } // namespace cfd

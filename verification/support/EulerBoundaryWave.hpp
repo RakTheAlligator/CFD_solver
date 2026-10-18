@@ -54,15 +54,21 @@ inline ConservativeField boundary_wave_initial(const Mesh &mesh, const EulerBoun
 }
 
 inline EulerBoundaryConditions boundary_wave_conditions(const EulerBoundaryWaveParameters parameters,
-                                                        const bool transmissive_outlet = false)
+                                                        const bool transmissive_outlet = false,
+                                                        const bool farfield_outlet = false)
 {
     const double temperature{parameters.pressure / (parameters.density * parameters.gas_constant)};
     const double ratio{1.0 + 0.5 * (parameters.gamma - 1.0) * parameters.mach * parameters.mach};
     const auto inlet{EulerBoundaryCondition::total_conditions_inlet(
         parameters.pressure * std::pow(ratio, parameters.gamma / (parameters.gamma - 1.0)), temperature * ratio,
         {1.0, 0.0})};
-    const auto outlet{transmissive_outlet ? EulerBoundaryCondition{EulerBoundaryConditionType::Transmissive}
-                                          : EulerBoundaryCondition::pressure_outlet(parameters.pressure)};
+    const auto outlet{
+        farfield_outlet ? EulerBoundaryCondition::farfield(
+                              {parameters.density,
+                               parameters.mach * std::sqrt(parameters.gamma * parameters.pressure / parameters.density),
+                               0.0, parameters.pressure})
+        : transmissive_outlet ? EulerBoundaryCondition{EulerBoundaryConditionType::Transmissive}
+                              : EulerBoundaryCondition::pressure_outlet(parameters.pressure)};
     return {4, {EulerBoundaryConditionType::Axis, EulerBoundaryConditionType::SlipWall, inlet, outlet}};
 }
 
@@ -117,7 +123,8 @@ struct EulerBoundaryWaveComparison
 /// this is not a claim of exactly compact numerical diffusion tails.
 /// The initial pulse centre=0.65 and base M=0.3 place the reflected pulse
 /// inside the short domain at that time and before it reaches the inlet.
-inline EulerBoundaryWaveComparison compare_boundary_wave(const Index nx, const bool transmissive_outlet = false)
+inline EulerBoundaryWaveComparison compare_boundary_wave(const Index nx, const bool transmissive_outlet = false,
+                                                         const bool farfield_outlet = false)
 {
     constexpr EulerBoundaryWaveParameters parameters{};
     const CaloricallyPerfectGas gas{parameters.gamma, parameters.gas_constant};
@@ -126,7 +133,7 @@ inline EulerBoundaryWaveComparison compare_boundary_wave(const Index nx, const b
     const auto extended_mesh{build_boundary_wave_mesh(2 * nx, 3, 2.0, parameters.radius)};
     const auto initial{boundary_wave_initial(short_mesh.mesh, parameters)};
     AxisymmetricEulerSolver short_solver{short_mesh.mesh, initial, gas,
-                                         boundary_wave_conditions(parameters, transmissive_outlet)};
+                                         boundary_wave_conditions(parameters, transmissive_outlet, farfield_outlet)};
     AxisymmetricEulerSolver extended_solver{extended_mesh.mesh, boundary_wave_initial(extended_mesh.mesh, parameters),
                                             gas, boundary_wave_conditions(parameters)};
     EulerBoundaryWaveBalance balance{.initial = short_solver.diagnostics().integrals};

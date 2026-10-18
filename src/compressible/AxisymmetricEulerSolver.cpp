@@ -1,6 +1,7 @@
 #include "cfd/compressible/AxisymmetricEulerSolver.hpp"
 
 #include "cfd/compressible/EulerCharacteristicBoundaryFlux.hpp"
+#include "cfd/compressible/EulerFarfieldBoundaryFlux.hpp"
 #include "cfd/compressible/EulerFlux.hpp"
 #include "cfd/compressible/EulerSlipWallFlux.hpp"
 #include "cfd/mesh/Mesh.hpp"
@@ -29,7 +30,7 @@ double finite_value(const long double value)
 void validate_options(const AxisymmetricEulerOptions &options)
 {
     if (!std::isfinite(options.cfl) || !(options.cfl > 0.0) || options.cfl > 1.0 ||
-        options.maximum_step_attempts == 0 || options.maximum_steps == 0)
+        options.maximum_step_attempts == 0 || options.maximum_steps == 0 || options.maximum_rejected_steps == 0)
         throw std::invalid_argument("Euler requires 0 < CFL <= 1 and positive step/attempt limits.");
 }
 
@@ -63,6 +64,10 @@ RusanovFluxResult boundary_flux(const ConservativeState &inside, const Vector2 n
         return compute_rusanov_flux(inside, inside, normal, gas);
     case EulerBoundaryConditionType::Axis:
         break; // Axis faces must have been skipped before requesting any flux.
+    case EulerBoundaryConditionType::Farfield: {
+        const auto farfield{compute_euler_farfield_boundary_flux(inside, normal, condition, gas)};
+        return {farfield.flux, farfield.maximum_wave_speed};
+    }
     case EulerBoundaryConditionType::TotalConditionsInlet:
     case EulerBoundaryConditionType::MassFlowInlet:
     case EulerBoundaryConditionType::SupersonicInlet:
@@ -183,6 +188,36 @@ AxisymmetricEulerResult AxisymmetricEulerSolver::summarize(const ConservativeFie
     return summary;
 }
 
+AxisymmetricEulerRestartState AxisymmetricEulerSolver::restart_state() const
+{
+    return {ConservativeField{state()}, result_};
+}
+
+AxisymmetricEulerSolver::AxisymmetricEulerSolver(const Mesh &mesh, const AxisymmetricEulerRestartState &restart,
+                                                 CaloricallyPerfectGas gas, EulerBoundaryConditions conditions,
+                                                 AxisymmetricEulerOptions options)
+    : AxisymmetricEulerSolver(mesh, restart.conservative, gas, std::move(conditions), options)
+{
+    const auto &d{restart.diagnostics};
+    for (const double value :
+         {d.time, d.time_step, d.cfl, d.radial_pressure_source_rate, d.boundary_outflow_rate.mass,
+          d.boundary_outflow_rate.momentum_x, d.boundary_outflow_rate.momentum_r, d.boundary_outflow_rate.energy,
+          d.balance_error.mass, d.balance_error.momentum_x, d.balance_error.momentum_r, d.balance_error.energy})
+        if (!std::isfinite(value))
+            throw std::invalid_argument("Euler restart diagnostics must be finite.");
+    if (d.time < 0 || d.time_step < 0 || d.time_step > d.time || d.cfl != options.cfl ||
+        (d.accepted_steps == 0 ? (d.time != 0 || d.time_step != 0) : !(d.time > 0 && d.time_step > 0)) ||
+        d.accepted_steps > options.maximum_steps || d.rejected_steps > options.maximum_rejected_steps ||
+        d.integrals != result_.integrals || d.minimum_density != result_.minimum_density ||
+        d.maximum_density != result_.maximum_density || d.minimum_pressure != result_.minimum_pressure ||
+        d.maximum_pressure != result_.maximum_pressure)
+        throw std::invalid_argument("Euler restart has inconsistent times, counters or accepted-state diagnostics.");
+    if (d.accepted_steps == 0 && (d.boundary_outflow_rate != EulerIntegralQuantities{} ||
+                                  d.radial_pressure_source_rate != 0 || d.balance_error != EulerIntegralQuantities{}))
+        throw std::invalid_argument("Euler restart initial state cannot contain accepted-step rates or defects.");
+    result_ = d;
+}
+
 double AxisymmetricEulerSolver::assemble()
 {
     std::fill(wave_sums_.begin(), wave_sums_.end(), 0.0);
@@ -284,6 +319,8 @@ const AxisymmetricEulerResult &AxisymmetricEulerSolver::step(const double final_
         return result_;
     if (result_.accepted_steps >= options_.maximum_steps)
         throw std::runtime_error("Euler maximum accepted-step count reached.");
+    if (result_.rejected_steps >= options_.maximum_rejected_steps)
+        throw std::runtime_error("Euler maximum rejected-step count reached.");
     const double remaining{final_time - result_.time};
     double dt{std::min(prepare_assembly(), remaining)};
     const auto update_start{options_.collect_timings ? Clock::now() : Clock::time_point{}};
@@ -336,6 +373,8 @@ const AxisymmetricEulerResult &AxisymmetricEulerSolver::step(const double final_
             return result_;
         }
         ++result_.rejected_steps;
+        if (result_.rejected_steps >= options_.maximum_rejected_steps)
+            throw std::runtime_error("Euler maximum rejected-step count reached. " + failure);
         dt *= 0.5;
     }
     throw std::runtime_error("Euler exhausted time-step attempts. " + failure);
