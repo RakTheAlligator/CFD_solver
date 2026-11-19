@@ -154,6 +154,7 @@ add_library(
     src/compressible/CaloricallyPerfectGas.cpp
     src/compressible/EulerFlux.cpp
     src/compressible/AxisymmetricEulerSolver.cpp
+    src/compressible/AxisymmetricEulerSteadySolver.cpp
     src/compressible/EulerSlipWallFlux.cpp
     src/compressible/EulerBoundaryConditions.cpp
     src/compressible/EulerCharacteristicBoundaryFlux.cpp
@@ -241,6 +242,9 @@ if(BUILD_VERIFICATION)
 
     cfd_add_verification(cfd_axisymmetric_euler_nozzle verification/AxisymmetricEulerNozzle.cpp)
     target_link_libraries(cfd_axisymmetric_euler_nozzle PRIVATE cfd_compressible)
+
+    cfd_add_verification(cfd_axisymmetric_euler_steady verification/AxisymmetricEulerSteady.cpp)
+    target_link_libraries(cfd_axisymmetric_euler_steady PRIVATE cfd_compressible)
 
     cfd_add_verification(cfd_axisymmetric_euler_farfield verification/AxisymmetricEulerFarfield.cpp)
     target_link_libraries(cfd_axisymmetric_euler_farfield PRIVATE cfd_compressible)
@@ -422,6 +426,10 @@ if(BUILD_TESTING)
     cfd_add_test(cfd_axisymmetric_euler_tests axisymmetric_euler tests/AxisymmetricEulerTests.cpp)
     target_link_libraries(cfd_axisymmetric_euler_tests PRIVATE cfd_compressible)
     target_include_directories(cfd_axisymmetric_euler_tests PRIVATE ${PROJECT_SOURCE_DIR}/verification)
+
+    cfd_add_test(cfd_axisymmetric_euler_steady_tests axisymmetric_euler_steady tests/AxisymmetricEulerSteadyTests.cpp)
+    target_link_libraries(cfd_axisymmetric_euler_steady_tests PRIVATE cfd_compressible)
+    target_include_directories(cfd_axisymmetric_euler_steady_tests PRIVATE ${PROJECT_SOURCE_DIR}/verification)
 
     cfd_add_test(cfd_axisymmetric_euler_sod_tests axisymmetric_euler_sod tests/AxisymmetricEulerSodTests.cpp)
     target_link_libraries(cfd_axisymmetric_euler_sod_tests PRIVATE cfd_compressible)

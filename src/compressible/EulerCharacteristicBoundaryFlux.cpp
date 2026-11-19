@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <sstream>
 
 namespace cfd
 {
@@ -24,11 +25,16 @@ long double dot(const PrimitiveState &state, const Vector2 normal)
            static_cast<long double>(state.velocity_r) * normal.y;
 }
 
-void require_subsonic_inlet(const long double un, const long double sound)
+void require_subsonic_inlet(const long double un, const long double sound, const char *location)
 {
     if (un > 0.0L || un <= -sound)
-        throw std::runtime_error(
-            "Euler subsonic inlet requires -a < un <= 0; reverse flow or sonic inflow is unsupported.");
+    {
+        std::ostringstream message;
+        message.precision(17);
+        message << "Euler subsonic inlet incompatible " << location << " regime: un=" << un << ", a=" << sound
+                << "; requires -a < un <= 0; " << (un > 0 ? "reverse flow" : "sonic inflow") << " is unsupported.";
+        throw EulerCharacteristicCompatibilityError(message.str());
+    }
 }
 
 // Strictly decreasing f(q) on the normal-subsonic interval. The sonic upper
@@ -42,9 +48,23 @@ long double inlet_speed(const long double invariant, const long double mu, const
         return mu * speed + 2.0L * std::sqrt(a0_squared - 0.5L * gm * speed * speed) / gm - invariant;
     };
     long double lower{}, upper{std::sqrt(a0_squared / (mu * mu + 0.5L * gm))};
-    if (!std::isfinite(upper) || !(upper > 0.0L) || !(function(lower) >= 0.0L) || !(function(upper) < 0.0L))
-        throw std::runtime_error("Euler inlet has no compatible strictly normal-subsonic root (stagnation/choking).");
-    if (function(lower) == 0.0L)
+    if (!std::isfinite(upper) || !(upper > 0.0L))
+        throw std::runtime_error("Euler inlet root: non-representable sonic bound.");
+    const long double at_zero{function(lower)}, at_sonic{function(upper)};
+    if (!std::isfinite(at_zero) || !std::isfinite(at_sonic))
+        throw std::runtime_error("Euler inlet root: non-representable characteristic arithmetic.");
+    if (at_zero < 0.0L || at_sonic >= 0.0L)
+    {
+        std::ostringstream message;
+        message.precision(17);
+        message << "Euler inlet root incompatible: "
+                << (at_zero < 0 ? "stagnation bound exceeded" : "sonic bound reached/exceeded") << "; J=" << invariant
+                << ", J0=" << 2.0L * std::sqrt(a0_squared) / gm
+                << ", Js=" << mu * upper + 2.0L * std::sqrt(a0_squared - 0.5L * gm * upper * upper) / gm
+                << ", f(0)=" << at_zero << ", f(qs)=" << at_sonic << '.';
+        throw EulerCharacteristicCompatibilityError(message.str());
+    }
+    if (at_zero == 0.0L)
         return lower;
     for (int iteration = 0; iteration < 80; ++iteration)
     {
@@ -63,7 +83,7 @@ ConservativeState inlet_trace(const EvaluatedGasState &evaluated, const long dou
                               const EulerBoundaryCondition &condition, const CaloricallyPerfectGas &gas,
                               const double group_area)
 {
-    require_subsonic_inlet(un, evaluated.thermodynamics.sound_speed);
+    require_subsonic_inlet(un, evaluated.thermodynamics.sound_speed, "interior");
     const long double gamma{gas.gamma()}, gm{gamma - 1.0L}, gas_constant{gas.gas_constant()};
     const auto direction{condition.direction()};
     const long double mu{static_cast<long double>(direction.x) * normal.x +
@@ -78,7 +98,8 @@ ConservativeState inlet_trace(const EvaluatedGasState &evaluated, const long dou
         if (!std::isfinite(group_area) || !(group_area > 0.0))
             throw std::invalid_argument("Euler mass inlet requires finite positive group revolution area.");
         if (!(speed > 0.0L))
-            throw std::runtime_error("Euler mass inlet cannot impose positive mdot at zero inflow speed.");
+            throw EulerCharacteristicCompatibilityError(
+                "Euler mass inlet cannot impose positive mdot at zero inflow speed.");
         density = static_cast<long double>(condition.inward_mass_flow()) / group_area / (-mu * speed);
         pressure = density * gas_constant * temperature;
     }
@@ -90,7 +111,7 @@ ConservativeState inlet_trace(const EvaluatedGasState &evaluated, const long dou
     const auto trace{gas.to_conservative(
         {checked(density), checked(speed * direction.x), checked(speed * direction.y), checked(pressure)})};
     const auto boundary{gas.evaluate(trace)};
-    require_subsonic_inlet(dot(boundary.primitive, normal), boundary.thermodynamics.sound_speed);
+    require_subsonic_inlet(dot(boundary.primitive, normal), boundary.thermodynamics.sound_speed, "trace");
     return trace;
 }
 
@@ -98,22 +119,27 @@ ConservativeState outlet_trace(const EvaluatedGasState &evaluated, const long do
                                const EulerBoundaryCondition &condition, const CaloricallyPerfectGas &gas)
 {
     if (un < 0.0L)
-        throw std::runtime_error(
+        throw EulerCharacteristicCompatibilityError(
             "Euler pressure outlet backflow requires unavailable incoming thermal/directional data.");
     const auto primitive{evaluated.primitive};
     const long double gamma{gas.gamma()}, gm{gamma - 1.0L}, pressure{condition.static_pressure()};
     const long double density{primitive.density * std::pow(pressure / primitive.pressure, 1.0L / gamma)};
     const long double sound{std::sqrt(gamma * pressure / density)};
     const long double normal_speed{un + 2.0L * (evaluated.thermodynamics.sound_speed - sound) / gm};
-    if (!std::isfinite(normal_speed) || normal_speed < 0.0L || !(normal_speed < sound))
-        throw std::runtime_error("Euler pressure outlet trace is backflow or sonic/supersonic; incompatible pressure.");
+    if (!std::isfinite(density) || !(density > 0.0L) || !std::isfinite(sound) || !(sound > 0.0L) ||
+        !std::isfinite(normal_speed))
+        throw std::runtime_error("Euler pressure outlet: non-representable trace arithmetic.");
+    if (normal_speed < 0.0L || !(normal_speed < sound))
+        throw EulerCharacteristicCompatibilityError(
+            "Euler pressure outlet trace is backflow or sonic/supersonic; incompatible pressure.");
     const auto trace{
         gas.to_conservative({checked(density), checked(primitive.velocity_x + (normal_speed - un) * normal.x),
                              checked(primitive.velocity_r + (normal_speed - un) * normal.y), checked(pressure)})};
     const auto boundary{gas.evaluate(trace)};
     const long double recovered_un{dot(boundary.primitive, normal)};
     if (recovered_un < 0.0L || !(recovered_un < boundary.thermodynamics.sound_speed))
-        throw std::runtime_error("Euler pressure outlet rounded trace is outside the subsonic outflow regime.");
+        throw EulerCharacteristicCompatibilityError(
+            "Euler pressure outlet rounded trace is outside the subsonic outflow regime.");
     return trace;
 }
 } // namespace
@@ -138,10 +164,12 @@ EulerCharacteristicBoundaryFluxResult compute_euler_characteristic_boundary_flux
     case EulerBoundaryConditionType::SupersonicInlet: {
         trace = gas.to_conservative(condition.prescribed_state());
         const auto prescribed{gas.evaluate(trace)};
-        if (!(un < -sound) ||
-            !(dot(prescribed.primitive, outward_unit_normal) < -prescribed.thermodynamics.sound_speed))
+        if (!(dot(prescribed.primitive, outward_unit_normal) < -prescribed.thermodynamics.sound_speed))
             throw std::runtime_error(
-                "Euler supersonic inlet requires strictly supersonic normal inflow inside and at trace.");
+                "Euler supersonic inlet requires strictly supersonic normal inflow at prescribed trace.");
+        if (!(un < -sound))
+            throw EulerCharacteristicCompatibilityError(
+                "Euler supersonic inlet requires strictly supersonic normal inflow inside.");
         break;
     }
     case EulerBoundaryConditionType::PressureOutlet:
@@ -150,7 +178,8 @@ EulerCharacteristicBoundaryFluxResult compute_euler_characteristic_boundary_flux
         break;
     case EulerBoundaryConditionType::SupersonicOutlet:
         if (!(un >= sound))
-            throw std::runtime_error("Euler supersonic outlet requires outward normal velocity un >= a.");
+            throw EulerCharacteristicCompatibilityError(
+                "Euler supersonic outlet requires outward normal velocity un >= a.");
         break;
     case EulerBoundaryConditionType::Axis:
     case EulerBoundaryConditionType::SlipWall:

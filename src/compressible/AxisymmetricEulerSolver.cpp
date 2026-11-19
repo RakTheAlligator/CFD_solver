@@ -164,6 +164,16 @@ AxisymmetricEulerSolver::AxisymmetricEulerSolver(const Mesh &mesh, const Conserv
     result_.cfl = options_.cfl;
 }
 
+void AxisymmetricEulerSolver::validate_boundary_state(const ConservativeField &field, const Index face) const
+{
+    const auto area{mesh_->face_area_vectors()[face]};
+    const double length{mesh_->face_lengths()[face]};
+    const Vector2 normal{area.x / length, area.y / length};
+    const auto group{mesh_->face_boundary_ids()[face]};
+    (void)boundary_flux(field.state(mesh_->face_adjacencies()[face].owner), normal,
+                        boundary_conditions_.condition(group), gas_, boundary_group_areas_[group]);
+}
+
 AxisymmetricEulerResult AxisymmetricEulerSolver::summarize(const ConservativeField &field) const
 {
     AxisymmetricEulerResult summary;

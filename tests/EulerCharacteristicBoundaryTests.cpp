@@ -301,6 +301,126 @@ void test_regime_changes_sonic_limits_and_backflow()
         "root", "Incompatible total inlet was clipped to a root.");
 }
 
+void test_total_inlet_stagnation_existence_boundary()
+{
+    // gamma=2, R=1, T0=2 give a0=2 and Jmax=4 exactly.
+    const cfd::CaloricallyPerfectGas model{2.0, 1.0};
+    const auto condition{BC::total_conditions_inlet(2.0, 2.0, {1.0, 0.0})};
+    const cfd::Vector2 normal{-1.0, 0.0};
+    for (const double speed : {1.0e-8, 4.0 - std::nextafter(4.0, 0.0)})
+    {
+        const auto inside{model.to_conservative({1.0, speed, 0.0, 2.0})};
+        const auto result{cfd::compute_euler_characteristic_boundary_flux(inside, normal, condition, model)};
+        const auto trace{model.evaluate(result.boundary_state)};
+        require(trace.primitive.velocity_x > 0.0 && result.flux.mass < 0.0,
+                "Compatible near-stagnant inlet was replaced by zero or reverse flow.");
+        require_near(trace.primitive.velocity_x, speed, 4.0 * std::numeric_limits<double>::epsilon(),
+                     "Near-stagnant trace has the wrong velocity scale.");
+        require_near(trace.thermodynamics.temperature + 0.25 * trace.primitive.velocity_x * trace.primitive.velocity_x,
+                     2.0, tolerance, "Near-stagnant trace does not preserve total temperature.");
+        require_near(trace.primitive.pressure * std::pow(2.0 / trace.thermodynamics.temperature, 2.0), 2.0, tolerance,
+                     "Near-stagnant trace does not preserve total pressure.");
+    }
+    const auto rest{model.to_conservative({1.0, 0.0, 0.0, 2.0})};
+    const auto stagnant{cfd::compute_euler_characteristic_boundary_flux(rest, normal, condition, model)};
+    require(stagnant.boundary_state.momentum_x == 0.0 && stagnant.flux.mass == 0.0 && stagnant.flux.energy == 0.0,
+            "The exact stagnation endpoint must have zero velocity, mass flux and energy flux.");
+    require_near(stagnant.flux.momentum_x, -2.0, 0.0, "Stagnation pressure force has the wrong sign.");
+
+    const double larger_sound{std::nextafter(2.0, 3.0)};
+    const auto above{model.to_conservative({1.0, 0.0, 0.0, 0.5 * larger_sound * larger_sound})};
+    require(model.evaluate(above).thermodynamics.sound_speed > 2.0, "Test invariant is not above Jmax.");
+    require_throws_with_message<std::runtime_error>(
+        [&] { (void)cfd::compute_euler_characteristic_boundary_flux(above, normal, condition, model); }, "root",
+        "An invariant above the stagnation bound was accepted.");
+}
+
+void test_total_inlet_trace_sonic_existence_boundary()
+{
+    // With gamma=2 and T0=3/4, qsonic=asonic=Jsonic=1.
+    // Interior un=-1/2, a=3/4 is strictly subsonic but has J=1.
+    const cfd::CaloricallyPerfectGas model{2.0, 1.0};
+    const auto condition{BC::total_conditions_inlet(1.0, 0.75, {1.0, 0.0})};
+    const cfd::Vector2 normal{-1.0, 0.0};
+    const double delta{std::ldexp(1.0, -20)};
+    const auto compatible{model.to_conservative({1.0, 0.5 - delta, 0.0, 0.28125})};
+    const auto result{cfd::compute_euler_characteristic_boundary_flux(compatible, normal, condition, model)};
+    require(result.normal_mach > -1.0 && result.normal_mach < 0.0,
+            "An invariant above Jsonic must admit a strictly subsonic incoming trace.");
+    for (const double speed : {0.5, 0.5 + delta})
+    {
+        const auto inside{model.to_conservative({1.0, speed, 0.0, 0.28125})};
+        require_throws_with_message<std::runtime_error>(
+            [&] { (void)cfd::compute_euler_characteristic_boundary_flux(inside, normal, condition, model); }, "root",
+            "A sonic or missing trace root was accepted for a strictly subsonic interior.");
+    }
+}
+
+void test_total_inlet_f4_saved_stagnation_incompatibility()
+{
+    // Binary64 conservative cell 0 from the saved F4 field, not rounded primitives.
+    const cfd::ConservativeState inside{0x1.b61192a1ce633p-1, 0x1.ee591d4065b6dp+0, 0x1.15d1a636347e2p-3,
+                                        0x1.998db681d37aep+22};
+    const cfd::CaloricallyPerfectGas model{1.177, 414.2};
+    const auto evaluated{model.evaluate(inside)};
+    require(evaluated.primitive.velocity_x > 0.0 &&
+                evaluated.primitive.velocity_x < evaluated.thermodynamics.sound_speed,
+            "Saved F4 interior must still be normal-subsonic inflow.");
+    require_throws_with_message<std::runtime_error>(
+        [&] {
+            (void)cfd::compute_euler_characteristic_boundary_flux(
+                inside, {-1.0, 0.0}, BC::total_conditions_inlet(1185747.2501228245, 3350.2948821164091, {1.0, 0.0}),
+                model);
+        },
+        "root", "Saved incompatible F4 state was silently accepted.");
+}
+
+void test_characteristic_compatibility_errors_are_distinct_from_fatal_errors()
+{
+    const cfd::CaloricallyPerfectGas model{2, 1};
+    const auto rest{model.to_conservative({1, 0, 0, 2})};
+    try
+    {
+        (void)cfd::compute_euler_characteristic_boundary_flux(rest, {-1, 0}, BC::total_conditions_inlet(2, .5, {1, 0}),
+                                                              model);
+        cfd::test::fail("Missing recoverable stagnation incompatibility.");
+    }
+    catch (const cfd::EulerCharacteristicCompatibilityError &error)
+    {
+        cfd::test::require_contains(error.what(), "stagnation bound", "Missing stagnation diagnostic.");
+        for (const char *text : {"J=", "J0=", "Js=", "f(0)=", "f(qs)="})
+            cfd::test::require_contains(error.what(), text, "Missing invariant/bound in root diagnostic.");
+    }
+    require_throws_with_message<cfd::EulerCharacteristicCompatibilityError>(
+        [&] {
+            (void)cfd::compute_euler_characteristic_boundary_flux(model.to_conservative({1, .5, 0, .28125}), {-1, 0},
+                                                                  BC::total_conditions_inlet(1, .75, {1, 0}), model);
+        },
+        "sonic bound", "Sonic trace did not produce a distinct compatibility diagnostic.");
+    require_throws_with_message<cfd::EulerCharacteristicCompatibilityError>(
+        [&] {
+            (void)cfd::compute_euler_characteristic_boundary_flux(model.to_conservative({1, -.25, 0, 2}), {-1, 0},
+                                                                  BC::total_conditions_inlet(2, 2, {1, 0}), model);
+        },
+        "interior regime", "Reverse flow did not identify the incompatible interior regime.");
+    // A valid stagnant root would require rho=2*DBL_MAX: arithmetic, not a missing root.
+    try
+    {
+        (void)cfd::compute_euler_characteristic_boundary_flux(
+            model.to_conservative({1, 0, 0, .5}), {-1, 0},
+            BC::total_conditions_inlet(std::numeric_limits<double>::max(), .5, {1, 0}), model);
+        cfd::test::fail("Unrepresentable trace density was accepted.");
+    }
+    catch (const cfd::EulerCharacteristicCompatibilityError &)
+    {
+        cfd::test::fail("An arithmetic failure was incorrectly classified as recoverable.");
+    }
+    catch (const std::runtime_error &error)
+    {
+        cfd::test::require_contains(error.what(), "non-representable", "Missing arithmetic diagnostic.");
+    }
+}
+
 void test_invalid_data_and_direction()
 {
     for (const double invalid :
@@ -379,7 +499,15 @@ int main()
     failures += cfd::test::run_test("uniform characteristic tube evolution", test_uniform_tube_evolution);
     failures +=
         cfd::test::run_test("regime changes sonic limits and backflow", test_regime_changes_sonic_limits_and_backflow);
+    failures += cfd::test::run_test("total inlet stagnation existence boundary",
+                                    test_total_inlet_stagnation_existence_boundary);
+    failures += cfd::test::run_test("total inlet trace sonic existence boundary",
+                                    test_total_inlet_trace_sonic_existence_boundary);
+    failures += cfd::test::run_test("saved F4 total inlet stagnation incompatibility",
+                                    test_total_inlet_f4_saved_stagnation_incompatibility);
     failures += cfd::test::run_test("invalid characteristic data", test_invalid_data_and_direction);
+    failures += cfd::test::run_test("characteristic compatibility versus fatal errors",
+                                    test_characteristic_compatibility_errors_are_distinct_from_fatal_errors);
     failures += cfd::test::run_test("acoustic reflection against extended domain",
                                     test_acoustic_pressure_reflection_against_extended_domain);
     return cfd::test::finish_tests(failures, "Euler characteristic boundary");

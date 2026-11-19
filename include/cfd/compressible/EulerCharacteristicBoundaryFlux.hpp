@@ -3,8 +3,18 @@
 #include "cfd/compressible/EulerBoundaryConditions.hpp"
 #include "cfd/compressible/EulerFlux.hpp"
 
+#include <stdexcept>
+
 namespace cfd
 {
+
+/// Thermodynamically valid state outside a characteristic BC's supported branch.
+/// Does not classify geometry, configuration or arithmetic errors as recoverable.
+class EulerCharacteristicCompatibilityError : public std::runtime_error
+{
+  public:
+    using std::runtime_error::runtime_error;
+};
 
 struct EulerCharacteristicBoundaryFluxResult
 {
@@ -28,9 +38,10 @@ struct EulerCharacteristicBoundaryFluxResult
 /// Data are steady; no time dependence or hidden state. No allocations on
 /// successful calls. This is not an exact multidimensional nonreflecting BC.
 /// @throws std::invalid_argument For an invalid normal, type or required group area.
+/// @throws EulerCharacteristicCompatibilityError For an unsupported regime or missing physical root.
 /// @throws std::runtime_error For invalid states, incompatible characteristic
-///         regimes or non-representable arithmetic. Caller must propagate BC
-///         failures, not conceal them as time-step backtracking.
+///         data or non-representable arithmetic. Current-state failures propagate;
+///         only typed incompatibilities on unaccepted steady candidates may be retried.
 [[nodiscard]] EulerCharacteristicBoundaryFluxResult compute_euler_characteristic_boundary_flux(
     const ConservativeState &inside, const Vector2 &outward_unit_normal, const EulerBoundaryCondition &condition,
     const CaloricallyPerfectGas &gas, double group_revolution_area = 0.0);

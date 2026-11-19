@@ -132,8 +132,13 @@ Internal Rusanov, Axis, SlipWall and Transmissive are unchanged.
 The face flux used by the update is also the one used by global conservation
 diagnostics. No component is overwritten after computing a different flux.
 Gas conversions/admissibility use the existing EOS; no pressure/temperature
-clipping. Unrepresentable values and incompatible regimes throw. BC failures
-propagate and are not candidate-state backtracking events.
+clipping. Unrepresentable values and incompatible regimes throw. Only supported
+characteristic regime/root incompatibilities use `EulerCharacteristicCompatibilityError`;
+configuration, geometry, invalid gas states and arithmetic errors remain distinct.
+Current-state BC failures propagate without retry. The local steady solver also
+checks candidate boundary fluxes before commitment: typed characteristic
+incompatibilities may then reject the candidate and halve its pseudo-step.
+Other failures remain fatal. Physical time stepping is unchanged.
 
 ## Scope and reuse
 

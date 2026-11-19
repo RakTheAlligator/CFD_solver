@@ -166,9 +166,13 @@ class AxisymmetricEulerSolver
     const AxisymmetricEulerResult &advance_to(double final_time);
 
   private:
+    // The explicitly selected steady solver shares this assembler and storage,
+    // never the physical stepping, diagnostics or checkpoint interface.
+    friend class AxisymmetricEulerSteadySolver;
     double prepare_assembly();
     double assemble();
     AxisymmetricEulerResult summarize(const ConservativeField &field) const;
+    void validate_boundary_state(const ConservativeField &field, Index face) const;
 
     const Mesh *mesh_;
     AxisymmetricGeometry geometry_;
