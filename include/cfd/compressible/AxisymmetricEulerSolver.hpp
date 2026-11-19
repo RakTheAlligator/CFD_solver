@@ -7,6 +7,7 @@
 #include <array>
 #include <limits>
 #include <optional>
+#include <span>
 #include <vector>
 
 namespace cfd
@@ -75,6 +76,15 @@ struct EulerResidualEvaluation
     double mass_flow_out{}; ///< Positive outward mass flow over all boundary faces [kg/s].
 };
 
+/// Current-state CFL proposal, before final-time clipping or positivity retries.
+/// The read-only spectral sums belong to the solver; the view is invalidated by
+/// its next accepted step, move or destruction. No allocation or field copy.
+struct EulerCflEvaluation
+{
+    double time_step{};
+    std::span<const double> cell_wave_sums; ///< sum_f(|S_axi,f| * lambda_f), using the actual flux/BC waves.
+};
+
 /// First-order, no-swirl axisymmetric Euler / Rusanov / global forward Euler.
 ///
 /// Owns precomputed revolution metrics, BCs and persistent current/candidate,
@@ -134,6 +144,11 @@ class AxisymmetricEulerSolver
     /// step; accepting a step invalidates it. No allocation on the valid path.
     /// Same flux/BC/arithmetic failures as step(), propagated without retry.
     [[nodiscard]] EulerResidualEvaluation evaluate_steady_residual();
+
+    /// Explicitly requested diagnostic using the same cached assembly as step().
+    /// Does not advance time or change accepted-state diagnostics. No extra work
+    /// in ordinary steps; assembly errors propagate exactly as for step().
+    [[nodiscard]] EulerCflEvaluation evaluate_cfl();
 
     /// Accepts one step, clipped to final_time, or does nothing if already there.
     /// dt = CFL*min(V/sum(A*lambda)); zero-area axis faces contribute nothing.

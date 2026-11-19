@@ -114,6 +114,50 @@ void test_internal_face_conservation_and_closed_walls()
     }
 }
 
+void test_cfl_diagnostic_uses_current_cached_assembly()
+{
+    const auto built{cfd::build_mesh(cfd::verification::make_euler_tube(1, 1))};
+    const cfd::ConservativeField field{1, gas.to_conservative({1.0, 0.0, 0.0, 1.0})};
+    cfd::AxisymmetricEulerSolver solver{built.mesh, field, gas, cfd::verification::euler_tube_conditions()};
+    const auto before{solver.diagnostics()};
+    const auto proposal{solver.evaluate_cfl()};
+    require(proposal.cell_wave_sums.size() == 1, "CFL diagnostic cardinality.");
+    // Independently known cylinder: V=pi, sum(A*lambda)=4*pi*sqrt(1.4).
+    require_near(proposal.cell_wave_sums[0], 4 * std::numbers::pi * std::sqrt(1.4), tolerance,
+                 "CFL diagnostic must use actual face wave sums.");
+    require_near(proposal.time_step, 0.2 / (4 * std::sqrt(1.4)), tolerance, "CFL proposal incorrect.");
+    require(solver.diagnostics() == before, "CFL diagnostic must not change accepted diagnostics.");
+    require(solver.evaluate_cfl().cell_wave_sums.data() == proposal.cell_wave_sums.data(),
+            "Repeated diagnostic must reuse persistent assembly storage.");
+    const double proposed{proposal.time_step};
+    require(solver.step(1.0).time_step == proposed, "Step must consume the same CFL assembly.");
+    require_balance(solver.diagnostics());
+
+    // Nonuniform density evolves: compare a fresh proposal after invalidation
+    // with an unobserved solver. Diagnostic calls must not change the trajectory.
+    const auto pair{cfd::build_mesh(cfd::verification::make_euler_tube(2, 1))};
+    cfd::ConservativeField nonuniform{2, gas.to_conservative({1.0, 0.0, 0.0, 1.0})};
+    nonuniform.set_state(1, gas.to_conservative({2.0, 0.0, 0.0, 1.0}));
+    const cfd::EulerBoundaryConditions walls{4, {Type::Axis, Type::SlipWall, Type::SlipWall, Type::SlipWall}};
+    cfd::AxisymmetricEulerSolver observed{pair.mesh, nonuniform, gas, walls};
+    cfd::AxisymmetricEulerSolver control{pair.mesh, nonuniform, gas, walls};
+    for (int step = 0; step < 3; ++step)
+    {
+        const double next{observed.evaluate_cfl().time_step};
+        observed.step(1.0);
+        control.step(1.0);
+        require(observed.diagnostics().time_step == next, "Stale CFL proposal after accepted step.");
+        require(observed.diagnostics() == control.diagnostics(), "CFL observation changed trajectory.");
+        for (cfd::Index cell = 0; cell < nonuniform.size(); ++cell)
+        {
+            const auto a{observed.state().state(cell)}, b{control.state().state(cell)};
+            require(a.density == b.density && a.momentum_x == b.momentum_x && a.momentum_r == b.momentum_r &&
+                        a.total_energy_density == b.total_energy_density,
+                    "CFL observation changed fields.");
+        }
+    }
+}
+
 void test_oblique_slip_walls_are_impermeable()
 {
     cfd::RawMeshData raw;
@@ -299,6 +343,8 @@ int main()
         cfd::test::run_test("Euler source, axis, CFL and final time", test_pressure_source_cfl_axis_and_final_time);
     failures += cfd::test::run_test("Euler internal faces and closed-wall conservation",
                                     test_internal_face_conservation_and_closed_walls);
+    failures += cfd::test::run_test("Euler current-state cached CFL diagnostic",
+                                    test_cfl_diagnostic_uses_current_cached_assembly);
     failures += cfd::test::run_test("Euler input and BC validation", test_input_and_boundary_validation);
     failures += cfd::test::run_test("Euler oblique slip-wall impermeability", test_oblique_slip_walls_are_impermeable);
     failures += cfd::test::run_test("Euler candidate rejection and global retry",

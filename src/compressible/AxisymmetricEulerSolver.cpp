@@ -293,6 +293,12 @@ double AxisymmetricEulerSolver::prepare_assembly()
     return *assembled_time_step_;
 }
 
+EulerCflEvaluation AxisymmetricEulerSolver::evaluate_cfl()
+{
+    const double time_step{prepare_assembly()};
+    return {time_step, wave_sums_};
+}
+
 EulerResidualEvaluation AxisymmetricEulerSolver::evaluate_steady_residual()
 {
     (void)prepare_assembly();
