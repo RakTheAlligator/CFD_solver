@@ -194,7 +194,7 @@ cmake --build build-release --target cfd_axisymmetric_euler_steady --parallel 2
 ./build-release/cfd_axisymmetric_euler_steady steady rpa /tmp/steady-rpa .05 50 5 5 /path/to/rpa-case
 ```
 
-Arguments : `MODE CASE NEW_OUTPUT CFL MAX_ITER CHECK_INTERVAL WALL_SECONDS [RPA_CASE]`.
+Arguments : `MODE CASE NEW_OUTPUT CFL MAX_ITER CHECK_INTERVAL WALL_SECONDS [RPA_CASE [uniform|quasi1d]]`.
 `MODE=steady|transient`, `CASE=tube|nozzle|rpa`. Le pilote reprend les conventions
 positionnelles des drivers Euler existants, pas un nouveau système de configuration.
 Les critères avancés sont configurables via les options C++ ; aucun réglage du
@@ -208,6 +208,26 @@ pas une solution exacte 2D ; cette grille très grossière ne valide pas la pré
 spatiale. `rpa` lit tous les paramètres du `meshDict` donné, sans modifier le cas.
 Ses données nominales et hypothèses ambiantes exploratoires sont celles des essais
 antérieurs (gaz équivalent, p_ext=1e-4 Pa, T_ext=300 K, vitesse extérieure nulle).
+
+Pour RPA, le dernier argument facultatif sélectionne `uniform` (défaut historique,
+identique bit à bit) ou `quasi1d` (choix explicite). Ce choix est enregistré dans
+`summary.txt`. Exemple, à ne pas confondre
+avec une certification de convergence :
+
+```sh
+./build-release/cfd_axisymmetric_euler_steady steady rpa /tmp/f4-quasi1d .05 100000 20 120 /chemin/vers/cas-F4 quasi1d
+```
+
+La préparation quasi-1D utilise le profil polygonal `inner_wall` du Mesh, son
+rayon minimal et les conditions totales prescrites : relation aire–Mach,
+branche subsonique avant le col et supersonique après, enthalpie totale et
+isentropie constantes. Les valeurs ponctuelles aux centres cellulaires ont
+une vitesse radiale nulle ; elles ne sont ni des moyennes cellulaires exactes,
+ni une solution stationnaire 2D. Le débit critique est déduit de P0/T0/A*,
+sans prescription indépendante. Seul ENGINE est remplacé ; les quatre autres
+régions conservent exactement leurs conservatives historiques. Aucun choix
+n'est transmis au solveur, aucun BC/CFL/critère n'est modifié. La qualité de
+cette initialisation ne démontre pas la convergence asymptotique de F4.
 
 VTU initial, intermédiaires espacés, final ; `snapshots.csv` indexe des **itérations**,
 sans série PVD de faux temps physiques. `iterations.csv` fournit résidus, maxima,

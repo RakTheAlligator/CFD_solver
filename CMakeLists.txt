@@ -455,6 +455,10 @@ if(BUILD_TESTING)
     target_link_libraries(cfd_euler_farfield_tests PRIVATE cfd_compressible)
     target_include_directories(cfd_euler_farfield_tests PRIVATE ${PROJECT_SOURCE_DIR}/verification)
 
+    cfd_add_test(cfd_euler_rpa_initialization_tests euler_rpa_initialization tests/EulerRpaInitializationTests.cpp)
+    target_link_libraries(cfd_euler_rpa_initialization_tests PRIVATE cfd_compressible)
+    target_include_directories(cfd_euler_rpa_initialization_tests PRIVATE ${PROJECT_SOURCE_DIR}/verification)
+
     cfd_add_test(cfd_euler_rpa_exploratory_tests euler_rpa_exploratory tests/EulerRpaExploratoryTests.cpp)
     target_link_libraries(cfd_euler_rpa_exploratory_tests PRIVATE cfd_compressible)
     target_include_directories(cfd_euler_rpa_exploratory_tests PRIVATE ${PROJECT_SOURCE_DIR}/verification)

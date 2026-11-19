@@ -4,6 +4,7 @@
 #include "cfd/mesh/MeshBuilder.hpp"
 #include "support/EulerNozzle.hpp"
 #include "support/EulerRpaExploratory.hpp"
+#include "support/EulerRpaInitialization.hpp"
 #include "support/EulerRpaTemporal.hpp"
 
 #include <algorithm>
@@ -39,7 +40,7 @@ struct Problem
     double rho_ref{}, velocity_ref{}, length_ref{};
 };
 
-Problem make_problem(const std::string_view name, const fs::path &rpa_case)
+Problem make_problem(const std::string_view name, const fs::path &rpa_case, const std::string_view initialization)
 {
     if (name == "rpa")
     {
@@ -56,6 +57,10 @@ Problem make_problem(const std::string_view name, const fs::path &rpa_case)
         (void)cfd::verification::initialize_rpa(built.mesh, layout, ambient, field, labels);
         std::vector<cfd::Index> regions(labels.size());
         std::ranges::transform(labels, regions.begin(), [](const double r) { return static_cast<cfd::Index>(r); });
+        if (initialization == "quasi1d")
+            (void)cfd::verification::initialize_rpa_quasi1d(
+                built.mesh, regions, cfd::CaloricallyPerfectGas{Model::gamma, Model::gas_constant},
+                Model::total_pressure(), Model::total_temperature(), field);
         return {std::move(built),
                 std::move(field),
                 {Model::gamma, Model::gas_constant},
@@ -233,7 +238,7 @@ class Output
 };
 
 int run(const Problem &problem, const std::string &mode, const fs::path &directory,
-        cfd::EulerLocalSteadyOptions options)
+        cfd::EulerLocalSteadyOptions options, const std::string_view initialization = {})
 {
     Output output{problem, directory, mode};
     output.snapshot(0, problem.initial);
@@ -346,6 +351,8 @@ int run(const Problem &problem, const std::string &mode, const fs::path &directo
             << "\nloop_cpu_seconds=" << static_cast<double>(std::clock() - cpu_start) / CLOCKS_PER_SEC
             << "\ncfl=" << options.cfl << "\nrho_ref=" << options.reference_density
             << "\nvelocity_ref=" << options.reference_velocity << "\nlength_ref=" << options.reference_length << '\n';
+    if (!initialization.empty())
+        summary << "initialization=" << initialization << '\n';
     std::cout << mode << ' ' << status << " iterations=" << iteration << " step_seconds=" << step_seconds << '\n';
     if (status == "NUMERICAL_FAILURE")
         std::cerr << failure << '\n';
@@ -357,17 +364,20 @@ int main(int argc, char **argv)
 {
     try
     {
-        if (argc != 8 && argc != 9)
+        if (argc < 8 || argc > 10)
             throw std::invalid_argument("Usage: cfd_axisymmetric_euler_steady MODE CASE NEW_OUTPUT CFL MAX_ITER "
-                                        "CHECK_INTERVAL WALL_SECONDS [RPA_CASE]\n"
+                                        "CHECK_INTERVAL WALL_SECONDS [RPA_CASE [uniform|quasi1d]]\n"
                                         "MODE=steady|transient, CASE=tube|nozzle|rpa");
         const std::span<char *> args{argv, static_cast<cfd::Index>(argc)};
         const std::string mode{args[1]}, name{args[2]};
         if (mode != "steady" && mode != "transient")
             throw std::invalid_argument("MODE must be steady or transient.");
-        if ((name == "rpa") != (argc == 9))
+        if ((name == "rpa") != (argc >= 9))
             throw std::invalid_argument("RPA requires exactly one explicit case directory.");
-        const fs::path output{args[3]}, input{argc == 9 ? fs::path{args[8]} : fs::path{"."}};
+        const std::string_view initialization{argc == 10 ? args[9] : "uniform"};
+        if (initialization != "uniform" && initialization != "quasi1d")
+            throw std::invalid_argument("RPA initialization must be uniform or quasi1d.");
+        const fs::path output{args[3]}, input{argc >= 9 ? fs::path{args[8]} : fs::path{"."}};
         if (name == "rpa")
             cfd::verification::require_external_empty_output(input, output);
         else if (fs::exists(output) && (!fs::is_directory(output) || !fs::is_empty(output)))
@@ -380,11 +390,11 @@ int main(int argc, char **argv)
         options.maximum_wall_seconds = real(args[7]);
         if (options.maximum_iterations > 100000 || options.maximum_wall_seconds > 120)
             throw std::invalid_argument("Verification guard: at most 100000 iterations and 120 s per invocation.");
-        const auto problem{make_problem(name, input)};
+        const auto problem{make_problem(name, input, initialization)};
         options.reference_density = problem.rho_ref;
         options.reference_velocity = problem.velocity_ref;
         options.reference_length = problem.length_ref;
-        return run(problem, mode, output, options);
+        return run(problem, mode, output, options, name == "rpa" ? initialization : std::string_view{});
     }
     catch (const std::exception &error)
     {
