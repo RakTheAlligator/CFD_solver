@@ -1058,14 +1058,15 @@ class RpaGmshBuilder
     }
 
     RpaCadCurve edge(const detail::RpaStructuredGrid &grid, bool axial, Index at, const RpaCadPoint &a,
-                     const RpaCadPoint &b)
+                     const RpaCadPoint &b, bool preserve_shape = false)
     {
         std::vector<Point2> coordinates;
         const Index count{axial ? grid.x.size() : grid.radial_cells + 1};
         coordinates.reserve(count);
         for (Index i = 0; i < count; ++i)
             coordinates.push_back(axial ? grid.at(i, at) : grid.at(at, i));
-        return curve(a, b, coordinates);
+        return curve(a, b, coordinates,
+                     preserve_shape ? std::span<const Point2>{coordinates} : std::span<const Point2>{});
     }
 
     int surface(const std::vector<int> &loop)
@@ -1075,10 +1076,30 @@ class RpaGmshBuilder
         return tag;
     }
 
+    RpaCadCurve axial_segment(const detail::RpaStructuredGrid &grid, Index row, Index begin, Index end,
+                              const RpaCadPoint &a, const RpaCadPoint &b)
+    {
+        std::vector<Point2> coordinates;
+        coordinates.reserve(end - begin + 1);
+        for (Index i = begin; i <= end; ++i)
+            coordinates.push_back(grid.at(i, row));
+        return curve(a, b, coordinates);
+    }
+
+    /// Leave this curve's nodes and spacing to the Gmsh size field.
+    int free_edge(const RpaCadPoint &a, const RpaCadPoint &b)
+    {
+        return gmsh::model::geo::addLine(a.tag, b.tag);
+    }
+
     void grid(const detail::RpaStructuredGrid &grid, const std::vector<RpaCadCurve> &bottom,
               const std::vector<RpaCadCurve> &left, const std::vector<RpaCadCurve> &right,
-              const std::vector<RpaCadCurve> &top, const std::vector<int> &corners, bool triangles)
+              const std::vector<RpaCadCurve> &top, const std::vector<int> &corners, bool triangles,
+              Index first_column = 0, Index column_count = 0)
     {
+        const Index columns{column_count == 0 ? grid.x.size() : column_count};
+        const auto coordinates{
+            std::span{grid.nodes}.subspan(first_column * (grid.radial_cells + 1), columns * (grid.radial_cells + 1))};
         std::vector<int> loop;
         loop.reserve(bottom.size() + right.size() + top.size() + left.size());
         for (const auto &c : bottom)
@@ -1091,6 +1112,8 @@ class RpaGmshBuilder
             loop.push_back(-it->tag);
         const int tag{surface(loop)};
         gmsh::model::geo::mesh::setTransfiniteSurface(tag, "Left", corners);
+        if (!triangles)
+            gmsh::model::geo::mesh::setRecombine(2, tag);
         const auto chain = [](const std::vector<RpaCadCurve> &curves) {
             std::vector<std::size_t> result;
             for (const auto &c : curves)
@@ -1098,17 +1121,17 @@ class RpaGmshBuilder
             return result;
         };
         const auto down{chain(bottom)}, up{chain(top)}, start{chain(left)}, end{chain(right)};
-        if (down.size() != grid.x.size() || up.size() != grid.x.size() || start.size() != grid.radial_cells + 1 ||
+        if (down.size() != columns || up.size() != columns || start.size() != grid.radial_cells + 1 ||
             start.size() != end.size())
             throw std::logic_error("RPA shared structured boundary cardinality mismatch.");
-        std::vector<std::size_t> ids(grid.nodes.size());
+        std::vector<std::size_t> ids(coordinates.size());
         const Index stride{grid.radial_cells + 1};
         const auto assign = [&](Index i, std::size_t node) {
             if (ids[i] != 0 && ids[i] != node)
                 throw std::logic_error("RPA corner is not a shared Gmsh node.");
             ids[i] = node;
         };
-        for (Index i = 0; i < grid.x.size(); ++i)
+        for (Index i = 0; i < columns; ++i)
         {
             assign(i * stride, down[i]);
             assign(i * stride + grid.radial_cells, up[i]);
@@ -1116,19 +1139,19 @@ class RpaGmshBuilder
         for (Index j = 0; j < stride; ++j)
         {
             assign(j, start[j]);
-            assign((grid.x.size() - 1) * stride + j, end[j]);
+            assign((columns - 1) * stride + j, end[j]);
         }
         RpaNodeGroup group{2, tag, {}, {}};
-        for (Index i = 0; i < grid.nodes.size(); ++i)
+        for (Index i = 0; i < coordinates.size(); ++i)
             if (ids[i] == 0)
             {
                 ids[i] = next_node_++;
                 group.tags.push_back(ids[i]);
-                group.xyz.insert(group.xyz.end(), {grid.nodes[i].x, grid.nodes[i].y, 0.0});
+                group.xyz.insert(group.xyz.end(), {coordinates[i].x, coordinates[i].y, 0.0});
             }
         nodes_.push_back(std::move(group));
         RpaElementGroup cells{tag, triangles ? gmsh_triangle_3_element_type : gmsh_quadrilateral_4_element_type, {}};
-        for (Index i = 1; i < grid.x.size(); ++i)
+        for (Index i = 1; i < columns; ++i)
             for (Index j = 0; j < grid.radial_cells; ++j)
             {
                 const auto a{ids[(i - 1) * stride + j]}, b{ids[i * stride + j]}, c{ids[i * stride + j + 1]},
@@ -1177,6 +1200,8 @@ class RpaGmshBuilder
                     gmsh::model::mesh::setNode(tag, coordinate, parameter);
                 }
             }
+        // Free exterior curves can own nodes beyond the prescribed boundary tags.
+        gmsh::model::mesh::getMaxNodeTag(next);
         for (const auto &group : nodes_)
             if (group.dimension == 2 && !group.tags.empty())
             {
@@ -1360,8 +1385,90 @@ ModelTags create_rpa_nozzle(const RpaNozzleDomain &domain, const detail::RpaMesh
     const std::array<Point2, 2> lip_points{e11.position, b10.position};
     const auto lip{b.curve(e11, b10, lip_points)};
     const auto p10{b.point(p.at(p.x.size() - 1, 0))}, p11{b.point(p.at(p.x.size() - 1, p.radial_cells))};
-    const auto pb{b.edge(p, true, 0, e10, p10)}, pt{b.edge(p, true, p.radial_cells, b11, p11)},
-        pr{b.edge(p, false, p.x.size() - 1, p10, p11)};
+    std::optional<RpaCadCurve> whole_bottom, whole_top;
+    if (mesh.plume_block_columns.size() == 2)
+    {
+        // Preserve CAD creation order on the historical single-block paths.
+        whole_bottom = b.edge(p, true, 0, e10, p10);
+        whole_top = b.edge(p, true, p.radial_cells, b11, p11);
+    }
+    const auto pr{b.edge(p, false, p.x.size() - 1, p10, p11)};
+    if (p.x.back() < domain.downstream_x)
+    {
+        // Two tensor-product FARFIELD blocks surround a compact TRI envelope.
+        // Its downstream cap separates PLUME from FARFIELD even on the axis.
+        const auto &g{mesh.farfield_downstream};
+        const auto f00{b.point(f.at(0, 0))}, f10{b.point(f.at(f.x.size() - 1, 0))},
+            f01{b.point(f.at(0, f.radial_cells))}, f11{b.point(f.at(f.x.size() - 1, f.radial_cells))},
+            g00{b.point(g.at(0, 0))}, g10{b.point(g.at(g.x.size() - 1, 0))},
+            g11{b.point(g.at(g.x.size() - 1, g.radial_cells))};
+        const auto fb{b.edge(f, true, 0, f00, f10, true)}, ft{b.edge(f, true, f.radial_cells, f01, f11)},
+            fl{b.edge(f, false, 0, f00, f01)}, fr{b.edge(f, false, f.x.size() - 1, f10, f11)},
+            gb{b.edge(g, true, 0, g00, g10)}, gt{b.edge(g, true, g.radial_cells, f11, g11)},
+            gr{b.edge(g, false, g.x.size() - 1, g10, g11)};
+        const auto lower{b.curve(g00, f10, std::span{g.nodes}.first(mesh.farfield_split_row + 1))};
+        const int upstream_low{b.free_edge(b01, f00)}, axis{b.free_edge(p10, g00)};
+        b.grid(e, {eb}, {el}, {er}, ew, {e00.tag, e10.tag, e11.tag, e01.tag}, false);
+        b.grid(band, bw, {bl}, {br}, bt, {b00.tag, b10.tag, b11.tag, b01.tag}, false);
+        std::vector<RpaCadCurve> plume_bottom, plume_top, previous{er, lip, br};
+        auto bottom{e10}, top{b11};
+        for (Index block = 1; block < mesh.plume_block_columns.size(); ++block)
+        {
+            const Index begin{mesh.plume_block_columns[block - 1]}, end{mesh.plume_block_columns[block]};
+            const bool last{block + 1 == mesh.plume_block_columns.size()};
+            const auto next_bottom{last ? p10 : b.point(p.at(end, 0))};
+            const auto next_top{last ? p11 : b.point(p.at(end, p.radial_cells))};
+            plume_bottom.push_back(whole_bottom ? *whole_bottom
+                                                : b.axial_segment(p, 0, begin, end, bottom, next_bottom));
+            plume_top.push_back(whole_top ? *whole_top : b.axial_segment(p, p.radial_cells, begin, end, top, next_top));
+            const auto right{last ? pr : b.edge(p, false, end, next_bottom, next_top)};
+            b.grid(p, {plume_bottom.back()}, previous, {right}, {plume_top.back()},
+                   {bottom.tag, next_bottom.tag, next_top.tag, top.tag}, false, begin, end - begin + 1);
+            previous = {right};
+            bottom = next_bottom;
+            top = next_top;
+        }
+        b.grid(f, {fb}, {fl}, {fr}, {ft}, {f00.tag, f10.tag, f11.tag, f01.tag}, false);
+        b.grid(g, {gb}, {lower, fr}, {gr}, {gt}, {g00.tag, g10.tag, g11.tag, f11.tag}, false);
+        std::vector<int> transition_loop;
+        transition_loop.reserve(plume_top.size() + 5 + bt.size());
+        for (const auto &curve : plume_top)
+            transition_loop.push_back(curve.tag);
+        transition_loop.insert(transition_loop.end(), {-pr.tag, axis, lower.tag, -fb.tag, -upstream_low});
+        for (const auto &curve : bt)
+            transition_loop.push_back(curve.tag);
+        b.surface(transition_loop);
+        b.install();
+        std::array<std::vector<int>, 8> boundaries{{{el.tag},
+                                                    {eb.tag, axis, gb.tag},
+                                                    {},
+                                                    {},
+                                                    {lip.tag},
+                                                    {bl.tag, upstream_low, fl.tag},
+                                                    {ft.tag, gt.tag},
+                                                    {gr.tag}}};
+        for (const auto &curve : plume_bottom)
+            boundaries.at(1).push_back(curve.tag);
+        for (const auto &curve : ew)
+            boundaries.at(2).push_back(curve.tag);
+        for (const auto &curve : bw)
+            boundaries.at(3).push_back(curve.tag);
+        constexpr std::array<const char *, 8> names{"inlet",           "axis",
+                                                    "inner_wall",      "outer_wall",
+                                                    "nozzle_lip",      "farfield_upstream",
+                                                    "farfield_radial", "farfield_downstream"};
+        ModelTags result{b.surfaces, {}, true};
+        for (Index i = 0; i < boundaries.size(); ++i)
+        {
+            const int tag{gmsh::model::addPhysicalGroup(1, boundaries.at(i))};
+            gmsh::model::setPhysicalName(1, tag, names.at(i));
+            result.boundaries.push_back({{i, names.at(i)}, tag});
+        }
+        const int fluid{gmsh::model::addPhysicalGroup(2, result.surface_tags)};
+        gmsh::model::setPhysicalName(2, fluid, "fluid");
+        return result;
+    }
+    const auto &pb{whole_bottom.value()}, &pt{whole_top.value()};
     const auto f00{b.point(f.at(0, 0))}, f01{b.point(f.at(0, f.radial_cells))},
         f11{b.point(f.at(f.x.size() - 1, f.radial_cells))};
     const auto fb{b.edge(f, true, 0, f00, p11)}, ft{b.edge(f, true, f.radial_cells, f01, f11)},
@@ -1602,22 +1709,55 @@ RawMeshData generate_mesh(const RpaNozzleGeometry &geometry, const MeshGeneratio
     gmsh::model::add("rpa_nozzle");
     try
     {
-        const auto model{create_rpa_nozzle(domain, discretization, options)};
         std::atomic<bool> invalid_field{};
         gmsh::model::mesh::setSizeCallback([&](int, int, double x, double y, double, double size) {
             try
             {
                 double target{discretization.transition_size};
+                double plume_edge_size{};
                 for (const auto *grid : {&discretization.band, &discretization.plume})
                 {
                     const auto it{std::upper_bound(grid->x.begin(), grid->x.end(), x)};
                     const Index i{std::clamp(static_cast<Index>(it - grid->x.begin()), Index{1}, grid->x.size() - 1)};
                     const auto &a{grid->at(i - 1, grid->radial_cells)}, &b{grid->at(i, grid->radial_cells)};
                     const double length{std::hypot(b.x - a.x, b.y - a.y)};
+                    if (grid == &discretization.plume)
+                        plume_edge_size = length;
                     const double ux{(b.x - a.x) / length}, uy{(b.y - a.y) / length};
                     const double along{std::clamp((x - a.x) * ux + (y - a.y) * uy, 0.0, length)};
                     const double distance{std::hypot(x - a.x - along * ux, y - a.y - along * uy)};
-                    target = std::min(target, length + 0.2 * distance);
+                    const double slope{rpa_options.regions.plume_length_factor ? rpa_options.maximum_growth_rate - 1.0
+                                                                               : 0.2};
+                    target = std::min(target, length + slope * distance);
+                }
+                if (rpa_options.regions.plume_length_factor)
+                {
+                    const auto &plume{discretization.plume};
+                    const auto begin{plume.nodes.begin() +
+                                     static_cast<std::ptrdiff_t>((plume.x.size() - 1) * (plume.radial_cells + 1))};
+                    const auto end{plume.nodes.end()};
+                    const auto it{std::upper_bound(begin, end, y, [](double v, const Point2 &p) { return v < p.y; })};
+                    const Index row{std::clamp(static_cast<Index>(it - begin), Index{1}, plume.radial_cells)};
+                    const double lo{(begin + static_cast<std::ptrdiff_t>(row - 1))->y},
+                        hi{(begin + static_cast<std::ptrdiff_t>(row))->y};
+                    const double slope{rpa_options.maximum_growth_rate - 1.0};
+                    target =
+                        std::min(target, hi - lo + slope * std::hypot(x - plume.x.back(), y - std::clamp(y, lo, hi)));
+                    if (rpa_options.plume_refinement_radius_factor)
+                    {
+                        const double t{
+                            std::clamp((x - domain.inner_wall.back().x) / (plume.x.back() - domain.inner_wall.back().x),
+                                       0.0, 1.0)};
+                        const double envelope{
+                            std::lerp(*rpa_options.plume_refinement_radius_factor * domain.inner_wall.back().y,
+                                      layout.plume_outlet_radius(), t)};
+                        const double distance{std::hypot(x - std::clamp(x, domain.inner_wall.back().x, plume.x.back()),
+                                                         std::max(0.0, y - envelope))};
+                        // Follow the organized plume's coarsening instead of forcing
+                        // entry-sized TRI next to its much larger terminal QUAD.
+                        target = std::min(target, std::max(*rpa_options.plume_refinement_cell_size, plume_edge_size) +
+                                                      slope * distance);
+                    }
                 }
                 return combined ? std::min(target, combined({x, y})) : target;
             }
@@ -1628,8 +1768,10 @@ RawMeshData generate_mesh(const RpaNozzleGeometry &geometry, const MeshGeneratio
             }
         });
         RawMeshData raw;
+        ModelTags model;
         try
         {
+            model = create_rpa_nozzle(domain, discretization, options);
             raw = generate_and_extract_mesh(model, options);
         }
         catch (...)
@@ -1640,6 +1782,8 @@ RawMeshData generate_mesh(const RpaNozzleGeometry &geometry, const MeshGeneratio
         gmsh::model::mesh::removeSizeCallback();
         if (invalid_field.load())
             throw std::invalid_argument("External RPA size field failed during Gmsh generation.");
+        if (rpa_options.regions.plume_length_factor)
+            detail::require_rpa_finite_mapped_topology(raw, discretization, domain, layout);
         if (options.cell_type == CellType::Quadrilateral && !options.hybrid)
         {
             // Extraction preserves surface order. Verify each of the four

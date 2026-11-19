@@ -36,6 +36,12 @@ def write_fixtures(directory):
     directory.mkdir(parents=True, exist_ok=True)
     make_document().saveas(directory / "conical.dxf")
     make_document(cubic=True).saveas(directory / "cubic.dxf")
+    for name, points in {
+        "short": [(0, .3), (.25, .3), (.5, .1), (1, .4)],
+        "long": [(0, .3), (.75, .3), (1.5, .1), (4, .4)],
+        "expansion": [(0, .35), (.5, .35), (1, .08), (2, .5)],
+    }.items():
+        make_document(points=points).saveas(directory / (name + ".dxf"))
 
 
 class ImportTests(unittest.TestCase):

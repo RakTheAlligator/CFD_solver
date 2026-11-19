@@ -1,4 +1,5 @@
 #include "RpaMeshDiscretization.hpp"
+#include "cfd/geometry/AxisymmetricGeometry.hpp"
 #include "cfd/input/OpenFOAMCaseReader.hpp"
 #include "cfd/io/VtkWriter.hpp"
 #include "cfd/mesh/MeshBuilder.hpp"
@@ -269,6 +270,315 @@ void test_reader_and_migration()
         require_throws<std::runtime_error>(
             [&] { static_cast<void>(dictionary(dir.path(), "engine {file a.dxf;}", bad)); },
             "Invalid mesh options accepted.");
+}
+
+void test_finite_hybrid_plume_dictionary_and_conformity()
+{
+    const TemporaryDirectory dir;
+    const auto parsed{dictionary(
+        dir.path(),
+        "engine {file \"" + (std::filesystem::path{CFD_RPA_TEST_FIXTURES} / "conical.dxf").string() +
+            "\";} box {downstreamFactor 20; outerRadiusFactor 10; upstreamFactor auto;}",
+        "cellType hybrid; baseCellSize .04; engineRadialCells 12; bandRadialCells 6; "
+        "engineAxialSpacingFactor 1.5; preserveWallVertices true; farfieldCellSize .4; farfieldInterfaceCellSize .1; "
+        "plumeRefinementRadiusFactor 3; plumeRefinementCellSize .1; maximumGrowthRate 1.2;",
+        "regions {bandThicknessFactor .5; plumeOutletRadiusFactor 6; plumeLengthFactor 8; transitionWidthFactor 1;}")};
+    const auto &options{parsed.rpa_nozzle_meshing};
+    require(options.engine_radial_cells == 12 && options.band_radial_cells == 6 && options.preserve_wall_vertices &&
+                options.engine_axial_spacing_factor == 1.5 && options.farfield_cell_size == .4 &&
+                options.plume_refinement_radius_factor == 3 && options.plume_refinement_cell_size == .1 &&
+                options.maximum_growth_rate == 1.2 && options.regions.plume_length_factor == 8 &&
+                options.regions.transition_width_factor == 1 && options.farfield_interface_cell_size == .1,
+            "Finite plume meshDict settings were ignored.");
+    const auto domain{cfd::read_rpa_nozzle_domain(std::get<cfd::RpaNozzleGeometry>(parsed.geometry))};
+    const cfd::RpaRegionLayout layout{domain, options.regions};
+    require_near(layout.plume_end_x(), domain.inner_wall.back().x + 8 * domain.inner_wall.back().y, 1e-14,
+                 "Plume length uses actual exit radius, independently of the box.");
+    require_near(layout.plume_radius(layout.plume_end_x()), 6 * domain.inner_wall.back().y, 1e-14,
+                 "Plume height was clipped.");
+    const double clearance{domain.inner_wall.back().y};
+    require_near(layout.farfield_begin_x() - layout.plume_end_x(), clearance, 1e-14,
+                 "The downstream TRI cap lost its configured clearance.");
+    require_near(layout.transition_outer_radius(layout.plume_end_x()) - layout.plume_outlet_radius(), clearance, 1e-14,
+                 "The upper TRI envelope lost its configured clearance.");
+    for (const auto &point : domain.outer_wall)
+        require(layout.transition_outer_radius(point.x) > point.y + layout.band_thickness(),
+                "FARFIELD envelope intersects BAND.");
+    const auto logical{cfd::detail::discretize_rpa(domain, layout, parsed.generation_options, options)};
+    require(!logical.farfield_downstream.x.empty(), "Missing second mapped FARFIELD block.");
+    for (cfd::Index j = 0; j <= logical.farfield.radial_cells; ++j)
+    {
+        const auto &upper{logical.farfield.at(logical.farfield.x.size() - 1, j)};
+        const auto &downstream{logical.farfield_downstream.at(0, logical.farfield_split_row + j)};
+        require(upper.x == downstream.x && upper.y == downstream.y, "Mapped FARFIELD blocks disagree on shared nodes.");
+    }
+    auto raw{cfd::generate_mesh(parsed.geometry, parsed.generation_options, parsed.automatic_meshing,
+                                parsed.backward_facing_step_meshing, options)};
+    cfd::detail::require_rpa_finite_mapped_topology(raw, logical, domain, layout);
+    const auto first_type{raw.cell_types.front()};
+    raw.cell_types.front() = cfd::CellType::Triangle;
+    require_throws<std::runtime_error>(
+        [&] { cfd::detail::require_rpa_finite_mapped_topology(raw, logical, domain, layout); },
+        "Mapped verification must reject a changed logical cell.");
+    raw.cell_types.front() = first_type;
+    const auto built{cfd::build_mesh(std::move(raw))};
+    validate_mesh(built.mesh, domain, cfd::CellType::Quadrilateral, true);
+    cfd::Index triangles{}, quads{}, mixed_faces{};
+    for (cfd::Index cell = 0; cell < built.mesh.cell_count(); ++cell)
+    {
+        const auto region{layout.region(built.mesh.cell_centers()[cell])};
+        const auto type{built.mesh.cell_types()[cell]};
+        if (region != cfd::RpaRegion::Transition)
+        {
+            require(type == cfd::CellType::Quadrilateral, "Organized core lost its QUAD cells.");
+            ++quads;
+        }
+        else
+        {
+            require(type == cfd::CellType::Triangle, "Only TRANSITION may contain TRI.");
+            ++triangles;
+        }
+    }
+    for (cfd::Index face = 0; face < built.mesh.face_count(); ++face)
+    {
+        const auto adjacency{built.mesh.face_adjacencies()[face]};
+        if (!adjacency.is_boundary())
+        {
+            const auto owner{layout.region(built.mesh.cell_centers()[adjacency.owner])};
+            const auto neighbor{layout.region(built.mesh.cell_centers()[adjacency.neighbor])};
+            require(!((owner == cfd::RpaRegion::Plume && neighbor == cfd::RpaRegion::Farfield) ||
+                      (owner == cfd::RpaRegion::Farfield && neighbor == cfd::RpaRegion::Plume)),
+                    "PLUME touches FARFIELD without TRANSITION.");
+        }
+        if (!adjacency.is_boundary() &&
+            built.mesh.cell_types()[adjacency.owner] != built.mesh.cell_types()[adjacency.neighbor])
+        {
+            ++mixed_faces;
+            require(built.mesh.face_boundary_ids()[face] == cfd::invalid_boundary_id,
+                    "TRI/QUAD interface incorrectly assigned a physical BC.");
+        }
+    }
+    require(triangles > 0 && quads > 0 && mixed_faces > 0, "Missing hybrid cells/shared interfaces.");
+    for (const auto &wall : {domain.inner_wall, domain.outer_wall})
+        for (const auto &point : wall)
+            require(
+                std::any_of(built.mesh.nodes().begin(), built.mesh.nodes().end(),
+                            [&](const auto &node) { return std::hypot(point.x - node.x, point.y - node.y) < 1e-12; }),
+                "A prescribed CAD wall vertex was lost.");
+    auto invalid{options};
+    invalid.engine_radial_cells = 0;
+    require_throws<std::invalid_argument>(
+        [&] { (void)cfd::detail::discretize_rpa(domain, layout, parsed.generation_options, invalid); },
+        "Invalid radial cell count accepted.");
+    invalid = options;
+    invalid.maximum_growth_rate = std::numeric_limits<double>::quiet_NaN();
+    require_throws<std::invalid_argument>(
+        [&] { (void)cfd::detail::discretize_rpa(domain, layout, parsed.generation_options, invalid); },
+        "Nonfinite growth accepted.");
+    auto wrong_type{parsed.generation_options};
+    wrong_type.hybrid = false;
+    require_throws<std::invalid_argument>(
+        [&] { (void)cfd::detail::discretize_rpa(domain, layout, wrong_type, options); },
+        "Finite hybrid topology silently converted to pure QUAD.");
+    auto invalid_regions{options.regions};
+    invalid_regions.transition_width_factor.reset();
+    require_throws<std::invalid_argument>([&] { (void)cfd::RpaRegionLayout{domain, invalid_regions}; },
+                                          "A finite plume with no explicit TRI clearance was accepted.");
+    for (double width :
+         {0.0, -1.0, 20.0, std::numeric_limits<double>::infinity(), std::numeric_limits<double>::quiet_NaN()})
+    {
+        invalid_regions = options.regions;
+        invalid_regions.transition_width_factor = width;
+        require_throws<std::invalid_argument>([&] { (void)cfd::RpaRegionLayout{domain, invalid_regions}; },
+                                              "Invalid or oversized TRI clearance was accepted.");
+    }
+    invalid = options;
+    invalid.farfield_interface_cell_size = .5;
+    require_throws<std::invalid_argument>(
+        [&] { (void)cfd::detail::discretize_rpa(domain, layout, parsed.generation_options, invalid); },
+        "Interface spacing larger than farfieldCellSize was accepted.");
+    invalid_regions = options.regions;
+    invalid_regions.plume_length_factor = 21;
+    require_throws<std::invalid_argument>([&] { (void)cfd::RpaRegionLayout{domain, invalid_regions}; },
+                                          "Plume beyond the box accepted.");
+    for (const auto *bad : {"engineRadialCells 0;", "bandRadialCells 1.5;", "farfieldCellSize -1;",
+                            "maximumGrowthRate 1;", "plumeRefinementCellSize .1;"})
+        require_throws<std::runtime_error>(
+            [&] {
+                (void)dictionary(dir.path(), "engine {file test.dxf;}",
+                                 "cellType hybrid; baseCellSize .04; " + std::string{bad});
+            },
+            "Invalid finite-plume options passed the reader.");
+}
+
+void test_multiblock_plume_geometry_resolution_matrix()
+{
+    struct Case
+    {
+        const char *profile;
+        double size, downstream, outer, length, near;
+    };
+
+    const std::array cases{
+        Case{"conical", .16, 20, 10, 8, 1},   Case{"conical", .08, 20, 10, 8, 1},   Case{"conical", .04, 20, 10, 8, 1},
+        Case{"cubic", .08, 20, 10, 8, 1},     Case{"short", .08, 20, 10, 8, 1},     Case{"long", .08, 20, 10, 8, 1},
+        Case{"expansion", .08, 20, 10, 8, 1}, Case{"conical", .08, 12, 8, 8, 1},    Case{"conical", .08, 80, 30, 8, 1},
+        Case{"conical", .4, 20, 10, .5, 4},   Case{"conical", .08, 9.2, 10, 8, 100}};
+    bool three_blocks{}, collapsed{};
+    for (const auto &test : cases)
+    {
+        auto g{geometry(std::filesystem::path{CFD_RPA_TEST_FIXTURES} / (std::string{test.profile} + ".dxf"))};
+        g.downstream_factor = test.downstream;
+        g.outer_radius_factor = test.outer;
+        const auto domain{cfd::read_rpa_nozzle_domain(g)};
+        const double radius{domain.inner_wall.back().y};
+        const cfd::MeshGenerationOptions generation{
+            .mesh_size = test.size, .cell_type = cfd::CellType::Quadrilateral, .hybrid = true};
+        cfd::RpaNozzleMeshingOptions options;
+        options.regions = {.band_thickness_factor = .5,
+                           .plume_outlet_radius_factor = 6,
+                           .plume_length_factor = test.length,
+                           .transition_width_factor = 1};
+        options.farfield_cell_size = 1.5 * radius;
+        options.farfield_interface_cell_size = .4 * radius;
+        options.maximum_growth_rate = 1.15;
+        const cfd::RpaRegionLayout layout{domain, options.regions};
+        const auto before{cfd::detail::discretize_rpa(domain, layout, generation, options)};
+        options.plume_near_length_factor = test.near;
+        const auto plan{cfd::detail::discretize_rpa(domain, layout, generation, options)};
+        for (const auto &[old_grid, new_grid] :
+             {std::pair{&before.engine, &plan.engine}, std::pair{&before.band, &plan.band}})
+        {
+            require(old_grid->x == new_grid->x && old_grid->nodes.size() == new_grid->nodes.size(),
+                    "Multiblock PLUME changed ENGINE/BAND topology.");
+            for (cfd::Index i = 0; i < old_grid->nodes.size(); ++i)
+                require(old_grid->nodes[i].x == new_grid->nodes[i].x && old_grid->nodes[i].y == new_grid->nodes[i].y,
+                        "Multiblock PLUME moved an ENGINE/BAND node.");
+        }
+        require(plan.plume_block_columns.front() == 0 && plan.plume_block_columns.back() == plan.plume.x.size() - 1,
+                "PLUME blocks do not cover the complete grid.");
+        for (cfd::Index i = 1; i < plan.plume_block_columns.size(); ++i)
+            require(plan.plume_block_columns[i] > plan.plume_block_columns[i - 1], "Empty PLUME surface.");
+        three_blocks = three_blocks || plan.plume_block_columns.size() == 4;
+        collapsed = collapsed || plan.plume_block_columns.size() == 2;
+        for (cfd::Index j = 0; j <= plan.plume.radial_cells; ++j)
+            require(plan.plume.at(0, j).x == before.plume.at(0, j).x &&
+                        plan.plume.at(0, j).y == before.plume.at(0, j).y,
+                    "PLUME inlet moved a nozzle/lip/BAND interface node.");
+        auto raw{cfd::generate_mesh(g, generation, options)};
+        cfd::detail::require_rpa_finite_mapped_topology(raw, plan, domain, layout);
+        const auto built{cfd::build_mesh(std::move(raw))};
+        validate_mesh(built.mesh, domain, cfd::CellType::Quadrilateral, true);
+        const cfd::AxisymmetricGeometry axisymmetric{built.mesh};
+        for (cfd::Index block = 1; block + 1 < plan.plume_block_columns.size(); ++block)
+        {
+            const double x{plan.plume.x[plan.plume_block_columns[block]]};
+            const double tolerance{64 * std::numeric_limits<double>::epsilon() *
+                                   std::max(domain.downstream_x, domain.farfield_radius)};
+            cfd::Index shared{};
+            for (cfd::Index face = 0; face < built.mesh.face_count(); ++face)
+            {
+                const auto ids{built.mesh.faces()[face].node_ids};
+                const auto a{built.mesh.nodes()[ids[0]]}, b{built.mesh.nodes()[ids[1]]};
+                if (std::abs(a.x - x) <= tolerance && std::abs(b.x - x) <= tolerance &&
+                    std::max(a.y, b.y) <= layout.plume_radius(x) + tolerance)
+                {
+                    require(!built.mesh.face_adjacencies()[face].is_boundary() &&
+                                built.mesh.face_boundary_ids()[face] == cfd::invalid_boundary_id,
+                            "PLUME subdivision is not a conforming internal interface.");
+                    ++shared;
+                }
+            }
+            require(shared == plan.plume.radial_cells, "PLUME interface count " + std::to_string(shared) +
+                                                           " != " + std::to_string(plan.plume.radial_cells) + " in " +
+                                                           test.profile + " h=" + std::to_string(test.size));
+        }
+    }
+    require(three_blocks && collapsed, "Tests did not exercise three blocks and short-tail collapse.");
+
+    const TemporaryDirectory directory;
+    const auto parsed{dictionary(directory.path(), "engine {file test.dxf;}",
+                                 "cellType hybrid; baseCellSize .1; plumeNearLengthFactor 4; "
+                                 "plumeAxialSpacingFactor 1.5; plumeRadialGrowthRate 1.05;",
+                                 "regions {plumeLengthFactor 8; transitionWidthFactor 1;}")};
+    require(parsed.rpa_nozzle_meshing.plume_near_length_factor == 4 &&
+                parsed.rpa_nozzle_meshing.plume_axial_spacing_factor == 1.5 &&
+                parsed.rpa_nozzle_meshing.plume_radial_growth_rate == 1.05,
+            "Multiblock meshDict controls were ignored.");
+    for (const auto *bad :
+         {"plumeNearLengthFactor 0;", "plumeAxialSpacingFactor 2;",
+          "plumeNearLengthFactor 4; plumeRadialGrowthRate .9;", "plumeNearLengthFactor 4; plumeRadialGrowthRate 1.3;"})
+        require_throws<std::runtime_error>(
+            [&] {
+                (void)dictionary(directory.path(), "engine {file test.dxf;}",
+                                 "cellType hybrid; baseCellSize .1; " + std::string{bad});
+            },
+            "Invalid multiblock meshDict accepted.");
+}
+
+void test_multiblock_controls_and_rejections()
+{
+    const auto domain{
+        cfd::read_rpa_nozzle_domain(geometry(std::filesystem::path{CFD_RPA_TEST_FIXTURES} / "conical.dxf"))};
+    cfd::RpaNozzleMeshingOptions options;
+    options.regions = {.plume_outlet_radius_factor = 6, .plume_length_factor = 8, .transition_width_factor = 1};
+    options.farfield_cell_size = .6;
+    options.farfield_interface_cell_size = .16;
+    options.maximum_growth_rate = 1.15;
+    options.plume_near_length_factor = 1;
+    const cfd::RpaRegionLayout layout{domain, options.regions};
+    const cfd::MeshGenerationOptions generation{
+        .mesh_size = .08, .cell_type = cfd::CellType::Quadrilateral, .hybrid = true};
+    const auto baseline{cfd::detail::discretize_rpa(domain, layout, generation, options)};
+    auto changed{options};
+    changed.maximum_growth_rate = 1.01;
+    const auto capped{cfd::detail::discretize_rpa(domain, layout, generation, changed)};
+    const auto last_column{capped.plume.x.size() - 1};
+    require_near((capped.plume.at(last_column, 2).y - capped.plume.at(last_column, 1).y) /
+                     (capped.plume.at(last_column, 1).y - capped.plume.at(last_column, 0).y),
+                 1.01, 1e-12, "Default terminal radial growth exceeds the configured cap.");
+    changed = options;
+    changed.plume_axial_spacing_factor = 1.5;
+    changed.plume_radial_growth_rate = 1.05;
+    const auto plan{cfd::detail::discretize_rpa(domain, layout, generation, changed)};
+    require(plan.plume.x.size() < baseline.plume.x.size(), "Axial spacing factor did not control PLUME resolution.");
+    const cfd::Index column{plan.plume.x.size() - 1};
+    for (cfd::Index j = 1; j < plan.plume.radial_cells; ++j)
+    {
+        const double previous{plan.plume.at(column, j).y - plan.plume.at(column, j - 1).y};
+        const double next{plan.plume.at(column, j + 1).y - plan.plume.at(column, j).y};
+        require_near(next / previous, 1.05, 1e-12, "Terminal radial ratio was ignored.");
+    }
+    for (const double bad :
+         {0.0, -1.0, std::numeric_limits<double>::infinity(), std::numeric_limits<double>::quiet_NaN()})
+    {
+        changed = options;
+        changed.plume_near_length_factor = bad;
+        require_throws<std::invalid_argument>(
+            [&] { (void)cfd::detail::discretize_rpa(domain, layout, generation, changed); },
+            "Invalid near-zone length accepted.");
+        changed = options;
+        changed.plume_axial_spacing_factor = bad;
+        require_throws<std::invalid_argument>(
+            [&] { (void)cfd::detail::discretize_rpa(domain, layout, generation, changed); },
+            "Invalid axial multiplier accepted.");
+        changed = options;
+        changed.plume_radial_growth_rate = bad;
+        require_throws<std::invalid_argument>(
+            [&] { (void)cfd::detail::discretize_rpa(domain, layout, generation, changed); },
+            "Invalid radial ratio accepted.");
+    }
+    changed = options;
+    changed.plume_radial_growth_rate = 1.16;
+    require_throws<std::invalid_argument>(
+        [&] { (void)cfd::detail::discretize_rpa(domain, layout, generation, changed); },
+        "Radial growth above maximumGrowthRate accepted.");
+    changed = options;
+    changed.plume_near_length_factor.reset();
+    changed.plume_axial_spacing_factor = 2;
+    require_throws<std::invalid_argument>(
+        [&] { (void)cfd::detail::discretize_rpa(domain, layout, generation, changed); },
+        "Multiblock-only option silently ignored.");
 }
 
 void test_geometry_and_layout()
@@ -1106,6 +1416,12 @@ try
         return cfd::test::finish_tests(failures, "RPA integration/parametric");
     }
     failures += cfd::test::run_test("RPA nested reader/defaults/migration", test_reader_and_migration);
+    failures += cfd::test::run_test("finite HYBRID plume reader and conformity",
+                                    test_finite_hybrid_plume_dictionary_and_conformity);
+    failures += cfd::test::run_test("multiblock PLUME geometry/resolution/conformity matrix",
+                                    test_multiblock_plume_geometry_resolution_matrix);
+    failures += cfd::test::run_test("multiblock PLUME independent controls and invalid options",
+                                    test_multiblock_controls_and_rejections);
     failures += cfd::test::run_test("RPA DXF geometry/factors/layout", test_geometry_and_layout);
     failures += cfd::test::run_test("RPA pure radial/axial/quality/scale", test_discretization_and_scale);
     failures += cfd::test::run_test("RPA TRANSITION minimum outlet factor", test_transition_minimum_outlet_factor);

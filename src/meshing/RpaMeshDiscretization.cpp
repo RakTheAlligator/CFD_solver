@@ -100,6 +100,63 @@ std::vector<double> fractions(Index count, double q)
     return result;
 }
 
+// Capped geometric spacing, redistributed as a whole to avoid a tiny last cell.
+std::vector<double> growing_positions(double length, double first, double cap, double growth)
+{
+    std::vector<double> result{0.0};
+    double step{first};
+    while (result.back() < length)
+    {
+        const double next{result.back() + step};
+        if (!std::isfinite(next) || !(next > result.back()) ||
+            result.size() >= static_cast<Index>(std::numeric_limits<int>::max() - 1))
+            throw std::invalid_argument("RPA mapped spacing exceeds the supported range.");
+        result.push_back(next);
+        step = std::min(cap, step * growth);
+    }
+    const double total{result.back()};
+    for (auto &x : result)
+        x *= length / total;
+    result.back() = length;
+    return result;
+}
+
+void finite_farfield(RpaMeshDiscretization &mesh, const RpaNozzleDomain &domain, const RpaRegionLayout &layout,
+                     double interface_size, double cap, double growth)
+{
+    auto &upper{mesh.farfield};
+    const double right{layout.farfield_begin_x()}, low{layout.transition_outer_radius(right)};
+    const auto heights{growing_positions(domain.farfield_radius - low, interface_size, cap, growth)};
+    upper.radial_cells = heights.size() - 1;
+    upper.x.push_back(domain.outer_wall.front().x);
+    // Preserve the envelope's corners, independently of the inner block columns.
+    for (const double end : {domain.inner_wall.back().x, layout.plume_end_x(), right})
+    {
+        const double start{upper.x.back()};
+        const Index count{cell_count(end - start, interface_size)};
+        for (Index i = 1; i <= count; ++i)
+            upper.x.push_back(std::lerp(start, end, static_cast<double>(i) / static_cast<double>(count)));
+    }
+    for (double x : upper.x)
+        for (double h : heights)
+            upper.nodes.push_back(
+                {x, std::lerp(layout.transition_outer_radius(x), domain.farfield_radius, h / heights.back())});
+
+    auto &downstream{mesh.farfield_downstream};
+    mesh.farfield_split_row = cell_count(low, interface_size);
+    downstream.radial_cells = mesh.farfield_split_row + upper.radial_cells;
+    const auto distances{growing_positions(domain.downstream_x - right, interface_size, cap, growth)};
+    for (double dx : distances)
+    {
+        downstream.x.push_back(right + dx);
+        for (Index j = 0; j <= mesh.farfield_split_row; ++j)
+            downstream.nodes.push_back(
+                {right + dx, low * static_cast<double>(j) / static_cast<double>(mesh.farfield_split_row)});
+        for (Index j = 1; j <= upper.radial_cells; ++j)
+            downstream.nodes.push_back({right + dx, upper.at(upper.x.size() - 1, j).y});
+    }
+}
+
 struct RadialDistribution
 {
     Index cells, core_cells;
@@ -107,11 +164,48 @@ struct RadialDistribution
     bool inner;
 };
 
-RadialDistribution radial_distribution(double extent, double base, const WallLayerOptions &layers, bool inner)
+std::vector<double> multiblock_plume_positions(double length, double near_length, double first, double cap,
+                                               double growth, std::vector<Index> &breaks)
+{
+    near_length = std::min(length, near_length);
+    // A tail too short for two terminal cells is folded into the near block;
+    // do not create a tiny sliver surface just to keep three named blocks.
+    if (length - near_length < 2 * cap)
+        near_length = length;
+    const Index near_cells{std::max(Index{2}, cell_count(near_length, first))};
+    std::vector<double> positions;
+    positions.reserve(near_cells + 1);
+    for (Index i = 0; i <= near_cells; ++i)
+        positions.push_back(near_length * static_cast<double>(i) / static_cast<double>(near_cells));
+    breaks = {0, near_cells};
+    if (near_length < length)
+    {
+        // Redistribute the complete tail, never leave a tiny remainder cell.
+        const double next{std::min(cap, (near_length / static_cast<double>(near_cells)) * growth)};
+        const auto tail{growing_positions(length - near_length, next, cap, growth)};
+        Index graded{};
+        for (double step = next; step < cap && graded + 1 < tail.size(); step = std::min(cap, step * growth))
+            ++graded;
+        for (Index i = 1; i < tail.size(); ++i)
+            positions.push_back(near_length + tail[i]);
+        if (graded > 0 && graded + 1 < tail.size())
+            breaks.push_back(near_cells + graded);
+        breaks.push_back(positions.size() - 1);
+    }
+    positions.back() = length;
+    return positions;
+}
+
+RadialDistribution radial_distribution(double extent, double base, const WallLayerOptions &layers, bool inner,
+                                       std::optional<Index> requested = {})
 {
     const double thickness{layer_thickness(layers, maximum_growth)};
-    const Index count{std::max({inner ? minimum_engine_rows : minimum_band_rows, cell_count(extent, base),
-                                layers.active() ? layers.layer_count + 2 : Index{0}})};
+    const Index count{
+        requested.value_or(std::max({inner ? minimum_engine_rows : minimum_band_rows, cell_count(extent, base),
+                                     layers.active() ? layers.layer_count + 2 : Index{0}}))};
+    if (count < 2 || count >= static_cast<Index>(std::numeric_limits<int>::max() - 1) ||
+        (layers.active() && count <= layers.layer_count + 1))
+        throw std::invalid_argument("RPA radial cell counts must fit the supported range and prescribed layers.");
     const Index core_count{count - (layers.active() ? layers.layer_count : 0)};
     RadialDistribution result{
         count,
@@ -162,13 +256,17 @@ void column(const std::vector<Point2> &wall, double x, double band_height, const
 // March with the arithmetic mean of ALL radial heights, then redistribute
 // the interval to its mandatory endpoint. Geometry/quality never refine dx.
 RpaStructuredGrid wall_grid(const RpaNozzleDomain &domain, const std::vector<Point2> &wall,
-                            const RadialDistribution &radial, double band_height, double quality, bool even)
+                            const RadialDistribution &radial, double band_height, double quality, bool even,
+                            double axial_spacing_factor, bool preserve_vertices)
 {
     RpaStructuredGrid grid{{}, radial.cells, {}};
     std::vector<double> stations{wall.front().x, wall.back().x};
     for (double x : domain.curve_junctions)
         if (x > stations.front() && x < wall.back().x)
             stations.push_back(x);
+    if (preserve_vertices)
+        for (const auto &point : wall)
+            stations.push_back(point.x);
     if (domain.throat.x > wall.front().x && domain.throat.x < wall.back().x)
         stations.push_back(domain.throat.x);
     std::ranges::sort(stations);
@@ -184,7 +282,8 @@ RpaStructuredGrid wall_grid(const RpaNozzleDomain &domain, const std::vector<Poi
         {
             const double x{candidate.back()};
             column(wall, x, band_height, radial, points);
-            const double step{(points.back().y - points.front().y) / static_cast<double>(radial.cells)};
+            const double step{axial_spacing_factor * (points.back().y - points.front().y) /
+                              static_cast<double>(radial.cells)};
             const double next{x + step};
             if (!std::isfinite(step) || !(step > 0.0) || !std::isfinite(next) || !(next > x))
                 throw std::runtime_error("RPA unusable mean radial height for axial spacing.");
@@ -277,8 +376,38 @@ RpaMeshDiscretization discretize_rpa(const RpaNozzleDomain &d, const RpaRegionLa
         !(options.min_cell_quality > 0.0) || options.min_cell_quality > 1.0)
         throw std::invalid_argument("RPA baseCellSize must be positive; minCellQuality must be in (0,1].");
     const bool even{generation.cell_type == CellType::Quadrilateral && !generation.hybrid};
-    const double run{d.downstream_x - d.inner_wall.back().x};
+    const bool finite_plume{options.regions.plume_length_factor.has_value()};
+    if ((options.plume_near_length_factor && (!finite_plume || !std::isfinite(*options.plume_near_length_factor) ||
+                                              !(*options.plume_near_length_factor > 0.0))) ||
+        !std::isfinite(options.plume_axial_spacing_factor) || !(options.plume_axial_spacing_factor > 0.0) ||
+        (!options.plume_near_length_factor &&
+         (options.plume_axial_spacing_factor != 1.0 || options.plume_radial_growth_rate)) ||
+        (options.plume_radial_growth_rate &&
+         (!std::isfinite(*options.plume_radial_growth_rate) || *options.plume_radial_growth_rate < 1.0 ||
+          *options.plume_radial_growth_rate > options.maximum_growth_rate)))
+        throw std::invalid_argument("RPA multiblock PLUME requires finite plumeNearLengthFactor > 0, positive "
+                                    "plumeAxialSpacingFactor and plumeRadialGrowthRate in [1,maximumGrowthRate].");
+    if ((finite_plume && (!generation.hybrid || !(layout.plume_end_x() < d.downstream_x))) ||
+        !std::isfinite(options.engine_axial_spacing_factor) || !(options.engine_axial_spacing_factor > 0) ||
+        !std::isfinite(options.maximum_growth_rate) || !(options.maximum_growth_rate > 1.0) ||
+        options.plume_refinement_radius_factor.has_value() != options.plume_refinement_cell_size.has_value())
+        throw std::invalid_argument("RPA finite plume requires HYBRID and room downstream; invalid spacing options.");
+    for (const auto value : {options.farfield_cell_size, options.farfield_interface_cell_size,
+                             options.plume_refinement_radius_factor, options.plume_refinement_cell_size})
+        if (value && (!std::isfinite(*value) || !(*value > 0)))
+            throw std::invalid_argument("RPA exterior size/refinement values must be finite and positive.");
+    if (!finite_plume && (options.farfield_cell_size || options.farfield_interface_cell_size ||
+                          options.plume_refinement_radius_factor || options.maximum_growth_rate != maximum_growth))
+        throw std::invalid_argument("RPA exterior refinement options require a finite plumeLengthFactor.");
+    const double run{layout.plume_end_x() - d.inner_wall.back().x};
     const double radius{d.inner_wall.back().y};
+    if (options.plume_refinement_radius_factor)
+    {
+        const double envelope{*options.plume_refinement_radius_factor * radius};
+        if (!std::isfinite(envelope) || !(envelope > 0.0) || envelope > layout.plume_outlet_radius())
+            throw std::invalid_argument(
+                "RPA near-plume refinement radius must be positive and no larger than its outlet radius.");
+    }
     const double downstream_factor{run / radius};
     const double requested_factor{layout.plume_outlet_radius() / radius};
     const double outer_factor{d.farfield_radius / radius};
@@ -289,24 +418,30 @@ RpaMeshDiscretization discretize_rpa(const RpaNozzleDomain &d, const RpaRegionLa
                                     ? std::numeric_limits<double>::infinity()
                                     : layout.plume_inlet_radius() / radius +
                                           downstream_factor * (quality / std::sqrt((1.0 - quality) * (1.0 + quality)))};
-    if (!std::isfinite(minimum_factor) || requested_factor < minimum_factor || !(minimum_factor < outer_factor))
+    if (!finite_plume &&
+        (!std::isfinite(minimum_factor) || requested_factor < minimum_factor || !(minimum_factor < outer_factor)))
     {
         std::ostringstream message;
         message << std::setprecision(17)
                 << "RPA TRANSITION outlet angle requires plumeOutletRadiusFactor >= minimum=" << minimum_factor
-                << "; requested=" << requested_factor << ", downstreamFactor=" << downstream_factor
+                << "; requested=" << requested_factor
+                << ", downstreamFactor=" << (d.downstream_x - d.inner_wall.back().x) / radius
                 << ", minCellQuality=" << quality << ", outerRadiusFactor=" << outer_factor << '.';
+        if (finite_plume)
+            message << " plumeLengthFactor=" << downstream_factor << '.';
         if (!(minimum_factor < outer_factor))
             message << " The minimum plume radius must be strictly below the outer box radius.";
         throw std::runtime_error(message.str());
     }
     RpaMeshDiscretization result;
-    result.engine =
-        wall_grid(d, d.inner_wall, radial_distribution(d.inner_wall.back().y, base, options.inner_wall_layers, true),
-                  0.0, options.min_cell_quality, false);
-    result.band =
-        wall_grid(d, d.outer_wall, radial_distribution(layout.band_thickness(), base, options.outer_wall_layers, false),
-                  layout.band_thickness(), options.min_cell_quality, even);
+    result.engine = wall_grid(
+        d, d.inner_wall,
+        radial_distribution(d.inner_wall.back().y, base, options.inner_wall_layers, true, options.engine_radial_cells),
+        0.0, options.min_cell_quality, false, options.engine_axial_spacing_factor, options.preserve_wall_vertices);
+    result.band = wall_grid(
+        d, d.outer_wall,
+        radial_distribution(layout.band_thickness(), base, options.outer_wall_layers, false, options.band_radial_cells),
+        layout.band_thickness(), options.min_cell_quality, even, 1.0, options.preserve_wall_vertices);
     // Lip is a physical wall, not a fluid interface. A single interval suffices:
     // it is not on the unstructured transition boundary, even in pure QUAD.
     result.lip_y = {d.inner_wall.back().y, d.outer_wall.back().y};
@@ -320,27 +455,55 @@ RpaMeshDiscretization discretize_rpa(const RpaNozzleDomain &d, const RpaRegionLa
     const double q{
         std::min(maximum_growth, std::pow(std::max(1.0, layout.plume_outlet_radius() / layout.plume_inlet_radius()),
                                           1.0 / static_cast<double>(rows - 1)))};
-    auto right{fractions(rows, q)};
+    const double terminal_growth{options.plume_radial_growth_rate.value_or(
+        options.plume_near_length_factor ? std::min(q, options.maximum_growth_rate) : q)};
+    auto right{fractions(rows, terminal_growth)};
     for (auto &v : right)
         v *= layout.plume_outlet_radius();
     const double inlet_step{result.engine.x.back() - result.engine.x[result.engine.x.size() - 2]};
-    const double length{d.downstream_x - d.inner_wall.back().x};
-    Index columns{std::max(
-        Index{2}, cell_count(length, std::max(inlet_step, layout.plume_outlet_radius() / static_cast<double>(rows))))};
+    const double length{run};
+    const double axial_target_size{
+        finite_plume ? std::sqrt(inlet_step) * std::sqrt(layout.plume_outlet_radius() / static_cast<double>(rows))
+                     : std::max(inlet_step, layout.plume_outlet_radius() / static_cast<double>(rows))};
+    Index columns{std::max(Index{2}, cell_count(length, axial_target_size))};
     if (even && columns % 2 != 0)
         ++columns;
     const double axial_q{
         std::min(maximum_growth, std::pow(std::max(1.0, layout.plume_outlet_radius() / layout.plume_inlet_radius()),
                                           1.0 / static_cast<double>(columns - 1)))};
     auto axial{fractions(columns, axial_q)};
+    result.plume_block_columns = {0, columns};
+    if (options.plume_near_length_factor)
+    {
+        const double first{inlet_step * options.plume_axial_spacing_factor};
+        const double cap{std::max(first, options.plume_axial_spacing_factor * layout.plume_outlet_radius() /
+                                             static_cast<double>(rows))};
+        const double near_length{*options.plume_near_length_factor * radius};
+        if (!std::isfinite(first) || !(first > 0) || !std::isfinite(cap) || !std::isfinite(near_length))
+            throw std::invalid_argument("RPA multiblock PLUME lengths/sizes are not representable.");
+        axial = multiblock_plume_positions(length, near_length, first, cap, options.maximum_growth_rate,
+                                           result.plume_block_columns);
+        columns = axial.size() - 1;
+        for (auto &position : axial)
+            position /= length;
+    }
     result.plume.radial_cells = rows;
     result.plume.nodes.reserve((columns + 1) * (rows + 1));
     for (double t : axial)
     {
-        const double x{std::lerp(d.inner_wall.back().x, d.downstream_x, t)};
+        const double x{std::lerp(d.inner_wall.back().x, layout.plume_end_x(), t)};
         result.plume.x.push_back(x);
         for (Index j = 0; j <= rows; ++j)
             result.plume.nodes.push_back({x, std::lerp(left[j], right[j], t)});
+    }
+    if (finite_plume)
+    {
+        result.transition_size = options.farfield_cell_size.value_or(base);
+        const double interface_size{options.farfield_interface_cell_size.value_or(base)};
+        if (interface_size > result.transition_size)
+            throw std::invalid_argument("RPA farfieldInterfaceCellSize must not exceed farfieldCellSize.");
+        finite_farfield(result, d, layout, interface_size, result.transition_size, options.maximum_growth_rate);
+        return result;
     }
     const double thickness{d.farfield_radius - layout.plume_outlet_radius()};
     const double first{std::max(base, right.back() - right[right.size() - 2])};
@@ -376,6 +539,55 @@ RpaMeshDiscretization discretize_rpa(const RpaNozzleDomain &d, const RpaRegionLa
     if (even && result.transition_upstream_cells % 2 != 0)
         ++result.transition_upstream_cells;
     return result;
+}
+
+void require_rpa_finite_mapped_topology(const RawMeshData &raw, const RpaMeshDiscretization &grids,
+                                        const RpaNozzleDomain &domain, const RpaRegionLayout &layout)
+{
+    Index cell{};
+    const double tolerance{64 * std::numeric_limits<double>::epsilon() *
+                           std::max(domain.downstream_x, domain.farfield_radius)};
+    for (const auto *grid : {&grids.engine, &grids.band, &grids.plume, &grids.farfield, &grids.farfield_downstream})
+        for (Index i = 1; i < grid->x.size(); ++i)
+            for (Index j = 0; j < grid->radial_cells; ++j, ++cell)
+            {
+                if (cell >= raw.cell_types.size() || raw.cell_types[cell] != CellType::Quadrilateral ||
+                    raw.cell_node_offsets[cell + 1] - raw.cell_node_offsets[cell] != 4)
+                    throw std::runtime_error("RPA mapped block lost its logical QUAD topology.");
+                const std::array expected{grid->at(i - 1, j), grid->at(i, j), grid->at(i, j + 1),
+                                          grid->at(i - 1, j + 1)};
+                Point2 center{};
+                for (Index k = 0; k < expected.size(); ++k)
+                {
+                    const auto &point{raw.nodes[raw.cell_nodes[raw.cell_node_offsets[cell] + k]]};
+                    if (std::hypot(point.x - expected.at(k).x, point.y - expected.at(k).y) > tolerance)
+                        throw std::runtime_error("RPA mapped block no longer matches its logical grid coordinates.");
+                    center.x += point.x / 4;
+                    center.y += point.y / 4;
+                }
+                if (layout.region(center) == RpaRegion::Transition)
+                    throw std::runtime_error("RPA QUAD incorrectly lies in TRANSITION.");
+            }
+    if (cell == raw.cell_types.size())
+        throw std::runtime_error("RPA finite plume requires a nonempty TRI TRANSITION.");
+    for (; cell < raw.cell_types.size(); ++cell)
+    {
+        if (raw.cell_types[cell] != CellType::Triangle)
+            throw std::runtime_error("RPA TRANSITION must contain TRI only.");
+        Point2 center{};
+        for (Index k = raw.cell_node_offsets[cell]; k < raw.cell_node_offsets[cell + 1]; ++k)
+        {
+            const auto &point{raw.nodes[raw.cell_nodes[k]]};
+            center.x += point.x / 3;
+            center.y += point.y / 3;
+        }
+        if (layout.region(center) != RpaRegion::Transition)
+        {
+            std::ostringstream message;
+            message << "RPA TRI " << cell << " outside TRANSITION at (" << center.x << ',' << center.y << ").";
+            throw std::runtime_error(message.str());
+        }
+    }
 }
 
 void require_rpa_mesh_quality(const RawMeshData &mesh, const RpaNozzleMeshingOptions &options)

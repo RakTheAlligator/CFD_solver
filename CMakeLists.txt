@@ -247,6 +247,8 @@ if(BUILD_VERIFICATION)
 
     cfd_add_verification(cfd_axisymmetric_euler_rpa_exploratory verification/AxisymmetricEulerRpaExploratory.cpp)
     target_link_libraries(cfd_axisymmetric_euler_rpa_exploratory PRIVATE cfd_compressible)
+    cfd_add_verification(cfd_rpa_hybrid_mesh verification/RpaHybridMesh.cpp)
+    target_link_libraries(cfd_rpa_hybrid_mesh PRIVATE cfd_compressible)
 
     cfd_add_verification(
         cfd_least_squares_gradient_convergence
@@ -332,6 +334,9 @@ include(CTest)
 
 if(BUILD_TESTING)
     add_test(NAME euler_rpa_output COMMAND "${Python3_EXECUTABLE}" -B "${PROJECT_SOURCE_DIR}/tests/EulerRpaOutputTests.py")
+    add_test(NAME rpa_mesh_topology_report COMMAND "${Python3_EXECUTABLE}" -B
+        "${PROJECT_SOURCE_DIR}/tests/RpaMeshTopologyReportTests.py")
+    set_tests_properties(rpa_mesh_topology_report PROPERTIES TIMEOUT 30)
     function(cfd_add_test target_name test_name source_file)
         add_executable(
             ${target_name}

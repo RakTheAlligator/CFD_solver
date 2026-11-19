@@ -3,10 +3,14 @@
 #include "support/EulerRpaTemporal.hpp"
 #include "support/TestUtils.hpp"
 
+#include "cfd/io/VtkWriter.hpp"
+
+#include <algorithm>
 #include <chrono>
 #include <fstream>
 #include <limits>
 #include <numbers>
+#include <sstream>
 
 namespace
 {
@@ -245,12 +249,151 @@ void test_face_aligned_section_geometry_and_numerical_flow()
         [&] { (void)cfd::verification::RpaFaceSection{built.mesh, geometry, regions, .5, .21}; },
         "A partial section must be rejected.");
 }
+
+void test_hybrid_euler_sections_source_cfl_boundaries_and_export()
+{
+    auto raw{cfd::verification::make_euler_tube(8, 3, cfd::verification::EulerTubeCells::Mixed)};
+    raw.boundary_groups = {{0, "inlet"},           {1, "axis"},
+                           {2, "inner_wall"},      {3, "outer_wall"},
+                           {4, "nozzle_lip"},      {5, "farfield_upstream"},
+                           {6, "farfield_radial"}, {7, "farfield_downstream"}};
+    cfd::Index top{};
+    for (auto &edge : raw.boundary_edges)
+    {
+        switch (edge.boundary_id)
+        {
+        case 0:
+            edge.boundary_id = 1;
+            break;
+        case 1:
+            edge.boundary_id = 2 + top++ % 5;
+            break;
+        case 2:
+            edge.boundary_id = 0;
+            break;
+        case 3:
+            edge.boundary_id = 7;
+            break;
+        default:
+            throw std::runtime_error("Unexpected tube boundary.");
+        }
+    }
+    for (auto &node : raw.nodes)
+        node.y *= .2;
+    auto invalid{raw};
+    invalid.cell_nodes[1] = invalid.cell_nodes[0];
+    require_throws<std::runtime_error>([&] { (void)cfd::build_mesh(std::move(invalid)); },
+                                       "Degenerate hybrid cell accepted.");
+    const auto built{cfd::build_mesh(std::move(raw))};
+    const auto &mesh{built.mesh};
+    cfd::verification::require_connected_rpa(mesh);
+    const cfd::AxisymmetricGeometry geometry{mesh};
+    cfd::Index mixed_faces{};
+    for (cfd::Index face = 0; face < mesh.face_count(); ++face)
+    {
+        const auto adj{mesh.face_adjacencies()[face]};
+        if (!adj.is_boundary() && mesh.cell_types()[adj.owner] != mesh.cell_types()[adj.neighbor])
+        {
+            ++mixed_faces;
+            const auto sf{mesh.face_area_vectors()[face]};
+            require(sf.x * (mesh.cell_centers()[adj.neighbor].x - mesh.cell_centers()[adj.owner].x) +
+                            sf.y * (mesh.cell_centers()[adj.neighbor].y - mesh.cell_centers()[adj.owner].y) >
+                        0,
+                    "Mixed interface orientation.");
+        }
+    }
+    require(mixed_faces > 0, "Fixture must exercise TRI/QUAD interfaces.");
+    const cfd::CaloricallyPerfectGas gas{Model::gamma, Model::gas_constant};
+    for (const bool moving : {false, true})
+    {
+        const cfd::PrimitiveState primitive{moving ? Model::hot() : cfd::PrimitiveState{1, 0, 0, 1}};
+        const auto state{gas.to_conservative(primitive)};
+        const cfd::ConservativeField field{mesh.cell_count(), state};
+        const auto mapped{cfd::verification::rpa_euler_conditions(mesh.boundary_groups(), primitive)};
+        // Synthetic closed inlet at rest: no total-condition reservoir is required.
+        std::vector<cfd::EulerBoundaryCondition> data;
+        data.reserve(8);
+        for (const auto &group : mesh.boundary_groups())
+            data.push_back(!moving && group.id == 0
+                               ? cfd::EulerBoundaryCondition{cfd::EulerBoundaryConditionType::SlipWall}
+                               : mapped.condition(group.id));
+        const cfd::EulerBoundaryConditions conditions{8, std::move(data)};
+        cfd::AxisymmetricEulerSolver solver{mesh, field, gas, conditions};
+        const auto result{solver.step(1)};
+        require(result.accepted_steps == 1 && result.rejected_steps == 0 && result.minimum_density > 0 &&
+                    result.minimum_pressure > 0,
+                "Hybrid Euler accepted-state invariants.");
+        require_near(result.radial_pressure_source_rate, 2 * std::numbers::pi * .2 * primitive.pressure, 2e-12,
+                     "Analytical integrated radial pressure source on mixed cells.");
+        for (cfd::Index cell = 0; cell < mesh.cell_count(); ++cell)
+        {
+            const auto actual{solver.state().state(cell)};
+            require_near(actual.density, state.density, 2e-12, "Hybrid uniform density.");
+            require_near(actual.momentum_x, state.momentum_x, 2e-12, "Hybrid uniform axial momentum.");
+            require_near(actual.momentum_r, 0, 2e-12, "Hybrid pressure/source balance at rest/tangency.");
+            require_near(actual.total_energy_density, state.total_energy_density, 2e-12, "Hybrid uniform energy.");
+        }
+        for (const double defect : {result.balance_error.mass, result.balance_error.momentum_x,
+                                    result.balance_error.momentum_r, result.balance_error.energy})
+            require(std::isfinite(defect), "Nonfinite hybrid global conservation diagnostic.");
+        if (!moving)
+        {
+            double expected{std::numeric_limits<double>::infinity()};
+            for (cfd::Index cell = 0; cell < mesh.cell_count(); ++cell)
+            {
+                double area{};
+                for (auto j = mesh.cell_node_offsets()[cell]; j < mesh.cell_node_offsets()[cell + 1]; ++j)
+                {
+                    const auto sf{geometry.face_area_vectors()[mesh.cell_faces()[j]]};
+                    area += std::hypot(sf.x, sf.y);
+                }
+                expected = std::min(expected, .2 * geometry.cell_volumes()[cell] / (std::sqrt(Model::gamma) * area));
+            }
+            require_near(result.time_step, expected, 2e-14, "Independent mixed-cell CFL at rest.");
+        }
+        std::vector<double> regions(mesh.cell_count(), 1);
+        for (const double x : {0.0, .5, .75})
+        {
+            if (!moving && x == 0)
+                continue; // The synthetic closed inlet is not an open RPA section.
+            const cfd::verification::RpaFaceSection section{mesh, geometry, regions, x, .2};
+            const auto sample{section.sample(mesh, field, gas, conditions)};
+            require(section.face_count() == 3, "Mixed section coverage.");
+            require_near(sample.area, std::numbers::pi * .04, 2e-14, "Mixed section analytical disk area.");
+            require_near(sample.mass_flow, primitive.density * primitive.velocity_x * sample.area, 2e-12,
+                         "Mixed section production numerical flux.");
+        }
+    }
+    const auto directory{
+        std::filesystem::temp_directory_path() /
+        ("cfd-rpa-hybrid-vtu-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()))};
+    std::filesystem::create_directory(directory);
+    cfd::write_vtu(mesh, directory / "mixed.vtu");
+    const auto xml{cfd::test::read_text_file(directory / "mixed.vtu")};
+    const auto array = [&](const std::string &name) {
+        const auto begin{xml.find('>', xml.find("Name=\"" + name + "\"")) + 1};
+        std::istringstream stream{xml.substr(begin, xml.find("</DataArray>", begin) - begin)};
+        std::vector<cfd::Index> values;
+        cfd::Index value{};
+        while (stream >> value)
+            values.push_back(value);
+        return values;
+    };
+    const auto offsets{array("offsets")}, types{array("types")};
+    require(std::ranges::equal(offsets, mesh.cell_node_offsets().subspan(1)), "VTU mixed CSR offsets.");
+    require(std::find(types.begin(), types.end(), 5) != types.end() &&
+                std::find(types.begin(), types.end(), 9) != types.end(),
+            "VTU lost a mixed cell type.");
+    std::filesystem::remove_all(directory); // Only this test's unique output.
+}
 } // namespace
 
 int main()
 {
     int failures{};
     failures += cfd::test::run_test("nominal and exploratory gas", test_nominal_derived_and_exploratory_states);
+    failures += cfd::test::run_test("mixed Euler geometry/CFL/BC/sections/VTU",
+                                    test_hybrid_euler_sections_source_cfl_boundaries_and_export);
     failures += cfd::test::run_test("eight explicit BC groups", test_eight_boundary_groups_and_no_silent_mapping);
     failures += cfd::test::run_test("regional initial state and first-step conservation",
                                     test_region_initialization_and_conservative_first_step);

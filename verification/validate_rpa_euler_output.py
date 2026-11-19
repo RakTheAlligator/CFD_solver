@@ -16,6 +16,23 @@ def require(condition, reason):
         raise ValueError(reason)
 
 
+def validated_polygons(cells, count, point_count):
+    """Validate actual VTK TRI/QUAD offsets, never infer a fixed node stride."""
+    require(len(cells['types']) == count and len(cells['offsets']) == count, 'Cell topology cardinality')
+    polygons = []
+    begin = 0
+    for kind, end in zip(cells['types'], cells['offsets']):
+        require(kind in (5, 9), 'Only VTK TRI/QUAD cells are supported')
+        size = 3 if kind == 5 else 4
+        require(end == begin + size and end <= len(cells['connectivity']), 'Invalid cell offsets')
+        ids = cells['connectivity'][begin:end]
+        require(len(set(ids)) == size and all(0 <= node < point_count for node in ids), 'Invalid cell node IDs')
+        polygons.append(ids)
+        begin = end
+    require(begin == len(cells['connectivity']), 'Connectivity size')
+    return polygons
+
+
 def require_time_increment(previous, current, step):
     # The 17-digit CSV round-trips binary64. Check the actual accumulation;
     # subtracting two growing times amplifies rounding relative to a tiny dt.
@@ -91,8 +108,7 @@ def validate(root):
         cells = {a.attrib["Name"]: list(map(int, a.text.split())) for a in piece.find("Cells")}
         require(len(points) == 3*np and all(map(math.isfinite, points)), "Invalid points")
         require(min(points[1::3]) >= 0, "Negative radius")
-        require(cells["types"] == [9]*nc and cells["offsets"] == list(range(4,4*nc+1,4)), "Expected QUAD connectivity")
-        require(len(cells["connectivity"]) == 4*nc, "Connectivity size")
+        polygons = validated_polygons(cells, nc, np)
         mesh = (points, cells)
         if reference_mesh is None:
             reference_mesh = mesh
@@ -106,9 +122,9 @@ def validate(root):
             # Engine-cell estimates on exact sections, not physical trace states.
             edges = {}
             for c in range(nc):
-                ids = cells["connectivity"][4*c:4*c+4]
-                for i in range(4):
-                    edges.setdefault(tuple(sorted((ids[i],ids[(i+1)%4]))),[]).append(c)
+                ids = polygons[c]
+                for i in range(len(ids)):
+                    edges.setdefault(tuple(sorted((ids[i],ids[(i+1)%len(ids)]))),[]).append(c)
             for name in ("inlet","throat","exit"):
                 row = section_rows.get((float(entry.attrib["timestep"]),name))
                 if row is None and (float(entry.attrib["timestep"]) == initial_time or
@@ -127,7 +143,7 @@ def validate(root):
                             rings.append((ring_area,inside))
                             if name != "inlet":
                                 require(len(neighbors) == 2, "Expected an internal throat/exit face")
-                                left,right = sorted(neighbors,key=lambda c:math.fsum(points[3*i] for i in cells["connectivity"][4*c:4*c+4]))
+                                left,right = sorted(neighbors,key=lambda c:math.fsum(points[3*i] for i in polygons[c])/len(polygons[c]))
                                 rho_l,rho_r = fields["rho"][left],fields["rho"][right]
                                 u_l,u_r = fields["ux"][left],fields["ux"][right]
                                 wave = max(abs(u_l)+math.sqrt(gamma*fields["p"][left]/rho_l),
@@ -144,11 +160,11 @@ def validate(root):
                     require(math.isclose(float(row[column]),expected,rel_tol=1e-10), "Independent section estimate mismatch")
         volumes = []
         for cell in range(nc):
-            ids = cells["connectivity"][4*cell:4*cell+4]
-            require(len(set(ids)) == 4 and all(0 <= node < np for node in ids), "Invalid cell node IDs")
-            cross = [points[3*ids[i]]*points[3*ids[(i+1)%4]+1]-points[3*ids[(i+1)%4]]*points[3*ids[i]+1] for i in range(4)]
+            ids = polygons[cell]
+            size = len(ids)
+            cross = [points[3*ids[i]]*points[3*ids[(i+1)%size]+1]-points[3*ids[(i+1)%size]]*points[3*ids[i]+1] for i in range(size)]
             require(math.fsum(cross) > 0, "Inverted cell")
-            volume = math.pi/3*math.fsum((points[3*ids[i]+1]+points[3*ids[(i+1)%4]+1])*cross[i] for i in range(4))
+            volume = math.pi/3*math.fsum((points[3*ids[i]+1]+points[3*ids[(i+1)%size]+1])*cross[i] for i in range(size))
             require(volume > 0, "Invalid revolution volume")
             volumes.append(volume)
             rho,p,t,u,v,speed,mach,energy,logp,logrho,_ = [fields[n][cell] for n in names]
@@ -188,7 +204,7 @@ def validate(root):
     require(status["conserved"] == "1", "Driver conservation gate failed")
     if len(history) >= 200:
         require(max(abs(a-b) for a,b in zip(initial_pressure,fields["p"])) > 1, "No nontrivial solved evolution")
-    print(f"PASS: {len(series)} snapshots; {nc} QUAD; {len(history)} accepted steps; status={status['status']}")
+    print(f"PASS: {len(series)} snapshots; {cells['types'].count(5)} TRI / {cells['types'].count(9)} QUAD; {len(history)} accepted steps; status={status['status']}")
     if initial_step:
         print("Restart segment: independent ledger covers this segment only; checkpoint preserves the cumulative ledger.")
     print("Structural/EOS/ledger checks only; not a physical validation or proof of stationarity.")

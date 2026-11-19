@@ -932,6 +932,10 @@ class CaseParser
                 result.band_thickness_factor = value.number;
             else if (key.text == "plumeOutletRadiusFactor")
                 result.plume_outlet_radius_factor = value.number;
+            else if (key.text == "plumeLengthFactor")
+                result.plume_length_factor = value.number;
+            else if (key.text == "transitionWidthFactor")
+                result.transition_width_factor = value.number;
             else
                 fail(key.line, "Unsupported regions key '" + std::string{key.text} + "'.");
         }
@@ -944,7 +948,7 @@ class CaseParser
         expect_keyword("mesh");
         expect(TokenKind::LeftBrace, "'{'");
         std::map<std::string, Token> values;
-        constexpr std::array<std::string_view, 15> allowed{"cellType",
+        constexpr std::array<std::string_view, 27> allowed{"cellType",
                                                            "baseCellSize",
                                                            "minCellQuality",
                                                            "targetCellBudget",
@@ -958,7 +962,19 @@ class CaseParser
                                                            "outerWallFirstCellHeight",
                                                            "outerWallLayerCount",
                                                            "outerWallGrowthRate",
-                                                           "outerWallThickness"};
+                                                           "outerWallThickness",
+                                                           "engineRadialCells",
+                                                           "bandRadialCells",
+                                                           "engineAxialSpacingFactor",
+                                                           "preserveWallVertices",
+                                                           "farfieldCellSize",
+                                                           "farfieldInterfaceCellSize",
+                                                           "plumeRefinementRadiusFactor",
+                                                           "plumeRefinementCellSize",
+                                                           "maximumGrowthRate",
+                                                           "plumeNearLengthFactor",
+                                                           "plumeAxialSpacingFactor",
+                                                           "plumeRadialGrowthRate"};
         while (current_.kind != TokenKind::RightBrace)
         {
             const auto key{take_key("mesh")};
@@ -970,8 +986,9 @@ class CaseParser
                 fail(key.line, "Duplicate RPA mesh key.");
             const auto value{key.text == "cellType" || key.text == "externalSizeField"
                                  ? take_word("a cell type or path")
-                             : key.text.ends_with("Layers") ? take_boolean(key.text)
-                                                            : take_number("a finite RPA mesh value")};
+                             : key.text.ends_with("Layers") || key.text == "preserveWallVertices"
+                                 ? take_boolean(key.text)
+                                 : take_number("a finite RPA mesh value")};
             expect(TokenKind::Semicolon, "';'");
             values.emplace(std::string{key.text}, value);
         }
@@ -1004,6 +1021,38 @@ class CaseParser
                 result.rpa_nozzle.target_cell_budget = positive_index(value, key);
             else if (key == "externalSizeField")
                 result.rpa_nozzle.external_size_field_file = std::string{value.text};
+            else if (key == "engineRadialCells")
+                result.rpa_nozzle.engine_radial_cells = positive_index(value, key);
+            else if (key == "bandRadialCells")
+                result.rpa_nozzle.band_radial_cells = positive_index(value, key);
+            else if (key == "preserveWallVertices")
+                result.rpa_nozzle.preserve_wall_vertices = value.text == "true";
+            else if (key == "engineAxialSpacingFactor" || key == "farfieldCellSize" ||
+                     key == "farfieldInterfaceCellSize" || key == "plumeRefinementRadiusFactor" ||
+                     key == "plumeRefinementCellSize" || key == "maximumGrowthRate" || key == "plumeNearLengthFactor" ||
+                     key == "plumeAxialSpacingFactor" || key == "plumeRadialGrowthRate")
+            {
+                if (!(value.number > (key == "maximumGrowthRate" ? 1.0 : 0.0)))
+                    fail(value.line, "RPA size/spacing factors must be positive; maximumGrowthRate must exceed one.");
+                if (key == "engineAxialSpacingFactor")
+                    result.rpa_nozzle.engine_axial_spacing_factor = value.number;
+                else if (key == "farfieldCellSize")
+                    result.rpa_nozzle.farfield_cell_size = value.number;
+                else if (key == "farfieldInterfaceCellSize")
+                    result.rpa_nozzle.farfield_interface_cell_size = value.number;
+                else if (key == "plumeRefinementRadiusFactor")
+                    result.rpa_nozzle.plume_refinement_radius_factor = value.number;
+                else if (key == "plumeRefinementCellSize")
+                    result.rpa_nozzle.plume_refinement_cell_size = value.number;
+                else if (key == "plumeNearLengthFactor")
+                    result.rpa_nozzle.plume_near_length_factor = value.number;
+                else if (key == "plumeAxialSpacingFactor")
+                    result.rpa_nozzle.plume_axial_spacing_factor = value.number;
+                else if (key == "plumeRadialGrowthRate")
+                    result.rpa_nozzle.plume_radial_growth_rate = value.number;
+                else
+                    result.rpa_nozzle.maximum_growth_rate = value.number;
+            }
             else if (key.starts_with("inner") || key.starts_with("outer"))
             {
                 auto &layers{key.starts_with("inner") ? result.rpa_nozzle.inner_wall_layers
@@ -1023,6 +1072,15 @@ class CaseParser
         for (const auto *layers : {&result.rpa_nozzle.inner_wall_layers, &result.rpa_nozzle.outer_wall_layers})
             if ((layers->first_cell_height || layers->thickness) && !layers->active())
                 fail_current("Physical wall height/thickness requires the corresponding WallLayers true.");
+        if (result.rpa_nozzle.plume_refinement_radius_factor.has_value() !=
+            result.rpa_nozzle.plume_refinement_cell_size.has_value())
+            fail_current("plumeRefinementRadiusFactor and plumeRefinementCellSize must be specified together.");
+        if ((!result.rpa_nozzle.plume_near_length_factor &&
+             (result.rpa_nozzle.plume_axial_spacing_factor != 1 || result.rpa_nozzle.plume_radial_growth_rate)) ||
+            (result.rpa_nozzle.plume_radial_growth_rate &&
+             (*result.rpa_nozzle.plume_radial_growth_rate < 1 ||
+              *result.rpa_nozzle.plume_radial_growth_rate > result.rpa_nozzle.maximum_growth_rate)))
+            fail_current("Multiblock PLUME needs plumeNearLengthFactor and a radial ratio in [1,maximumGrowthRate].");
         return result;
     }
 

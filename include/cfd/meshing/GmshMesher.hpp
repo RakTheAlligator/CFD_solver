@@ -62,7 +62,8 @@ struct MeshGenerationOptions
 
     /// Mixed TRI/QUAD extraction; actual cells retain their existing CellType.
     /// RPA only: requires cell_type == Quadrilateral, with QUAD blocks and
-    /// triangular transition patches. Rectangle/BFS do not support this mode.
+    /// triangular transition patches; every other region is mapped QUAD.
+    /// Rectangle/BFS do not support this mode.
     bool hybrid{};
 };
 
@@ -98,6 +99,31 @@ struct RpaNozzleMeshingOptions
     WallLayerOptions outer_wall_layers{};
     std::optional<Index> target_cell_budget{};
     std::optional<std::filesystem::path> external_size_field_file{};
+    /// Optional organized ENGINE row count; absent retains base-size selection.
+    std::optional<Index> engine_radial_cells{};
+    std::optional<Index> band_radial_cells{};
+    double engine_axial_spacing_factor{1.0};
+    /// Retain every flattened CAD vertex on the organized wall boundaries.
+    bool preserve_wall_vertices{};
+    /// Maximum target spacing in mapped FARFIELD / unstructured TRANSITION.
+    std::optional<double> farfield_cell_size{};
+    /// Target spacing on the mapped FARFIELD side of TRANSITION, metres.
+    /// Absent uses mesh_size; must not exceed farfield_cell_size when given.
+    std::optional<double> farfield_interface_cell_size{};
+    /// Optional pair defining a near-jet refinement envelope, in exit radii/metres.
+    std::optional<double> plume_refinement_radius_factor{};
+    std::optional<double> plume_refinement_cell_size{};
+    /// Exterior size-field slope = maximum_growth_rate - 1. Not a guarantee
+    /// on every unstructured edge-size ratio; actual quality is validated.
+    double maximum_growth_rate{1.2};
+    /// Opt-in multiblock finite PLUME. Uniform near-zone length in exit radii,
+    /// followed by graded/capped axial blocks. ENGINE is never changed.
+    std::optional<double> plume_near_length_factor{};
+    /// Multiplier of the inherited exit axial size and terminal mean row height.
+    double plume_axial_spacing_factor{1.0};
+    /// Optional terminal radial spacing ratio in [1, maximum_growth_rate].
+    /// Counts remain those of ENGINE + lip + BAND for conforming interfaces.
+    std::optional<double> plume_radial_growth_rate{};
 };
 
 /// Generates only fluid cells in the Cartesian RPA meridian/plume domain.

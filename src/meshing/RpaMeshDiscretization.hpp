@@ -24,6 +24,12 @@ struct RpaStructuredGrid
 struct RpaMeshDiscretization
 {
     RpaStructuredGrid engine, band, plume, farfield;
+    /// Inclusive end-column indices; adjacent PLUME surfaces share a column.
+    /// {0,last} is the unchanged single-block path.
+    std::vector<Index> plume_block_columns;
+    /// Two conforming tensor-product blocks around the finite plume envelope.
+    RpaStructuredGrid farfield_downstream;
+    Index farfield_split_row{};
     std::vector<double> lip_y;
     Index transition_upstream_cells{};
     double transition_size{};
@@ -47,4 +53,8 @@ struct RpaMeshDiscretization
 
 /// Checks the actual generated cells, not only the candidate structured grids.
 void require_rpa_mesh_quality(const RawMeshData &mesh, const RpaNozzleMeshingOptions &options);
+
+/// Generation-only check of every mapped logical cell and exclusive TRI region.
+void require_rpa_finite_mapped_topology(const RawMeshData &raw, const RpaMeshDiscretization &grids,
+                                        const RpaNozzleDomain &domain, const RpaRegionLayout &layout);
 } // namespace cfd::detail

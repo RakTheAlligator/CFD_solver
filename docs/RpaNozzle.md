@@ -67,6 +67,11 @@ directional overrides are removed. Rectangle/BFS syntax is unchanged.
 
 ## Responsibilities
 
+The table and spacing rules below describe the historical mode, with no
+`plumeLengthFactor`. For a finite organized plume separated from two mapped QUAD
+FARFIELD blocks by a compact TRI envelope, configurable row counts and preserved wall vertices, see
+[RPA F4](AxisymmetricEulerRpaF4.md). The historical defaults remain unchanged.
+
 - `RpaNozzleGeometry` / `RpaNozzleDomain`: imported physical profile, shell,
   box, tolerance and mandatory CAD junctions; no cell counts.
 - `RpaRegionLayout`: the five geometric regions and their interfaces;
@@ -184,10 +189,10 @@ under the minimum-angle contract. Tests use explicitly smaller thresholds for
 such configurations or expect a quality rejection. The demo's plume factor 6
 opens this wedge; the demo uses HYBRID at 0.01 m with threshold 0.05.
 A separate synthetic QUAD regression at 0.005 m retains threshold 0.10.
-Before generation, every topology requires an outlet factor at least
+In this historical topology, before generation every cell type requires an outlet factor at least
 `Fmin = Rin/Re + (L/Re)*q/sqrt(1-q*q)`, where `Re` is the inner exit radius,
 `Rin` the plume inlet radius, `L` its downstream length and `q = minCellQuality`.
-At `q=1`, no finite outlet factor is admissible. The minimum radius must also
+At `q=1`, this historical tip admits no finite outlet factor. The minimum radius must also
 remain strictly below the outer box radius. Incompatible inputs report the
 requested/minimum factors, downstream factor and quality threshold; they are
 never silently adjusted. For the default 80/65 box and `q=0.05`, `Fmin` is
@@ -220,7 +225,8 @@ RawMeshData, Mesh topology, finite-volume geometry and CFD solvers are unchanged
 ## Targeted tests
 
 With CAD dependencies available, `rpa_nozzle` runs reader, parameter, layout,
-structured-grid and metric tests without Gmsh generation. `rpa_nozzle_integration`
+structured-grid and metric tests, including a small synthetic finite-plume
+generation. `rpa_nozzle_integration`
 runs a restricted full-generation subset (CTest label `integration`). The extended
 one-factor parameter matrix is opt-in, not a Cartesian product:
 
@@ -235,3 +241,7 @@ reader/generator. The reference dictionary and DXF are never modified.
 The `reference` case reads the tracked demo dictionary and checks its size,
 cell type, Hybrid mode and quality threshold against explicit expectations.
 Synthetic QUAD cases, including `quad_005`, are independent of that dictionary.
+
+For the opt-in finite-PLUME multiblock distribution and mesh-only diagnostics,
+see [RpaMultiblockPlume.md](RpaMultiblockPlume.md). ENGINE and the physical
+boundary groups are unchanged; smaller cell counts are not a measured CFD speedup.

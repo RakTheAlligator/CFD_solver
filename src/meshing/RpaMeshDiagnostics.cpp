@@ -4,21 +4,47 @@
 #include "cfd/mesh/Mesh.hpp"
 #include "cfd/meshing/RpaRegionLayout.hpp"
 
+#include <algorithm>
 #include <array>
 #include <iomanip>
 #include <limits>
 #include <ostream>
 #include <sstream>
+#include <vector>
 
 namespace cfd
 {
 void write_rpa_mesh_diagnostics(std::ostream &output, const Mesh &mesh, const RpaNozzleDomain &domain,
                                 const MeshGenerationOptions &generation, const RpaNozzleMeshingOptions &options,
-                                const std::span<double> region_ids)
+                                const std::span<double> region_ids, const std::span<double> block_ids)
 {
-    if (!region_ids.empty() && region_ids.size() != mesh.cell_count())
+    if ((!region_ids.empty() && region_ids.size() != mesh.cell_count()) ||
+        (!block_ids.empty() && block_ids.size() != mesh.cell_count()))
         throw std::invalid_argument("RPA region output cardinality mismatch.");
     const RpaRegionLayout layout{domain, options.regions};
+    std::vector<double> plume_interfaces;
+    if (options.regions.plume_length_factor)
+    {
+        const auto grids{detail::discretize_rpa(domain, layout, generation, options)};
+        output << "[RPA mapped blocks: columns / rows / cells; all logical coordinates verified during generation]\n";
+        const std::array<const char *, 5> block_names{"engine", "band", "plume", "farfield_upper",
+                                                      "farfield_downstream"};
+        Index block{};
+        for (const auto *grid : {&grids.engine, &grids.band, &grids.plume, &grids.farfield, &grids.farfield_downstream})
+            output << "  " << block_names.at(block++) << " : " << grid->x.size() - 1 << " / " << grid->radial_cells
+                   << " / " << (grid->x.size() - 1) * grid->radial_cells << '\n';
+        for (Index i = 1; i < grids.plume_block_columns.size(); ++i)
+        {
+            const Index begin{grids.plume_block_columns[i - 1]}, end{grids.plume_block_columns[i]};
+            plume_interfaces.push_back(grids.plume.x[end]);
+            output << "  plume_block " << i << " : x=[" << grids.plume.x[begin] << ',' << grids.plume.x[end]
+                   << "] columns=" << end - begin << " rows=" << grids.plume.radial_cells
+                   << " cells=" << (end - begin) * grids.plume.radial_cells << '\n';
+        }
+        output << "transition_outer_radius_upstream=" << layout.transition_outer_radius(domain.outer_wall.front().x)
+               << "\ntransition_outer_radius_end=" << layout.transition_outer_radius(layout.plume_end_x())
+               << "\nfarfield_begin_x=" << layout.farfield_begin_x() << '\n';
+    }
     constexpr std::array<const char *, 5> names{"engine", "band", "plume", "transition", "farfield"};
     std::array<Index, 5> counts{}, triangles{}, quads{};
     std::array<double, 5> minimum{};
@@ -43,6 +69,22 @@ void write_rpa_mesh_diagnostics(std::ostream &output, const Mesh &mesh, const Rp
         angular_sum.at(region) += angular;
         if (!region_ids.empty())
             region_ids[cell] = static_cast<double>(region + 1);
+        if (!block_ids.empty())
+        {
+            double id{static_cast<double>(region + 1)};
+            if (options.regions.plume_length_factor)
+            {
+                if (region == 2)
+                    id = 3 + static_cast<double>(std::upper_bound(plume_interfaces.begin(), plume_interfaces.end(),
+                                                                  mesh.cell_centers()[cell].x) -
+                                                 plume_interfaces.begin());
+                else if (region == 3)
+                    id = 8;
+                else if (region == 4)
+                    id = mesh.cell_centers()[cell].x < layout.farfield_begin_x() ? 6 : 7;
+            }
+            block_ids[cell] = id;
+        }
     }
     std::array<double, 2> wall_error{};
     for (Index face = 0; face < mesh.face_count(); ++face)
@@ -72,8 +114,12 @@ void write_rpa_mesh_diagnostics(std::ostream &output, const Mesh &mesh, const Rp
         report << "  " << names.at(region) << " : " << wall_error.at(region) << " m; tolerance "
                << domain.geometric_tolerance << " m; "
                << (wall_error.at(region) <= domain.geometric_tolerance ? "WITHIN TOLERANCE" : "EXCEEDED") << '\n';
-    report << "  CAD import tolerance is unchanged. Topological validity does not certify wall-face geometric "
-              "accuracy; mean-height spacing is not refined to enforce this tolerance.\n";
+    report << "  CAD import tolerance is unchanged. ";
+    if (options.preserve_wall_vertices)
+        report << "All flattened wall vertices are preserved; this does not claim exact curved-CAD walls.\n";
+    else
+        report << "Topological validity does not certify wall-face geometric accuracy; mean-height spacing is "
+                  "not refined to enforce this tolerance.\n";
     output << report.str();
 }
 } // namespace cfd

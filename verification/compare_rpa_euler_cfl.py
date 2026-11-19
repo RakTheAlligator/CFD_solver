@@ -11,6 +11,8 @@ from pathlib import Path
 import sys
 import xml.etree.ElementTree as ET
 
+from validate_rpa_euler_output import validated_polygons
+
 
 def table(path):
     with path.open() as stream:
@@ -54,12 +56,11 @@ def load(root):
     xyz = list(map(float, piece.find("Points")[0].text.split()))
     topology = {a.attrib["Name"]: list(map(int, a.text.split())) for a in piece.find("Cells")}
     volumes = []
-    for cell in range(len(fields["rho"])):
-        ids = topology["connectivity"][4 * cell:4 * cell + 4]
+    for ids in validated_polygons(topology, len(fields["rho"]), len(xyz)//3):
         xy = [(xyz[3 * n], xyz[3 * n + 1]) for n in ids]
         volumes.append(math.pi / 3 * math.fsum(
-            (xy[k][1] + xy[(k + 1) % 4][1]) *
-            (xy[k][0] * xy[(k + 1) % 4][1] - xy[(k + 1) % 4][0] * xy[k][1]) for k in range(4)))
+            (xy[k][1] + xy[(k + 1) % len(ids)][1]) *
+            (xy[k][0] * xy[(k + 1) % len(ids)][1] - xy[(k + 1) % len(ids)][0] * xy[k][1]) for k in range(len(ids))))
     suffix = "" if int(status["rejected_steps"]) == 0 else "_r" + status["rejected_steps"]
     conservatives, compatibility = conservative_values(root / f"checkpoint_{status['steps']}{suffix}.chk")
     fields.update(conservatives)

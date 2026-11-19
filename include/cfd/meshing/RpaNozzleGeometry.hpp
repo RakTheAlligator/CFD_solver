@@ -32,6 +32,12 @@ struct RpaRegionLayoutOptions
 {
     double band_thickness_factor{0.5};
     double plume_outlet_radius_factor{16.0};
+    /// Optional near-plume length in exit radii, measured downstream of exit.
+    /// Absent retains the historical plume reaching the downstream boundary.
+    std::optional<double> plume_length_factor{};
+    /// Clearance above/beyond a finite plume, in exit radii. Required with
+    /// plume_length_factor; absent preserves the historical region topology.
+    std::optional<double> transition_width_factor{};
 };
 
 /// Validated, flattened meridian and fictitious exterior wall in Cartesian (x,r).
